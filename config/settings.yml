@@ -5,7 +5,17 @@ canvas:
   base_url: https://canvas.mit.edu/api/v1
   token_env: CANVAS_TOKEN        # name of the env var holding the Canvas token
   per_page: 100
-  term: auto                     # "auto" = only terms whose start/end cover today
+  term: auto                     # "auto" = only terms whose start/end cover today.
+                                 # With "auto", when at least one course sits in a
+                                 # properly dated current term, courses whose term
+                                 # carries no dates at all (Canvas's "Default Term")
+                                 # are excluded and reported in the sync report.
+  exclude_courses: []            # never sync these: a Canvas course id, or a
+                                 # case-insensitive substring of the course name
+                                 # or course_code. Example (already handled by the
+                                 # dateless-term rule above -- shown here only to
+                                 # document the mechanism):
+                                 #   - 17557   # F-1 Immigration Orientation eCourse
   max_retries: 5
   min_rate_limit_remaining: 100.0  # back off when Canvas reports less than this
 

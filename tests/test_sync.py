@@ -37,8 +37,9 @@ BODIES = {
 class FakeCanvas:
     """A Canvas instance served from the JSON fixtures, via httpx.MockTransport."""
 
-    def __init__(self, *, files_403: bool = False) -> None:
+    def __init__(self, *, files_403: bool = False, pages_404: bool = False) -> None:
         self.files_403 = files_403
+        self.pages_404 = pages_404
         self.files = {
             5001: fixture("files_page1")[0],
             5002: fixture("files_page2")[0],
@@ -96,6 +97,9 @@ class FakeCanvas:
             if tail == "assignments":
                 return httpx.Response(200, json=fixture("assignments"))
             if tail == "pages":
+                if self.pages_404:
+                    # A course with the Pages feature switched off.
+                    return httpx.Response(404, json=fixture("pages_disabled_404"))
                 return httpx.Response(200, json=fixture("pages"))
 
         if parts[2] == "courses" and parts[3] == "28452":
@@ -278,10 +282,47 @@ def test_403_on_files_falls_back_to_modules(settings):
         f"{ML}/Lectures/week2-notes.pdf",
     }
     assert report.new == 2
-    stages = {e["stage"] for e in report.errors}
+    # A hidden Files tab is expected, not a failure: it is a notice, and the
+    # Modules fallback covers it.
+    assert report.errors == []
+    stages = {n["stage"] for n in report.notices}
     assert "files" in stages
-    msg = next(e["message"] for e in report.errors if e["stage"] == "files")
+    msg = next(n["message"] for n in report.notices if n["stage"] == "files")
     assert "module-derived" in msg
+
+
+# --------------------------------------------------------------------------
+# disabled Pages feature (404, not 403)
+# --------------------------------------------------------------------------
+def test_pages_disabled_404_is_a_notice_not_an_error(settings):
+    fake = FakeCanvas(pages_404=True)
+    report = sync(settings, fake)
+
+    # The whole point: a disabled feature must not pollute the error count.
+    assert report.errors == []
+    pages_notices = [n for n in report.notices if n["stage"] == "pages"]
+    assert [n["course"] for n in pages_notices] == [ML]
+    assert "disabled" in pages_notices[0]["message"]
+    assert report.as_dict()["notices"] == report.notices
+
+    # ...and the course is otherwise synced exactly as normal.
+    assert report.new == 3
+    assert mirrored_files(settings) == {
+        f"{ML}/Lectures/lecture1.pdf",
+        f"{ML}/syllabus.pdf",
+        f"{ML}/Lectures/week2-notes.pdf",
+    }
+    pages_meta = json.loads((mirror(settings) / ML / "_meta" / "pages.json").read_text())
+    assert pages_meta["items"] == []
+    # Later stages still run: announcements come after pages in the fetch list.
+    assert (mirror(settings) / ML / "_meta" / "announcements.json").exists()
+
+
+def test_notices_render_without_counting_as_errors(settings):
+    report = sync(settings, FakeCanvas(pages_404=True))
+    table = report.render()
+    assert table.row_count > 0
+    assert len(report.notices) >= 1
 
 
 # --------------------------------------------------------------------------
@@ -492,3 +533,47 @@ def test_download_failure_is_reported_not_raised(settings):
     assert report.new == 0
     assert {e["stage"] for e in report.errors} == {"download"}
     assert mirrored_files(settings) == set()
+
+
+# --------------------------------------------------------------------------
+# course selection, end to end
+# --------------------------------------------------------------------------
+ORIENTATION = {
+    "id": 17557,
+    "name": "F-1 Immigration Orientation eCourse",
+    "course_code": "F1-ORIENT",
+    "term": {"id": 1, "name": "Default Term", "start_at": None, "end_at": None},
+}
+
+
+class CanvasWithOrientation(FakeCanvas):
+    """FakeCanvas plus one dateless-term administrative course."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/courses" and request.url.params.get("page") is not None:
+            return httpx.Response(200, json=[*fixture("courses_page2"), ORIENTATION])
+        return super().handler(request)
+
+
+def test_dateless_term_course_is_excluded_and_reported(settings):
+    report = sync(settings, CanvasWithOrientation(), dry_run=True)
+
+    assert set(report.courses) == {ML, ALGO}
+    assert ORIENTATION["name"] not in report.courses
+    assert report.excluded == [
+        {
+            "canvas_id": "17557",
+            "name": ORIENTATION["name"],
+            "reason": "term has no start/end dates",
+        }
+    ]
+
+
+def test_exclude_courses_setting_drops_a_course_before_any_work(settings):
+    settings.canvas.exclude_courses = ["intro to algorithms"]
+    fake = FakeCanvas()
+    report = sync(settings, fake, dry_run=True)
+
+    assert set(report.courses) == {ML}
+    assert [e["reason"] for e in report.excluded] == ["excluded by config"]
+    assert "/api/v1/courses/28452/modules" not in fake.paths

@@ -147,7 +147,13 @@
         // Adjust the path to match `command -v ical-guy` on this machine --
         // exact-argv matching means a wrong path silently never matches.
         {
-          argv: ["/opt/homebrew/bin/ical-guy", "list", "--format", "json"],
+          // v0.13.0: `events list`, date-only --from/--to, and an explicit
+          // --group-by none so a user config file cannot change the shape.
+          // NOTE: exact-argv pinning cannot express the varying date
+          // values, so this entry matches the prefix convention used
+          // above; verify against `command -v ical-guy` (here:
+          // ~/.local/bin/ical-guy, NOT Homebrew -- the formula did not build).
+          argv: ["/Users/filippostrub/.local/bin/ical-guy", "events", "list"],
           cwd: "/Users/filippostrub/Desktop/MIT/courses/_agent",
         },
 

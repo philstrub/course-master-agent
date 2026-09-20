@@ -1,0 +1,18 @@
+[
+  {
+    "date": "2026-09-21",
+    "events": [
+      {
+        "calendar": {"title": "Calendar", "type": "exchange"},
+        "endDate": "2026-09-21T15:30:00Z",
+        "isAllDay": false,
+        "startDate": "2026-09-21T12:30:00Z",
+        "title": "15.C57 Optimization recitation"
+      }
+    ]
+  },
+  {
+    "date": "2026-09-22",
+    "events": []
+  }
+]

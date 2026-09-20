@@ -14,6 +14,38 @@ application* that runs the binary, interactively, once. A background or
 launchd job can never be prompted -- it just gets an access error -- so this
 module raises :class:`~mitsync.errors.CalendarAccessDenied` with that
 explanation rather than pretending the calendar is empty.
+
+The exact command line issued for ``ical-guy`` is::
+
+    ical-guy events list --from YYYY-MM-DD --to YYYY-MM-DD
+        --format json --group-by none
+
+Verified against **ical-guy 0.13.0** on 2026-09-20 (``ical-guy events list
+--help`` plus the installed man page, ``ical-guy.1``, dated 2026-04-13).
+``events list`` is a *sub-command pair*: ``events`` alone is the parent group
+and ``list`` its default child. There is no ``--json`` flag -- the format is
+selected with ``--format json``, which also pins the output when stdout is a
+TTY. The dates are plain *local* calendar dates: 0.13.0 rejects a full ISO 8601
+timestamp, and a UTC date would roll the window forward a day every evening
+for anyone east of the prime meridian's shadow (see :func:`_day`).
+``--group-by none`` is passed explicitly because the grouping mode
+changes the JSON *shape* (``date`` and ``calendar`` wrap events in group
+objects) and because it can otherwise be set behind our back by the user's
+``~/.config/ical-guy/config.toml``.
+
+The documented event object (man page section OUTPUT > JSON Output, confirmed
+against live output) carries ``id``, ``title``, ``startDate``, ``endDate``,
+``isAllDay``, ``location``, ``notes``, ``url``, ``meetingUrl``,
+``meetingVendor``, ``calendar`` (an object with ``id``/``title``/``type``/
+``source``/``color``), ``attendees``, ``organizer``, ``recurrence``,
+``status``, ``availability``, ``timeZone``, ``creationDate`` and
+``lastModifiedDate``. We read only a handful of those and ignore the rest, and
+the key lookups below accept several spellings so a CLI rename degrades to a
+missing field rather than a ``KeyError``.
+
+If a future ical-guy changes this interface, the symptom is an exit-64 usage
+error from :func:`read_events`; re-run the three ``--help`` commands and update
+``_QUERY_ARGV`` here.
 """
 
 from __future__ import annotations
@@ -42,9 +74,26 @@ __all__ = ["Event", "calendar_available", "read_events", "tag_course"]
 #: Never hang a sync behind a stalled EventKit query.
 TIMEOUT_SECONDS = 25
 
-#: The read-only sub-command for each supported CLI. Nothing else is ever run.
+#: The read-only sub-command for each supported CLI, keyed by binary name.
+#: One adapter per tool, deliberately kept side by side rather than merged:
+#: they disagree about flag spelling and about how the format is selected.
+#: Nothing but a query sub-command ever appears here -- see the module
+#: docstring, and the structural tests that enforce it.
 _QUERY_ARGV: dict[str, list[str]] = {
-    "ical-guy": ["events", "--from", "{start}", "--to", "{end}", "--json"],
+    # ical-guy 0.13.0, verified 2026-09-20.
+    "ical-guy": [
+        "events",
+        "list",
+        "--from",
+        "{start}",
+        "--to",
+        "{end}",
+        "--format",
+        "json",
+        "--group-by",
+        "none",
+    ],
+    # ekctl: flat `events` query with its own flag spelling.
     "ekctl": ["events", "--start", "{start}", "--end", "{end}", "--json"],
 }
 _DEFAULT_ARGV = _QUERY_ARGV["ical-guy"]
@@ -61,7 +110,7 @@ _MISSING_HINT = (
 _TCC_HINT = (
     "macOS denied calendar access.\n"
     "Grant it ONCE, INTERACTIVELY, from the same terminal app you run mitsync in:\n"
-    "  1. run `{cli} events --from now --to now --json` in that terminal\n"
+    "  1. run `{cli} {probe}` by hand in that terminal\n"
     "  2. click Allow on the system prompt\n"
     "  3. confirm the terminal app is checked under\n"
     "     System Settings > Privacy & Security > Calendars\n"
@@ -118,10 +167,40 @@ def calendar_available(settings: Settings) -> tuple[bool, str]:
     return True, f"{cli} at {found}"
 
 
+def _day(moment: datetime) -> str:
+    """``moment`` as a plain ``YYYY-MM-DD`` *local* calendar date.
+
+    Two lessons, both learned the hard way against ical-guy 0.13.0:
+
+    * It rejects a full ISO 8601 timestamp -- ``Invalid date format:
+      '2026-09-20T18:00:19.811774+00:00'`` -- and asks for ``YYYY-MM-DD``,
+      ``today``, ``today+N`` or a natural-language phrase. So we send a date.
+    * The date must be the *local* one. ``datetime.now(UTC)`` at 20:00 in
+      America/New_York is already the next day in UTC, so formatting the UTC
+      date would silently shift the whole window by a day every evening.
+
+    ``--from``/``--to`` are inclusive whole days (the man page: ``--to``
+    "defaults to the end of the start date"), which is the right granularity
+    for a lookahead window anyway.
+    """
+    return moment.astimezone().strftime("%Y-%m-%d")
+
+
+def _template(cli: str) -> list[str]:
+    """The query argv template for ``cli``, chosen by its *binary name*."""
+    return _QUERY_ARGV.get(cli.rsplit("/", 1)[-1], _DEFAULT_ARGV)
+
+
 def _argv(cli: str, start: datetime, end: datetime) -> list[str]:
-    template = _QUERY_ARGV.get(cli.rsplit("/", 1)[-1], _DEFAULT_ARGV)
-    fmt = {"start": start.astimezone(UTC).isoformat(), "end": end.astimezone(UTC).isoformat()}
+    template = _template(cli)
+    fmt = {"start": _day(start), "end": _day(end)}
     return [cli, *[part.format(**fmt) for part in template]]
+
+
+def _tcc_message(cli: str) -> str:
+    """The TCC remediation text, quoting the exact command to run by hand."""
+    probe = " ".join(part.format(start="today", end="today") for part in _template(cli))
+    return _TCC_HINT.format(cli=cli, probe=probe)
 
 
 def read_events(
@@ -168,10 +247,10 @@ def read_events(
     if proc.returncode != 0:
         if _DENIED_RX.search(stderr) or not stderr:
             tail = f"\n\n{stderr}" if stderr else ""
-            raise CalendarAccessDenied(_TCC_HINT.format(cli=cli) + tail)
+            raise CalendarAccessDenied(_tcc_message(cli) + tail)
         raise MitsyncError(f"'{cli}' failed (exit {proc.returncode}): {stderr}")
     if _DENIED_RX.search(stderr) and not (proc.stdout or "").strip():
-        raise CalendarAccessDenied(_TCC_HINT.format(cli=cli) + f"\n\n{stderr}")
+        raise CalendarAccessDenied(_tcc_message(cli) + f"\n\n{stderr}")
 
     events = [_to_event(raw) for raw in _iter_raw(proc.stdout, cli)]
     tagger = _course_tagger(settings)
@@ -191,16 +270,33 @@ def _iter_raw(stdout: str, cli: str) -> list[dict[str, Any]]:
         raise MitsyncError(
             f"'{cli}' did not emit JSON: {exc}; first 200 chars: {text[:200]!r}"
         ) from exc
-    if isinstance(doc, dict):
-        for key in ("events", "items", "results", "data"):
-            if isinstance(doc.get(key), list):
-                doc = doc[key]
-                break
-        else:
-            doc = [doc]
+    doc = _unwrap(doc)
     if not isinstance(doc, list):
         raise MitsyncError(f"'{cli}' JSON was neither a list nor an object of events")
-    return [d for d in doc if isinstance(d, dict)]
+
+    # `--group-by none` yields a flat array, but a stray config file or a
+    # future default could still hand us group objects ({"date": ..., "events":
+    # [...]}). Flatten one level of those rather than mis-reading a group as an
+    # event; anything else that is not a dict is quietly skipped.
+    out: list[dict[str, Any]] = []
+    for item in doc:
+        if isinstance(item, dict):
+            out.extend(d for d in _unwrap(item) if isinstance(d, dict))
+    return out
+
+
+#: Keys under which a wrapper object may hide the actual list of events.
+_LIST_KEYS = ("events", "items", "results", "data")
+
+
+def _unwrap(doc: Any) -> Any:
+    """A wrapper object's event list, or ``doc`` unchanged."""
+    if isinstance(doc, dict):
+        for key in _LIST_KEYS:
+            if isinstance(doc.get(key), list):
+                return doc[key]
+        return [doc]
+    return doc
 
 
 _START_KEYS = ("start", "startDate", "start_date", "startsAt", "starts_at", "begin")

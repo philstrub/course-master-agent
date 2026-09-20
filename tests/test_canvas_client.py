@@ -11,7 +11,10 @@ from mitsync.canvas_client import CanvasClient, _next_link
 from mitsync.errors import (
     CanvasAccessDenied,
     CanvasAuthError,
+    CanvasFeatureDisabled,
+    CanvasNotFound,
     CanvasRateLimited,
+    MitsyncError,
     StalePresignedURL,
 )
 
@@ -336,3 +339,91 @@ def test_download_without_url_raises_stale(settings, tmp_path: Path):
     client, _ = build(settings, handler)
     with client, pytest.raises(StalePresignedURL):
         client.download(5001, tmp_path / "x.pdf")
+
+
+# --------------------------------------------------------------------------
+# 404: disabled feature vs genuine miss
+# --------------------------------------------------------------------------
+DISABLED_BODY = {"message": "That page has been disabled for this course"}
+
+
+def test_404_disabled_feature_raises_feature_disabled(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json=DISABLED_BODY)
+
+    client, sleeper = build(settings, handler)
+    with client, pytest.raises(CanvasFeatureDisabled) as exc:
+        list(client.paginate("/courses/38615/pages"))
+    assert exc.value.resource == "/api/v1/courses/38615/pages"
+    assert exc.value.canvas_message == DISABLED_BODY["message"]
+    assert sleeper.slept == [], "a disabled feature is not worth retrying"
+
+
+def test_404_disabled_feature_matches_case_insensitively(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"message": "THAT PAGE HAS BEEN DISABLED for this course"})
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(CanvasFeatureDisabled):
+        client.get("/courses/38615/front_page")
+
+
+def test_404_with_unrelated_body_raises_not_found(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, json={"errors": [{"message": "The specified resource"}]})
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(CanvasNotFound) as exc:
+        client.get("/files/999999")
+    assert "The specified resource" in str(exc.value)
+    assert not isinstance(exc.value, CanvasFeatureDisabled)
+
+
+@pytest.mark.parametrize("body", [b"", b"<html>not json</html>", b"null"])
+def test_404_with_empty_or_non_json_body_does_not_crash(settings, body):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, content=body)
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(CanvasNotFound):
+        client.get("/courses/1/pages")
+
+
+def test_non_json_404_that_mentions_disabled_is_a_feature_disabled(settings):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(404, content=b"That page has been disabled for this course")
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(CanvasFeatureDisabled):
+        client.get("/courses/1/pages")
+
+
+# --------------------------------------------------------------------------
+# no raw httpx error may escape the client
+# --------------------------------------------------------------------------
+def test_exhausted_500_surfaces_as_mitsync_error_not_raw_httpx(settings):
+    settings.canvas.max_retries = 1
+    calls = {"n": 0}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls["n"] += 1
+        return httpx.Response(500, json={"message": "Internal Server Error"})
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(MitsyncError) as exc:
+        client.get("/courses")
+    assert not isinstance(exc.value, httpx.HTTPStatusError)
+    assert "500" in str(exc.value)
+    assert calls["n"] == 2  # initial + 1 retry
+
+
+@pytest.mark.parametrize("status", [400, 402, 405, 418, 451])
+def test_unhandled_statuses_are_translated(settings, status):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(status, json={"message": "nope"})
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(MitsyncError) as exc:
+        client.get("/courses")
+    assert not isinstance(exc.value, httpx.HTTPStatusError)
+    assert str(status) in str(exc.value)

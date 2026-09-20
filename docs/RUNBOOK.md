@@ -25,12 +25,18 @@
 
 3. **Apple Calendar access** (`ical-guy`):
    - `brew install ical-guy` (or install `ekctl` as the alternative).
+     Note: on this machine the Homebrew formula failed to build (it
+     compiles from source and needs a newer Xcode CLT than 14.3.1), so
+     the official prebuilt universal binary was installed to
+     `~/.local/bin/ical-guy` (v0.13.0). It is ad-hoc signed, so Gatekeeper
+     will object on first run and the TCC grant may need re-granting
+     after an upgrade.
    - Run one interactive command from the exact context you intend to run
      long-term (a Terminal session for manual/API-mode use; the OpenClaw
      LaunchAgent's context if you intend cron-driven syncs) so the TCC
      full-calendar-access prompt appears and is granted there:
      ```
-     ical-guy list --format json --days 1
+     ical-guy events list --from today --to today+1 --format json
      ```
    - Approve the system prompt requesting calendar access. If it does not
      appear and the command returns empty/denied, check System Settings →
@@ -126,7 +132,7 @@ mitsync graph query --canned concepts_by_course   # or --sql "SELECT ..."
 | `sync` fails with 401 on every request | Canvas token expired or revoked | Generate a new token in Canvas web UI, update env/`config/settings.yml`, re-run `mitsync doctor` to confirm before retrying `sync` |
 | `sync` returns 403 for one course's files | That course hides the Files tab (expected, not a bug) | No action needed — `sync` should already be falling back to the Modules API for that course; confirm with `mitsync sync --course <name> --dry-run` that the Modules fallback was used |
 | `sync` repeatedly hits 403/429 across many courses | Rate limiting (status is ambiguous per API_NOTES) | Let the built-in exponential backoff run; if it still fails after the retry cap, wait several minutes and re-run `mitsync sync --dry-run` to confirm the API is reachable again before a real sync |
-| `calendar` returns empty or a denial error | TCC access denied or granted to the wrong code identity/context | Re-run the interactive `ical-guy list --format json --days 1` from the exact context that failed (Terminal vs LaunchAgent) to re-trigger the grant; check System Settings → Privacy & Security → Calendars |
+| `calendar` returns empty or a denial error | TCC access denied or granted to the wrong code identity/context | Re-run the interactive `ical-guy events list --from today --to today+1 --format json` from the exact context that failed (Terminal vs LaunchAgent) to re-trigger the grant; check System Settings → Privacy & Security → Calendars |
 | OpenClaw gateway won't start / silently lost Full Disk Access | A bad hand-edit to `openclaw.json`, or a crash during a config change | `openclaw doctor --non-interactive` |
 | Sync appears to have "missed" a day | Mac was asleep during the scheduled cron time | No recovery needed — next `sync` run picks up everything unsynced since it works off incremental manifest state, not "since last run" |
 | `manifest.duckdb` looks corrupt (`doctor` reports errors opening it) | Crash mid-write, disk issue | Delete `state/manifest.duckdb`, run `mitsync sync --full` to rebuild it from a fresh full listing (files already in `_canvas/` are re-hashed, not re-downloaded) |

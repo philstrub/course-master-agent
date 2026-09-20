@@ -1,0 +1,65 @@
+[
+  {
+    "attendees": [],
+    "availability": "busy",
+    "calendar": {
+      "color": "#FF2968",
+      "id": "98BA6B95-C453-4495-BE8A-4FB6C4DC45E6",
+      "source": "MIT",
+      "title": "Calendar",
+      "type": "exchange"
+    },
+    "endDate": "2026-09-21T15:30:00Z",
+    "id": "34A3C88F:mban2027_15.681_2026_09_21_083000@mit.edu",
+    "isAllDay": false,
+    "lastModifiedDate": "2026-08-27T18:17:56Z",
+    "location": "Classroom E62-233",
+    "meetingUrl": null,
+    "meetingVendor": null,
+    "notes": "15.681 From Analytics to Action (6 units) - Modular Session 1.",
+    "recurrence": {"isRecurring": false},
+    "startDate": "2026-09-21T12:30:00Z",
+    "status": "confirmed",
+    "timeZone": "America/New_York",
+    "title": "15.681 From Analytics to Action (Session 1)"
+  },
+  {
+    "attendees": [],
+    "availability": "busy",
+    "calendar": {
+      "color": "#9FE1E7",
+      "id": "025DDA11-42A3-47C7-8467-C034C0B2BB2E",
+      "source": "Gmail",
+      "title": "filippostrub@gmail.com",
+      "type": "calDAV"
+    },
+    "creationDate": "2026-09-18T23:33:45Z",
+    "endDate": "2026-09-22T14:40:00Z",
+    "id": "7BB28DAC-8EB3-4F6E-A99F-FB9924BED190",
+    "isAllDay": false,
+    "recurrence": {"isRecurring": true, "description": "Every weekday"},
+    "startDate": "2026-09-22T13:45:00Z",
+    "status": "confirmed",
+    "timeZone": "America/New_York",
+    "title": "GYM"
+  },
+  {
+    "attendees": [],
+    "availability": "free",
+    "calendar": {
+      "color": "#F25B00",
+      "id": "A8B01391-CE76-4EC6-AF72-E6AD726BBBCE",
+      "source": "MIT",
+      "title": "deadlines",
+      "type": "exchange"
+    },
+    "endDate": "2026-09-24T03:59:59Z",
+    "id": "34A3C88F:dacee2ab@fall2026",
+    "isAllDay": true,
+    "notes": "Due 11:59 pm\n\nGroups of 5-6 submitted on Canvas",
+    "recurrence": {"isRecurring": false},
+    "startDate": "2026-09-23T04:00:00Z",
+    "status": "none",
+    "title": "Analytics Edge - Group formation due"
+  }
+]

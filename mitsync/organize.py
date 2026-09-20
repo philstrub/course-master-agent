@@ -41,6 +41,7 @@ from rich.table import Table
 from .errors import ConfigError, MitsyncError
 from .llm.base import make_task, validate_result
 from .logging import get_logger
+from .sync import filter_excluded_courses
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import Settings
@@ -353,7 +354,13 @@ def _meta_items(path: Path) -> list[dict[str, Any]]:
 
 def suggest_course_map(settings: Settings, judge: Any, *, apply: bool = False) -> MapReport:
     """Propose (and with ``apply``, write) the Canvas course -> folder mapping."""
-    courses = _canvas_courses(settings)
+    courses, excluded = filter_excluded_courses(
+        _canvas_courses(settings), settings.canvas.exclude_courses
+    )
+    for item in excluded:
+        console.print(
+            f"[dim]skipping canvas {item['canvas_id']} ({item['name']}): {item['reason']}[/dim]"
+        )
     folders = existing_course_folders(settings)
     report = MapReport(path=courses_file(settings))
 

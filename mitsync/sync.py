@@ -64,14 +64,21 @@ from rich.console import Console
 from rich.table import Table
 
 from .canvas_client import CanvasClient
-from .errors import CanvasAccessDenied, CanvasAuthError, MitsyncError
+from .errors import CanvasAccessDenied, CanvasAuthError, CanvasFeatureDisabled, MitsyncError
 from .logging import get_logger
 from .manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
 
 log = get_logger(__name__)
 console = Console()
 
-__all__ = ["SyncReport", "course_folder_name", "run_sync"]
+__all__ = [
+    "SyncReport",
+    "course_exclusion_reason",
+    "course_folder_name",
+    "filter_excluded_courses",
+    "run_sync",
+    "select_current_term_courses",
+]
 
 _META_DIR = "_meta"
 _TERM_PAD_DAYS = 200
@@ -91,15 +98,32 @@ class SyncReport:
     skipped: int = 0
     bytes_downloaded: int = 0
     errors: list[dict[str, str]] = field(default_factory=list)
+    notices: list[dict[str, str]] = field(default_factory=list)
+    excluded: list[dict[str, str]] = field(default_factory=list)
     dry_run: bool = False
 
     @property
     def files_seen(self) -> int:
         return self.new + self.updated + self.unchanged + self.skipped
 
+    def add_excluded(self, canvas_id: Any, name: str, reason: str) -> None:
+        """Record a course left out of this run, so the skip is visible."""
+        log.info("excluded course %s (%s): %s", canvas_id, name, reason)
+        self.excluded.append({"canvas_id": str(canvas_id), "name": name, "reason": reason})
+
     def add_error(self, course: str, stage: str, message: str) -> None:
         log.warning("%s [%s]: %s", course, stage, message)
         self.errors.append({"course": course, "stage": stage, "message": message})
+
+    def add_notice(self, course: str, stage: str, message: str) -> None:
+        """Record an expected, benign skip -- never an error.
+
+        A course with a feature tab switched off (Pages disabled, Files
+        hidden) is not a failure: there is simply nothing to mirror. Keeping
+        these out of ``errors`` is what lets a real error stay visible.
+        """
+        log.info("%s [%s] skipped: %s", course, stage, message)
+        self.notices.append({"course": course, "stage": stage, "message": message})
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -110,6 +134,8 @@ class SyncReport:
             "skipped": self.skipped,
             "bytes_downloaded": self.bytes_downloaded,
             "errors": list(self.errors),
+            "notices": list(self.notices),
+            "excluded": list(self.excluded),
             "dry_run": self.dry_run,
         }
 
@@ -127,9 +153,20 @@ class SyncReport:
         table.add_row("skipped (ignored)", str(self.skipped))
         table.add_row("bytes", _human_bytes(self.bytes_downloaded))
         table.add_row("errors", str(len(self.errors)))
+        table.add_row("skipped stages (expected)", str(len(self.notices)))
+        table.add_row("excluded courses", str(len(self.excluded)))
         if self.courses:
             table.add_section()
             table.add_row("folders", ", ".join(self.courses))
+        for item in self.excluded:
+            table.add_section()
+            table.add_row(f"excluded {item['canvas_id']}", f"{item['name']} — {item['reason']}")
+        for notice in self.notices:
+            table.add_section()
+            table.add_row(
+                f"[dim]skipped {notice['course']} / {notice['stage']}[/dim]",
+                f"[dim]{notice['message']}[/dim]",
+            )
         for err in self.errors:
             table.add_section()
             table.add_row(f"{err['course']} / {err['stage']}", err["message"])
@@ -200,7 +237,7 @@ def _sync_all(
     full: bool,
 ) -> None:
     try:
-        courses = _discover_courses(settings, client)
+        courses = _discover_courses(settings, client, report)
     except MitsyncError as exc:
         report.add_error("-", "courses", str(exc))
         return
@@ -255,8 +292,10 @@ def _sync_course(
     try:
         for raw in client.paginate(f"/courses/{course_id}/files"):
             files[int(raw["id"])] = dict(raw)
-    except CanvasAccessDenied as exc:
-        report.add_error(folder, "files", f"{exc}; falling back to module-derived files")
+    except (CanvasAccessDenied, CanvasFeatureDisabled) as exc:
+        # The Files tab is hidden (403) or disabled (404). Expected, and the
+        # Modules walk below reaches the same files -- a notice, not an error.
+        report.add_notice(folder, "files", f"{exc}; falling back to module-derived files")
     except (MitsyncError, httpx.HTTPError) as exc:
         report.add_error(folder, "files", f"{type(exc).__name__}: {exc}")
 
@@ -275,30 +314,139 @@ def _sync_course(
 # --------------------------------------------------------------------------
 # course discovery
 # --------------------------------------------------------------------------
-def _discover_courses(settings: Any, client: CanvasClient) -> list[dict[str, Any]]:
+def _discover_courses(
+    settings: Any, client: CanvasClient, report: SyncReport | None = None
+) -> list[dict[str, Any]]:
     wanted = settings.canvas.term
-    out: list[dict[str, Any]] = []
+    raws: list[dict[str, Any]] = []
     seen: set[int] = set()
     params = {"enrollment_state": "active", "include[]": ["term"]}
     for raw in client.paginate("/courses", **params):
         canvas_id = raw.get("id")
         if canvas_id is None or int(canvas_id) in seen:
             continue
-        if not _in_term(raw.get("term") or {}, wanted):
-            continue
         seen.add(int(canvas_id))
-        name = raw.get("name") or raw.get("course_code") or f"course-{canvas_id}"
+        raws.append(raw)
+
+    kept, dropped = filter_excluded_courses(raws, getattr(settings.canvas, "exclude_courses", []))
+    kept, term_dropped = select_current_term_courses(kept, wanted)
+    if report is not None:
+        for item in [*dropped, *term_dropped]:
+            report.add_excluded(item["canvas_id"], item["name"], item["reason"])
+
+    out: list[dict[str, Any]] = []
+    for raw in kept:
+        canvas_id = int(raw["id"])
+        name = course_display_name(raw)
         out.append(
             {
-                "canvas_id": int(canvas_id),
+                "canvas_id": canvas_id,
                 "name": name,
                 "course_code": raw.get("course_code"),
                 "term": raw.get("term") or {},
-                "folder": course_folder_name(name, int(canvas_id)),
+                "folder": course_folder_name(name, canvas_id),
                 "raw": raw,
             }
         )
     return out
+
+
+def course_display_name(raw: dict[str, Any]) -> str:
+    canvas_id = raw.get("id")
+    return raw.get("name") or raw.get("course_code") or f"course-{canvas_id}"
+
+
+# --------------------------------------------------------------------------
+# course selection (shared with `organize.suggest_course_map`)
+# --------------------------------------------------------------------------
+EXCLUDED_BY_CONFIG = "excluded by config"
+EXCLUDED_DATELESS_TERM = "term has no start/end dates"
+
+
+def course_exclusion_reason(course: dict[str, Any], patterns: Any) -> str | None:
+    """``EXCLUDED_BY_CONFIG`` when ``course`` matches a ``canvas.exclude_courses`` entry.
+
+    An entry that is an int or a numeric string matches the Canvas course id;
+    anything else is a case-insensitive substring of the name or course code.
+    Works on both raw Canvas payloads (``id``) and mapped rows (``canvas_id``).
+    """
+    canvas_id = course.get("id", course.get("canvas_id"))
+    haystacks = [
+        str(course.get("name") or "").casefold(),
+        str(course.get("course_code") or "").casefold(),
+    ]
+    for pattern in patterns or []:
+        text = str(pattern).strip()
+        if not text:
+            continue
+        if text.lstrip("-").isdigit():
+            if canvas_id is not None and str(canvas_id).strip() == text:
+                return EXCLUDED_BY_CONFIG
+            continue
+        needle = text.casefold()
+        if any(needle in hay for hay in haystacks if hay):
+            return EXCLUDED_BY_CONFIG
+    return None
+
+
+def filter_excluded_courses(
+    courses: list[dict[str, Any]], patterns: Any
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Split ``courses`` into (kept, dropped) per ``canvas.exclude_courses``."""
+    kept: list[dict[str, Any]] = []
+    dropped: list[dict[str, str]] = []
+    for course in courses:
+        reason = course_exclusion_reason(course, patterns)
+        if reason is None:
+            kept.append(course)
+        else:
+            dropped.append(
+                {
+                    "canvas_id": str(course.get("id", course.get("canvas_id")) or ""),
+                    "name": course_display_name(course),
+                    "reason": reason,
+                }
+            )
+    return kept, dropped
+
+
+def select_current_term_courses(
+    courses: list[dict[str, Any]], wanted: str = "auto"
+) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    """Pick the current-term courses out of the whole list.
+
+    The decision needs every course at once: a term carrying no dates at all
+    (Canvas's "Default Term", used for administrative onboarding courses) is
+    only excluded when at least one *other* course sits in a properly dated
+    current term. That keeps the rule relative -- on a Canvas instance that
+    simply never sets term dates, nothing is dropped. An explicit
+    ``canvas.term`` name bypasses the rule entirely.
+    """
+    if wanted and wanted != "auto":
+        return [c for c in courses if _in_term(c.get("term") or {}, wanted)], []
+
+    dated_current: list[dict[str, Any]] = []
+    dateless: list[dict[str, Any]] = []
+    for course in courses:
+        term = course.get("term") or {}
+        if _as_date(term.get("start_at")) is None and _as_date(term.get("end_at")) is None:
+            dateless.append(course)
+        elif _in_term(term, wanted):
+            dated_current.append(course)
+
+    if not dated_current:
+        # Never return an empty list because of this rule.
+        return dateless, []
+
+    dropped = [
+        {
+            "canvas_id": str(c.get("id", c.get("canvas_id")) or ""),
+            "name": course_display_name(c),
+            "reason": EXCLUDED_DATELESS_TERM,
+        }
+        for c in dateless
+    ]
+    return dated_current, dropped
 
 
 def _in_term(term: dict[str, Any], wanted: str) -> bool:
@@ -310,7 +458,7 @@ def _in_term(term: dict[str, Any], wanted: str) -> bool:
     start = _as_date(term.get("start_at"))
     end = _as_date(term.get("end_at"))
     if start is None and end is None:
-        # A term with no dates (e.g. "Default Term") cannot be excluded safely.
+        # Handled by `select_current_term_courses`, which sees every course.
         return True
     if start is not None and today < start:
         return False
@@ -364,7 +512,7 @@ def _folder_map(
             if fid is None:
                 continue
             out[int(fid)] = _relative_folder(raw.get("full_name") or raw.get("name") or "")
-    except CanvasAccessDenied as exc:
+    except (CanvasAccessDenied, CanvasFeatureDisabled) as exc:
         log.info("%s: folder listing unavailable (%s)", folder, exc)
     except (MitsyncError, httpx.HTTPError) as exc:
         report.add_error(folder, "folders", f"{type(exc).__name__}: {exc}")
@@ -389,8 +537,8 @@ def _walk_modules(
     modules: list[dict[str, Any]] = []
     try:
         modules = list(client.paginate(f"/courses/{course_id}/modules", **{"include[]": ["items"]}))
-    except CanvasAccessDenied as exc:
-        report.add_error(folder, "modules", str(exc))
+    except (CanvasAccessDenied, CanvasFeatureDisabled) as exc:
+        report.add_notice(folder, "modules", str(exc))
         return modules
     except (MitsyncError, httpx.HTTPError) as exc:
         report.add_error(folder, "modules", f"{type(exc).__name__}: {exc}")
@@ -410,8 +558,8 @@ def _walk_modules(
             if raw is None:
                 try:
                     raw = client.get(f"/files/{fid}")
-                except CanvasAccessDenied as exc:
-                    report.add_error(folder, "module-file", str(exc))
+                except (CanvasAccessDenied, CanvasFeatureDisabled) as exc:
+                    report.add_notice(folder, "module-file", str(exc))
                     continue
                 except (MitsyncError, httpx.HTTPError) as exc:
                     report.add_error(folder, "module-file", f"{type(exc).__name__}: {exc}")
@@ -579,8 +727,13 @@ def _write_course_meta(
     for stage, path, params in fetches:
         try:
             items = list(client.paginate(path, **params))
+        except CanvasFeatureDisabled as exc:
+            # e.g. Pages disabled for this course: 404 + "That page has been
+            # disabled for this course". Nothing to mirror, nothing wrong.
+            report.add_notice(folder, stage, str(exc))
+            items = []
         except CanvasAccessDenied as exc:
-            log.info("%s: %s unavailable (%s)", folder, stage, exc)
+            report.add_notice(folder, stage, str(exc))
             items = []
         except (MitsyncError, httpx.HTTPError) as exc:
             report.add_error(folder, stage, f"{type(exc).__name__}: {exc}")
@@ -607,8 +760,8 @@ def _write_planner(
                 end_date=term_end.isoformat(),
             )
         )
-    except CanvasAccessDenied as exc:
-        log.info("planner items unavailable (%s)", exc)
+    except (CanvasAccessDenied, CanvasFeatureDisabled) as exc:
+        report.add_notice("-", "planner", str(exc))
         return
     except (MitsyncError, httpx.HTTPError) as exc:
         report.add_error("-", "planner", f"{type(exc).__name__}: {exc}")

@@ -38,8 +38,12 @@ import httpx
 from .errors import (
     CanvasAccessDenied,
     CanvasAuthError,
+    CanvasFeatureDisabled,
+    CanvasHTTPError,
+    CanvasNotFound,
     CanvasRateLimited,
     CanvasWriteRefused,
+    MitsyncError,
     StalePresignedURL,
 )
 from .logging import get_logger
@@ -54,6 +58,15 @@ __all__ = ["CanvasClient"]
 # Substrings that mark a 403 body as throttling rather than permissions.
 _THROTTLE_MARKERS = re.compile(
     r"rate[\s_-]?limit|throttl|403 Forbidden \(Rate Limit Exceeded\)", re.IGNORECASE
+)
+# Substrings that mark a 404 body as "this course turned that tab off" rather
+# than a genuine miss. Canvas's real wording, verified against canvas.mit.edu
+# on 2026-09-20: {"message": "That page has been disabled for this course"}.
+_FEATURE_DISABLED_MARKERS = re.compile(
+    r"\b(?:has|have)\s+been\s+disabled\b"
+    r"|\b(?:is|are)\s+(?:disabled|unavailable|not\s+enabled)\b"
+    r"|\bdisabled\s+for\s+this\s+course\b",
+    re.IGNORECASE,
 )
 _RETRY_STATUS = frozenset({408, 429, 500, 502, 503, 504})
 _BACKOFF_BASE = 1.0
@@ -175,7 +188,13 @@ class CanvasClient:
                 if response.status_code == 401:
                     response.read()
                     raise CanvasAuthError("Canvas rejected the token (401) during download")
-                response.raise_for_status()
+                try:
+                    response.raise_for_status()
+                except httpx.HTTPStatusError as exc:
+                    response.read()
+                    raise CanvasHTTPError(
+                        response.status_code, _resource_of(url), _body_message(response)
+                    ) from exc
                 with open(tmp, "wb") as fh:
                     for chunk in response.iter_bytes(_DOWNLOAD_CHUNK):
                         digest.update(chunk)
@@ -222,14 +241,23 @@ class CanvasClient:
                 )
             if response.status_code == 403 and not _looks_throttled(response):
                 raise CanvasAccessDenied(_resource_of(url))
+            if response.status_code == 404:
+                # A course with a feature tab switched off answers 404, not 403.
+                message = _body_message(response)
+                resource = _resource_of(url)
+                if _FEATURE_DISABLED_MARKERS.search(message):
+                    raise CanvasFeatureDisabled(resource, message)
+                raise CanvasNotFound(resource, message)
             if response.status_code in _RETRY_STATUS or response.status_code == 403:
-                last = CanvasRateLimited(_retry_after(response))
+                last = _status_error(response, url)
                 if attempt >= self._max_retries:
                     raise last
                 self._backoff(attempt, _retry_after(response), f"HTTP {response.status_code}")
                 continue
 
-            response.raise_for_status()
+            if response.status_code >= 400 or response.is_error:
+                # Nothing raw escapes this client: every non-2xx is typed.
+                raise _status_error(response, url)
             self._maybe_pause(response)
             return response
 
@@ -270,6 +298,39 @@ def _json(response: httpx.Response) -> Any:
         if _looks_throttled(response):
             raise CanvasRateLimited(None) from exc
         raise
+
+
+def _status_error(response: httpx.Response, url: str) -> MitsyncError:
+    """Typed error for a non-2xx response the caller may retry or must surface."""
+    if response.status_code in (403, 429) or _looks_throttled(response):
+        return CanvasRateLimited(_retry_after(response))
+    return CanvasHTTPError(response.status_code, _resource_of(url), _body_message(response))
+
+
+def _body_message(response: httpx.Response) -> str:
+    """Canvas's human-readable message, tolerating an empty or non-JSON body."""
+    try:
+        text = response.text
+    except Exception:  # pragma: no cover - streaming body not read
+        return ""
+    if not (text or "").strip():
+        return ""
+    try:
+        payload = response.json()
+    except ValueError:
+        return text.strip()[:200]
+    if isinstance(payload, dict):
+        value: Any = payload.get("message") or payload.get("error") or payload.get("errors")
+        if isinstance(value, list):
+            value = "; ".join(
+                str(item.get("message", item)) if isinstance(item, dict) else str(item)
+                for item in value
+            )
+        elif isinstance(value, dict):
+            value = str(value.get("message") or value)
+        if value:
+            return str(value)
+    return text.strip()[:200]
 
 
 def _looks_throttled(response: httpx.Response) -> bool:

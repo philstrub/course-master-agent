@@ -27,6 +27,10 @@ Canvas instance, so the general Canvas LMS REST API docs
 - `GET /courses?enrollment_state=active&include[]=term&per_page=100`.
 - There is no "current term" server-side filter. Filter client-side using
   the `term.start_at` / `term.end_at` fields returned by `include[]=term`.
+- Some terms carry no dates at all (Canvas's "Default Term", used for
+  administrative onboarding courses). `sync.select_current_term_courses`
+  drops those only when at least one course does sit in a properly dated
+  current term, and reports each drop in the sync report.
 - Source: Canvas API `courses` resource docs
   (https://canvas.instructure.com/doc/api/courses.html).
 
@@ -45,6 +49,18 @@ Canvas instance, so the general Canvas LMS REST API docs
   `/courses/:id/files` (and the folder endpoints) on such a course return
   **403**. The fallback is to reach files indirectly through the Modules
   API (below).
+- A course can also switch a whole feature *off*, which Canvas signals with
+  **404**, not 403. Verified live against `canvas.mit.edu` on **2026-09-20**
+  (observed, not read from the docs):
+
+      GET /api/v1/courses/38615/pages       -> 404
+        {"message":"That page has been disabled for this course"}
+      GET /api/v1/courses/38615/front_page  -> 404
+
+  This is the 404-shaped analogue of the 403 on a hidden Files tab above: the
+  course simply has no Pages. Treat it as expected — `canvas_client` raises
+  `CanvasFeatureDisabled` and `sync` records a notice, never an error. A 404
+  whose body does *not* say "disabled" is a genuine miss (`CanvasNotFound`).
 - Source: Canvas API `files` resource docs
   (https://canvas.instructure.com/doc/api/files.html).
 
@@ -174,6 +190,42 @@ Canvas instance, so the general Canvas LMS REST API docs
 - Use a maintained EventKit CLI with JSON output rather than writing a
   native Swift wrapper from scratch: `ical-guy` (Swift 6, requires
   macOS 14+, supports `--format json`) or `ekctl` as an alternative.
+
+### `ical-guy` CLI contract (v0.13.0, verified live 2026-09-20)
+
+```
+ical-guy events list --from YYYY-MM-DD --to YYYY-MM-DD --format json --group-by none
+```
+
+- `events` is a **parent** subcommand; the leaf is `events list`. There is
+  no `--json` flag — it is `--format json`.
+- `--from` / `--to` accept a **date**, not a timestamp. A full ISO 8601
+  value is rejected: `Invalid date format: '2026-09-20T17:59:51+00:00'`.
+  Accepted forms: `YYYY-MM-DD`, `today`, `tomorrow`, `yesterday`,
+  `today+N` / `today-N`, and some natural language.
+- Pass the **local** date, not the UTC one. After ~20:00 in
+  America/New_York `datetime.now(UTC).date()` is already tomorrow, which
+  would silently shift the window by a day every evening.
+- `--group-by none` is passed explicitly so that a user-level
+  `~/.config/ical-guy/config.toml` cannot change the output shape
+  underneath us. The parser also flattens `--group-by date|calendar`
+  wrappers defensively.
+- Event JSON: `{id, title, startDate, endDate, isAllDay, location, notes,
+  url, meetingUrl, meetingVendor, calendar, attendees, organizer,
+  recurrence, status, availability, timeZone, creationDate,
+  lastModifiedDate}`. **`calendar` is an object**, not a string — its
+  `title` is the human calendar name.
+- `ekctl` has a different interface (`events --start … --end … --json`)
+  and gets its own adapter, selected by binary name.
+- Exit code 64 means CLI drift (our argv no longer matches the installed
+  version) and must not be misreported as a permissions denial.
+
+Install note: the Homebrew formula builds from source and needs a newer
+Xcode CLT than 14.3.1, so this machine uses the official prebuilt
+universal binary at `~/.local/bin/ical-guy` (sha256
+`426524dd6affcc8d86743d8c2e4057980945efe8e6c29e61672d23f869d4a40e`). It is
+ad-hoc signed, so Gatekeeper objects on first run and the TCC grant may
+need re-granting after an upgrade.
 
 ### Rejected alternatives (and why)
 

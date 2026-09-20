@@ -58,6 +58,9 @@ class CanvasSettings(BaseModel):
     token_env: str = "CANVAS_TOKEN"
     per_page: int = 100
     term: str = "auto"
+    #: Courses never synced: a Canvas course id (int or numeric string), or a
+    #: case-insensitive substring of the course name or course_code.
+    exclude_courses: list[int | str] = Field(default_factory=list)
     max_retries: int = 5
     min_rate_limit_remaining: float = 100.0
 
