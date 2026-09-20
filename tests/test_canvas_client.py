@@ -1,3 +1,24 @@
+"""
+# Canvas Client Tests
+
+Pagination, throttling, downloads, and the typed error each HTTP status must
+become.
+
+Every request is served by `httpx.MockTransport` from the JSON payloads under
+`tests/fixtures/canvas/`, and `build()` injects a `Recorder` in place of
+`time.sleep`, so backoff behaviour is asserted on the *sequence of waits the
+client intended to take* rather than paid for in wall-clock time. No test
+reaches the network or needs a token.
+
+The bulk of the file is the status-translation table, because that is where
+Canvas's quirks live: a 403 that is throttling versus a 403 that is a hidden
+Files tab, a 404 that means "this course disabled Pages" versus a genuine
+miss, an HTML error page returned with a 200, and a pre-signed download URL
+that expires between resolve and stream. Each case asserts the specific
+`MitsyncError` subclass, since callers branch on exactly that, and that no raw
+`httpx` exception ever escapes the client.
+"""
+
 from __future__ import annotations
 
 import hashlib
@@ -427,3 +448,22 @@ def test_unhandled_statuses_are_translated(settings, status):
         client.get("/courses")
     assert not isinstance(exc.value, httpx.HTTPStatusError)
     assert str(status) in str(exc.value)
+
+
+def test_throttled_html_body_on_a_200_becomes_canvas_rate_limited(settings):
+    """A throttled Canvas answers 200 with an HTML error page, not JSON.
+
+    The client translates that at the boundary instead of letting a raw
+    `ValueError` out of `response.json()` -- and never returns an empty payload.
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"X-Rate-Limit-Remaining": "0"},
+            content=b"<html><body>403 Forbidden (Rate Limit Exceeded)</body></html>",
+        )
+
+    client, _ = build(settings, handler)
+    with client, pytest.raises(CanvasRateLimited):
+        client.get("/courses")

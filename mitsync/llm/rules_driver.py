@@ -1,8 +1,52 @@
-"""The `rules` driver: deterministic heuristics, no model.
+"""
+# Rules Driver
 
-Used for dry runs, tests and CI. Results are intentionally low-confidence (0.5)
-so downstream review treats them as provisional. Unknown tasks never raise --
-they return a well-formed empty result and log a warning.
+Deterministic heuristics, no model, for dry runs, tests and CI.
+
+## 1. What This Module Does
+
+Answers the judgment tasks that can honestly be answered by pattern matching:
+`organize_plan` (bucket a file from its module name, Canvas folder and
+filename) and `course_map` (match a Canvas course to an existing folder by
+token overlap and string similarity). For `graph_extract` it emits nothing, and
+for `course_notes` it assembles a file inventory rather than a summary.
+
+## 2. Why This Module Exists
+
+The test suite and CI must exercise the full command paths -- plan, apply,
+undo, build -- end to end, with no network, no API key, and no installed
+provider SDK. This driver is what makes that possible, and it doubles as the
+`--driver rules` dry run for a user who wants to see what the deterministic
+part of the system would do.
+
+## 3. How It Fits in the Architecture
+
+Selected by `base.get_judge` for driver `rules`. It is the one driver that
+imports from elsewhere in mitsync (`organize.classify_bucket`,
+`course_map.course_numbers_in`), because its whole job is to reuse the
+deterministic logic those modules already own rather than restate it.
+
+## 4. Key Concepts
+
+**It never guesses, and it says when it cannot answer.** Results are
+deliberately stamped at confidence 0.5 -- exactly `organize.REVIEW_THRESHOLD`
+-- so downstream review treats every one of them as provisional rather than
+applying them unattended.
+
+**Empty is a real answer, and an honest one.** No heuristic can mine concept
+triples out of prose, so `graph_extract` returns a schema-valid empty result
+and logs a warning naming the document. That keeps `--driver rules` working end
+to end while making it obvious in the log that no extraction happened. An
+unknown task name does the same rather than raising, because a missing
+heuristic is a known limitation of this driver, not a bug in the caller.
+
+**Course notes are an inventory, not a summary.** The generated text says so in
+its own body and in its open questions, so a reader can never mistake a list of
+filenames for an understanding of the material.
+
+**Why no exception is caught here.** It calls nothing external. Every input is
+a payload already validated upstream, and every output is checked against the
+task schema by the caller.
 """
 
 from __future__ import annotations
@@ -12,7 +56,9 @@ import re
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+from ..course_map import course_numbers_in
 from ..logging import get_logger
+from ..organize import classify_bucket
 from .base import JudgeTask
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -22,62 +68,7 @@ log = get_logger(__name__)
 
 CONFIDENCE = 0.5
 
-# Ordered: first match wins. Patterns run against a *normalised* string where
-# `_`, `-` and `.` become spaces, so real filenames like `15_095_hw1.pdf`,
-# `Lec03_2026.pdf` and `deliv_1_15072_Fall2026.pdf` tokenise the way a reader
-# would expect rather than hiding the signal inside one long word.
-_BUCKET_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
-    ("syllabus", re.compile(r"\bsyllab|\bcourse info|\blogistics\b|\bgrading\b", re.I)),
-    ("recitations", re.compile(r"\brecit\w*|\brec\s?\d|\bsection\s?\d|\btutorial", re.I)),
-    (
-        "assignments",
-        re.compile(
-            r"\bhw\b|\bhw\s?\d|homework|assign\w*|deliv\w*|\bpset|problem\s?set"
-            r"|\bps\s?\d|\bexam\b|midterm|\bquiz|\bproject\b|solution",
-            re.I,
-        ),
-    ),
-    (
-        "lectures",
-        re.compile(
-            r"\blec\b|\blec\s?\d|lecture|\bslides?\b|\bunit\s?\d|\bsession\s?\d"
-            r"|\bclass\s?\d|\bweek\s?\d",
-            re.I,
-        ),
-    ),
-    ("notes", re.compile(r"\bnotes?\b", re.I)),
-]
-
-_SEPARATORS = re.compile(r"[._\-]+")
-
-
-def _normalise(text: str) -> str:
-    """`Lec03_2026.pdf` -> `Lec03 2026 pdf`, so word boundaries actually land."""
-    return _SEPARATORS.sub(" ", text)
-
-
-_DATA_EXTS = {".csv", ".xlsx", ".xls", ".json", ".parquet", ".tsv"}
-
-# 15.095 / 15_095 / 15095 / 15.C57 / 6.7900
-_COURSE_NUMBER = re.compile(r"\b(\d{1,2})[._]?([A-Z]?\d{2,4})\b")
 _EMPTY: dict[str, str] = {"organize_plan": "placements", "course_map": "mappings"}
-
-
-def _bucket(display_name: str, module_name: str | None, canvas_folder: str | None) -> str:
-    """Module grouping wins over the filename (see config/naming.md)."""
-    for text in (module_name, canvas_folder):
-        if not text:
-            continue
-        for bucket, rx in _BUCKET_PATTERNS:
-            if rx.search(_normalise(text)):
-                return bucket
-    if PurePosixPath(display_name).suffix.lower() in _DATA_EXTS:
-        return "data"
-    stem = _normalise(PurePosixPath(display_name).stem)
-    for bucket, rx in _BUCKET_PATTERNS:
-        if rx.search(stem):
-            return bucket
-    return "other"
 
 
 def _tokens(text: str) -> set[str]:
@@ -93,11 +84,9 @@ def _score(course_name: str, folder: str) -> float:
 
 def _course_number(*texts: str | None) -> str | None:
     for text in texts:
-        if not text:
-            continue
-        m = _COURSE_NUMBER.search(text)
-        if m:
-            return f"{m.group(1)}.{m.group(2)}"
+        numbers = course_numbers_in(text or "")
+        if numbers:
+            return numbers[0]
     return None
 
 
@@ -118,7 +107,7 @@ class RulesJudge:
         for f in payload.get("files", []):
             name = str(f.get("display_name") or "file")
             course = str(f.get("course") or "").strip("/")
-            bucket = _bucket(name, f.get("module_name"), f.get("canvas_folder"))
+            bucket = classify_bucket(name, f.get("module_name"), f.get("canvas_folder"))
             dest = PurePosixPath(course) / bucket / name if course else PurePosixPath(bucket) / name
             placements.append(
                 {

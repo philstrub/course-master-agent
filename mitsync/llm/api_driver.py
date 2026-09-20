@@ -1,7 +1,55 @@
-"""The `api` driver: one cloud model call, provider-agnostic.
+"""
+# API Driver
 
-Provider SDKs are imported lazily *inside* the call so mitsync imports cleanly
-with none of them installed. This module is the only place they may appear.
+One cloud model call, provider-agnostic, retried once on a schema failure.
+
+## 1. What This Module Does
+
+Builds a prompt from a `JudgeTask` -- instructions, the authoritative rules,
+the output schema, the payload -- sends it to the configured provider
+(Anthropic, OpenAI, an OpenAI-compatible endpoint, or Google), parses the
+reply as JSON, and validates it against the task's schema.
+
+## 2. Why This Module Exists
+
+This is the driver a user with an API key gets by default, and it is the only
+file in mitsync that may name a provider SDK. Keeping all four providers here,
+behind one `judge()` method, is what makes the rest of the tool
+provider-agnostic: switching providers is a settings change, not a code change.
+
+## 3. How It Fits in the Architecture
+
+Selected by `base.get_judge` when the resolved driver is `api`, which `auto`
+picks when an API key is present. Interchangeable with the `agent` and `rules`
+drivers -- callers apply its result identically.
+
+## 4. Key Concepts
+
+**Provider imports are lazy and inside the call.** `import anthropic` sits in
+the method that needs it, not at module scope, so mitsync imports cleanly with
+none of the SDKs installed. A test asserts exactly this.
+
+**One retry, with the rejection quoted back.** When the reply fails to parse or
+fails validation, the same prompt is re-sent with the error appended and a
+demand for corrected JSON. Exactly one retry -- a model that cannot satisfy a
+schema twice will not satisfy it on the fifth attempt, and the caller deserves
+the error.
+
+**The system prompt demands bare JSON**, but the parser still tolerates a
+markdown fence or surrounding prose, because models add them.
+
+**Why exceptions are caught here.** Two, both genuinely external:
+
+1. `ImportError` per provider -- an optional SDK that is not installed becomes
+   `JudgeUnavailable` naming the exact command to install it, and the
+   alternative drivers that need no key at all. This is the one case where the
+   user's next action is obvious and the raw traceback would hide it.
+2. `json.JSONDecodeError` and `ResultValidationError` around parsing the
+   model's reply -- a model reply is untrusted text from an external system.
+   Caught once to retry; the second failure propagates.
+
+A missing API key is *not* caught, it is raised, at construction time, with the
+environment variable named and both credential-free drivers suggested.
 """
 
 from __future__ import annotations
@@ -75,16 +123,12 @@ class ApiJudge:
 
     def judge(self, task: JudgeTask) -> dict[str, Any]:
         prompt = _build_prompt(task)
-        for attempt in (1, 2):
-            reply = self._call(prompt)
-            try:
-                return validate_result(task, _extract_json(reply))
-            except (ResultValidationError, json.JSONDecodeError) as exc:
-                if attempt == 2:
-                    raise
-                log.warning("model reply rejected, retrying once: %s", exc)
-                prompt = _build_prompt(task, extra=str(exc))
-        raise AssertionError("unreachable")
+        try:
+            return validate_result(task, _extract_json(self._call(prompt)))
+        except (ResultValidationError, json.JSONDecodeError) as exc:
+            log.warning("model reply rejected, retrying once: %s", exc)
+            prompt = _build_prompt(task, extra=str(exc))
+        return validate_result(task, _extract_json(self._call(prompt)))
 
     # --- providers ---
     def _call(self, prompt: str) -> str:

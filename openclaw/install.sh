@@ -304,7 +304,8 @@ if command -v "${CAL_CLI}" >/dev/null 2>&1; then
 else
   warn "${CAL_CLI} is not on PATH; \`mitsync calendar\` and the calendar half of"
   note "\`mitsync brief\` will fail (the briefing reports this rather than guessing)."
-  note "Install it (e.g. brew install ical-guy) -- this script does not run brew."
+  note "Install the prebuilt ical-guy binary to ~/.local/bin (the Homebrew formula"
+  note "builds from source and needs a newer Xcode CLT than this machine has)."
 fi
 
 cat <<TCCHELP
@@ -315,7 +316,7 @@ cat <<TCCHELP
         1. ONE-TIME INTERACTIVE GRANT. The permission prompt only appears for
            an interactive run. From a Terminal window, run once:
 
-               ${CAL_CLI} list --format json --days 1
+               ${CAL_CLI} events list --from today --to today+1 --format json
 
            and approve the prompt. Check it landed in
            System Settings -> Privacy & Security -> Calendars.

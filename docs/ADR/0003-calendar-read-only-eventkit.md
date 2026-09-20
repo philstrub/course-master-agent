@@ -43,7 +43,7 @@ rather than assuming a grant transfers between contexts.
 - Deployment requires a manual, interactive one-time step (the TCC grant)
   per execution context; an unattended LaunchAgent that has never been
   granted access in its own context will fail closed with a clear
-  `TccDeniedError`, not a silent empty result.
+  `CalendarAccessDenied`, not a silent empty result.
 - A LaunchDaemon is unusable for this feature since it cannot receive a
   TCC prompt at all — scheduled calendar reads must run as a LaunchAgent
   in the GUI session, which constrains how OpenClaw's cron integration is

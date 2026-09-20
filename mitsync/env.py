@@ -1,27 +1,43 @@
-"""`.env` loading for secrets (Canvas token, LLM API key).
+"""
+# Dotenv Loading
 
-Why here and why called from `config.load_settings()`
------------------------------------------------------
-Every path that reads a secret goes through `Settings`: `CanvasSettings.token`
-and `LLMSettings.api_key` read `os.environ` lazily, and `resolve_driver()`
-depends on the latter. `load_settings()` is therefore the one choke point that
-covers *all* consumers -- every `mitsync` subcommand (they all call
-`cli._settings()`), `doctor`, direct library use from tests, and OpenClaw
-skills that import `mitsync` without ever touching the Typer app. Wiring the
-loader into the Typer `@app.callback()` alone would miss those last two, so
-`load_settings()` calls `load_dotenv()` on every call (the settings object
-itself is cached, this is not) and the loader is idempotent and cheap.
+Where mitsync's secrets come from, and why the real environment always wins.
 
-Semantics
----------
-* Search order, each loaded if present, **first wins** for a given key:
-  `<repo>/.env` then `~/.openclaw/.env`.
-* The real environment always wins: a key already in `os.environ` is never
-  overwritten, because OpenClaw and cron wrappers inject vars deliberately and
-  a stale `.env` must not clobber them.
-* `MITSYNC_DOTENV=0` disables `.env` loading entirely.
-* Malformed lines are skipped with a debug log naming the line number. Values
-  are never logged.
+## 1. What This Module Does
+
+Finds `.env` files, parses them, and injects the keys that are not already set
+into `os.environ`. It returns a `{key: source label}` mapping so that whoever
+wants to report a secret's provenance -- `mitsync doctor` -- can, without the
+value ever being logged.
+
+## 2. Why This Module Exists
+
+The two secrets mitsync uses (a Canvas token and an LLM API key) are read
+lazily off `os.environ` by `Settings`, which is what keeps them out of every
+dump, task file and log line. Something still has to put them there for a user
+who does not want to export variables by hand, and that something must run for
+*every* consumer: each subcommand, `doctor`, tests using the library directly,
+and OpenClaw skills that import `mitsync` without ever touching the Typer app.
+Wiring the loader into the Typer callback would have missed the last two, so
+`config.load_settings()` calls this on every invocation instead.
+
+## 3. How It Fits in the Architecture
+
+A near-leaf, below `config` and imported by it and by `cli doctor`. It holds no
+state of its own: re-running the loader is cheap, injects nothing twice, and
+reports the same mapping.
+
+## 4. Key Concepts
+
+**Search order, first wins.** `<repo>/.env`, then `~/.openclaw/.env`.
+
+**The real environment always wins.** A key already present in `os.environ` is
+never overwritten, because OpenClaw wrappers and cron jobs inject variables
+deliberately and a stale `.env` must not clobber them. `MITSYNC_DOTENV=0`
+disables the whole mechanism.
+
+**Values are never logged.** A malformed line is skipped with a debug message
+naming the line number only.
 """
 
 from __future__ import annotations
@@ -40,10 +56,6 @@ ENVIRONMENT = "environment"
 REPO_DOTENV = "_agent/.env"
 OPENCLAW_DOTENV = "~/.openclaw/.env"
 NOT_SET = "not set"
-
-# Keys injected from a .env file -> the label of the file they came from.
-_SOURCES: dict[str, str] = {}
-_LOADED = False
 
 
 def dotenv_disabled() -> bool:
@@ -94,21 +106,17 @@ def dotenv_files(paths: Paths | None = None) -> list[tuple[Path, str]]:
     ]
 
 
-def load_dotenv(paths: Paths | None = None, force: bool = False) -> dict[str, str]:
+def load_dotenv(paths: Paths | None = None) -> dict[str, str]:
     """Inject `.env` values into `os.environ` without overwriting real env vars.
 
-    Idempotent: after the first call this returns the recorded sources without
-    re-reading anything, unless `force=True`. Returns `{key: source label}` for
-    the keys that came from a file.
+    Returns `{key: source label}` for every key a `.env` file supplied whose
+    value is the one now live in `os.environ` -- so a key the real environment
+    already held (with a different value) is absent, and a repeated call reports
+    the same mapping without changing anything.
     """
-    global _LOADED
-    if _LOADED and not force:
-        return dict(_SOURCES)
-    _LOADED = True
     if dotenv_disabled():
-        _SOURCES.clear()
         return {}
-    injected: dict[str, str] = {}
+    sources: dict[str, str] = {}
     for path, label in dotenv_files(paths):
         try:
             if not path.is_file():
@@ -118,24 +126,10 @@ def load_dotenv(paths: Paths | None = None, force: bool = False) -> dict[str, st
             log.debug("could not read %s: %s", path, type(exc).__name__)
             continue
         for key, value in parse_dotenv(text, origin=str(path)).items():
-            if key in os.environ or key in injected:
-                continue  # real environment, and earlier files, win
-            os.environ[key] = value
-            injected[key] = label
-    _SOURCES.clear()
-    _SOURCES.update(injected)
-    return dict(injected)
-
-
-def source_of(name: str) -> str:
-    """Where `name`'s current value came from: a `.env` label, `environment`, or `not set`."""
-    if not os.environ.get(name):
-        return NOT_SET
-    return _SOURCES.get(name, ENVIRONMENT)
-
-
-def reset() -> None:
-    """Forget that a load happened (tests only; does not unset variables)."""
-    global _LOADED
-    _LOADED = False
-    _SOURCES.clear()
+            if key in sources:
+                continue  # an earlier, higher-precedence file already supplied it
+            if key not in os.environ:
+                os.environ[key] = value  # the real environment always wins
+            if os.environ[key] == value:
+                sources[key] = label
+    return sources

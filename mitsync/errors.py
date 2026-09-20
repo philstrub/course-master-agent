@@ -1,4 +1,54 @@
-"""Exception hierarchy shared by every mitsync module."""
+"""
+# Errors
+
+The typed failures mitsync is allowed to raise, and what each one means.
+
+## 1. What This Module Does
+
+Defines `MitsyncError` and one subclass per *expected* failure mode, plus
+`EXIT_PENDING_JUDGMENT` -- the exit code (20) that means a task file is waiting
+for a driving agent to judge it.
+
+## 2. Why This Module Exists
+
+This repo forbids defensive code: library functions raise rather than
+returning an empty default, and exception handling is confined to two
+boundaries -- the CLI entry point, and genuinely external failure. That rule
+only works if there is a single vocabulary of failures to catch. `cli.run()`
+can turn any escaped error into a one-line message and exit 1 precisely
+because everything that escapes is a `MitsyncError`; a raw
+`httpx.HTTPStatusError` or `yaml.YAMLError` reaching the user is a bug in
+whichever boundary let it through.
+
+Each class also carries its own remediation text. An operator holding a failed
+run should not need the source to know what to do next -- hence "regenerate it
+in Canvas > Account > Settings" rather than "401".
+
+## 3. How It Fits in the Architecture
+
+A leaf: it imports nothing from mitsync and nearly everything imports it.
+`canvas_client` translates HTTP into the `Canvas*` family, `calendar_read`
+raises `CalendarAccessDenied`, `config` raises `ConfigError`, `graph` raises
+`OntologyError`, and the judgment drivers raise `JudgeUnavailable` and
+`PendingJudgment`.
+
+## 4. Key Concepts
+
+**Not every error is a failure.** `CanvasAccessDenied` (a course with its
+Files tab hidden) and `CanvasFeatureDisabled` (a 404 that only means the course
+turned Pages off) are expected: the caller records a notice and keeps walking.
+They are deliberately separate from `CanvasNotFound`, which is a genuine miss
+worth reporting -- one noisy class would drown the real errors.
+
+**`CanvasWriteRefused` is a guardrail, not a diagnosis.** It is raised before
+the request leaves the process. Canvas holds graded work, so read-only is
+enforced at the client chokepoint rather than trusted to caller discipline.
+
+**`PendingJudgment` is control flow, not an error.** It carries the task file
+path and the instructions for resolving it, and the CLI turns it into exit
+code 20. Code that catches `MitsyncError` broadly must re-raise this one first;
+swallowing it turns the agent driver into a silent no-op.
+"""
 
 from __future__ import annotations
 

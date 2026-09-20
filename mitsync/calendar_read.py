@@ -1,51 +1,98 @@
-"""Apple Calendar, read-only by construction.
+"""
+# Calendar (Read-Only)
 
-mitsync never mutates the student's calendar. This module shells out to an
-EventKit CLI (``ical-guy`` by default; ``ekctl``'s JSON shape is also
-understood) and asks it for events in a date range -- that is the only
-sub-command that appears anywhere in this file, and the only one that ever
-will. There is deliberately no function here that stores an event, and the
-test-suite asserts structurally that no argv token in this module could be
-mistaken for one. If you are tempted to add one: don't. It is the guardrail,
-not an oversight.
+Apple Calendar events for the student's courses, read through an EventKit CLI
+and never written to.
 
-macOS calendar access is gated by TCC. The grant is given to the *terminal
-application* that runs the binary, interactively, once. A background or
-launchd job can never be prompted -- it just gets an access error -- so this
-module raises :class:`~mitsync.errors.CalendarAccessDenied` with that
-explanation rather than pretending the calendar is empty.
+## 1. What This Module Does
 
-The exact command line issued for ``ical-guy`` is::
+Shells out to an EventKit command-line tool (`ical-guy` by default; `ekctl`'s
+JSON shape is also understood), asks it for the events in a date range,
+normalises the reply into `Event` value objects, and tags each one with the
+course folder it belongs to using `config/courses.yml`.
+
+## 2. Why This Module Exists
+
+Canvas knows what is due; only the calendar knows when class actually meets.
+The briefing needs both. Reading the calendar out of process, through a CLI,
+also keeps EventKit -- and the macOS-only dependency it brings -- out of the
+rest of the tool.
+
+mitsync never mutates the student's calendar. Asking for a query sub-command is
+the only thing that appears anywhere in this file and the only thing that ever
+will. There is deliberately no function here that stores an event, and the test
+suite asserts structurally that no argv token in this module could be mistaken
+for one. If you are tempted to add one: don't. It is the guardrail, not an
+oversight.
+
+## 3. How It Fits in the Architecture
+
+`deadlines` is the only consumer, and it treats this module as best-effort:
+an unavailable calendar is a reported gap in the briefing, never a failed run.
+Course tagging is read from `course_map`, so this module never imports the
+filing or Canvas machinery.
+
+## 4. Key Concepts
+
+**TCC is granted to the terminal, interactively, once.** macOS calendar access
+is gated by TCC, and the grant belongs to the *terminal application* that runs
+the binary. A background or launchd job can never be prompted -- it just gets
+an access error forever -- so a denial raises `CalendarAccessDenied` carrying
+the exact command to run by hand, rather than pretending the calendar is empty.
+
+**The exact command line, and why each part of it.** For `ical-guy`:
 
     ical-guy events list --from YYYY-MM-DD --to YYYY-MM-DD
         --format json --group-by none
 
-Verified against **ical-guy 0.13.0** on 2026-09-20 (``ical-guy events list
---help`` plus the installed man page, ``ical-guy.1``, dated 2026-04-13).
-``events list`` is a *sub-command pair*: ``events`` alone is the parent group
-and ``list`` its default child. There is no ``--json`` flag -- the format is
-selected with ``--format json``, which also pins the output when stdout is a
-TTY. The dates are plain *local* calendar dates: 0.13.0 rejects a full ISO 8601
-timestamp, and a UTC date would roll the window forward a day every evening
-for anyone east of the prime meridian's shadow (see :func:`_day`).
-``--group-by none`` is passed explicitly because the grouping mode
-changes the JSON *shape* (``date`` and ``calendar`` wrap events in group
-objects) and because it can otherwise be set behind our back by the user's
-``~/.config/ical-guy/config.toml``.
+Verified against **ical-guy 0.13.0** on 2026-09-20 (`ical-guy events list
+--help` plus the installed man page, `ical-guy.1`, dated 2026-04-13).
+`events list` is a *sub-command pair*: `events` alone is the parent group and
+`list` its default child. There is no `--json` flag -- the format is selected
+with `--format json`, which also pins the output when stdout is a TTY.
+`--group-by none` is passed explicitly because the grouping mode changes the
+JSON *shape* (`date` and `calendar` wrap events in group objects) and because
+it can otherwise be set behind our back by the user's
+`~/.config/ical-guy/config.toml`.
 
-The documented event object (man page section OUTPUT > JSON Output, confirmed
-against live output) carries ``id``, ``title``, ``startDate``, ``endDate``,
-``isAllDay``, ``location``, ``notes``, ``url``, ``meetingUrl``,
-``meetingVendor``, ``calendar`` (an object with ``id``/``title``/``type``/
-``source``/``color``), ``attendees``, ``organizer``, ``recurrence``,
-``status``, ``availability``, ``timeZone``, ``creationDate`` and
-``lastModifiedDate``. We read only a handful of those and ignore the rest, and
-the key lookups below accept several spellings so a CLI rename degrades to a
-missing field rather than a ``KeyError``.
+**Dates are plain local calendar dates.** Two bugs, both found the hard way
+against 0.13.0. It rejects a full ISO 8601 timestamp (`Invalid date format:
+'2026-09-20T18:00:19.811774+00:00'`) and asks for `YYYY-MM-DD`. And the date
+must be the *local* one: `datetime.now(UTC)` at 20:00 in America/New_York is
+already the next day in UTC, so formatting the UTC date would silently shift
+the whole window forward by a day every evening. `--from`/`--to` are inclusive
+whole days, which is the right granularity for a lookahead window anyway.
 
-If a future ical-guy changes this interface, the symptom is an exit-64 usage
-error from :func:`read_events`; re-run the three ``--help`` commands and update
-``_QUERY_ARGV`` here.
+**The documented event object** (man page section OUTPUT > JSON Output,
+confirmed against live output) carries `id`, `title`, `startDate`, `endDate`,
+`isAllDay`, `location`, `notes`, `url`, `meetingUrl`, `meetingVendor`,
+`calendar` (an object with `id`/`title`/`type`/`source`/`color`), `attendees`,
+`organizer`, `recurrence`, `status`, `availability`, `timeZone`,
+`creationDate` and `lastModifiedDate`. Only a handful are read; the rest are
+ignored.
+
+**Why exceptions are caught here.** A third-party binary is a genuinely
+external failure, and this is that boundary. Each handler translates one
+foreign failure into an actionable message:
+
+1. Missing binary (`shutil.which` miss, or a `FileNotFoundError` from a race)
+   -- a warning plus an empty list, with install instructions. The calendar is
+   optional; the rest of the tool still works.
+2. A denial, matched on the exit status and stderr wording -- raised as
+   `CalendarAccessDenied`, because a silent empty list would hide a fixable
+   permission problem forever.
+3. `subprocess.TimeoutExpired` -- EventKit can stall when a permission prompt
+   is waiting on a window nobody can see; never hang a sync behind it.
+4. Malformed JSON from the CLI -- raised with the first 200 characters quoted,
+   so the operator can see what arrived instead.
+5. A non-zero exit that is not a denial -- the CLI's own stderr, verbatim. If a
+   future ical-guy changes this interface the symptom is an exit-64 usage
+   error, and the fix is to re-run the three `--help` commands and update
+   `_QUERY_ARGV`.
+
+The multi-spelling key lookups (`_START_KEYS` and friends) are the same
+instinct applied to data rather than control flow: a CLI that renames a field
+should degrade to a missing value, not a `KeyError` in the middle of a run.
 """
 
 from __future__ import annotations
@@ -60,6 +107,8 @@ from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
+from .clock import parse_iso
+from .course_map import load_course_map
 from .errors import CalendarAccessDenied, MitsyncError
 from .logging import get_logger
 
@@ -132,7 +181,7 @@ class Event:
     all_day: bool = False
     course: str | None = None
 
-    # -- dict-ish access, so the CLI's generic table renderer works on us ----
+    # -- dict-ish access, so a generic table renderer can treat us as a row ----
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["when"] = self.when
@@ -343,9 +392,9 @@ def _to_event(raw: dict[str, Any]) -> Event:
 def _parse_dt(value: str | None) -> datetime | None:
     if not value:
         return None
-    text = str(value).strip().replace("Z", "+00:00")
+    text = str(value).strip()
     try:
-        return datetime.fromisoformat(text)
+        return parse_iso(text)
     except ValueError:
         for fmt in ("%Y-%m-%d %H:%M:%S %z", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
@@ -367,13 +416,7 @@ def _number_variants(number: str) -> set[str]:
 
 
 def _course_tagger(settings: Settings):
-    from .organize import load_course_map
-
-    try:
-        entries = load_course_map(settings)
-    except MitsyncError as exc:  # a broken courses.yml must not break reading
-        log.warning("cannot read the course map (%s); events will be untagged", exc)
-        entries = []
+    entries = load_course_map(settings)
 
     table: list[tuple[str, list[str]]] = []
     for entry in entries:

@@ -1,13 +1,50 @@
-"""What is due, and the daily briefing that says so.
+"""
+# Deadlines
 
-Everything here is derived from state already on disk -- the ``_meta/*.json``
-files :mod:`mitsync.sync` wrote, the manifest, and (best-effort) the calendar.
-Nothing calls the network, and nothing is computed from "time since the last
-run", so a laptop that was shut for a week catches up correctly instead of
-skipping the window it missed.
+What is due, and the daily briefing that says so.
 
-Both outputs degrade rather than crash: a missing calendar, a missing
-``_meta`` file or an empty manifest becomes a reported gap in the briefing.
+## 1. What This Module Does
+
+Merges three sources into one answer: Canvas `planner/items` and per-course
+assignments (both read from the `_meta/*.json` files `sync` already wrote),
+and today's calendar events. `build_due` writes `_kb/due.json`;
+`write_briefing` writes `_kb/briefings/<YYYY-MM-DD>.md`.
+
+## 2. Why This Module Exists
+
+"What do I actually have to do this week?" is the question the whole tool
+exists to answer, and no single source can answer it: Canvas knows the
+deadlines, the calendar knows when the class meets, and neither knows which
+of them the student has already handled.
+
+## 3. How It Fits in the Architecture
+
+Pure derivation -- it reads state on disk and calls no network. It sits above
+`config.read_meta`, `course_map` and `calendar_read`, and deliberately imports
+neither `sync` nor `organize`, so reading local JSON does not drag in the
+Canvas client or `httpx`.
+
+## 4. Key Concepts
+
+**Catch-up safety.** Nothing is computed from "time since the last run", so a
+laptop that was shut for a week produces a correct briefing rather than
+skipping the window it missed. The briefing reports its own staleness from the
+manifest's last successful sync.
+
+**Absent is not corrupt.** A missing calendar, a missing `_meta` file or an
+empty manifest is a *reported gap*, carried in `DueReport.warnings` and shown
+in the briefing. A `_meta` file that is not valid JSON, or a `courses.yml`
+that does not parse, means something upstream wrote garbage and raises -- a
+briefing that quietly omits half a term is worse than no briefing.
+
+**Why an exception is caught here.** `CalendarAccessDenied` and a calendar
+CLI failure become a warning, not an error, because an unavailable calendar is
+a correct answer: the briefing still lists every Canvas deadline and says the
+calendar could not be read. Inventing a class time would be the failure.
+
+**Ties are the common case.** A whole course's assignments land at 23:59, so
+anything that orders deadlines must break ties explicitly rather than falling
+through to comparing the items themselves.
 """
 
 from __future__ import annotations
@@ -21,6 +58,9 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.table import Table
 
+from .clock import now_iso, parse_iso
+from .config import read_json, read_meta
+from .course_map import load_course_map
 from .errors import CalendarAccessDenied, MitsyncError
 from .logging import get_logger
 
@@ -30,7 +70,7 @@ if TYPE_CHECKING:  # pragma: no cover
 log = get_logger(__name__)
 console = Console()
 
-__all__ = ["DueReport", "build_due", "write_briefing"]
+__all__ = ["DueReport", "build_due", "last_sync", "write_briefing"]
 
 BRIEFING_WINDOW_DAYS = 7
 
@@ -47,58 +87,26 @@ class DueReport:
 # --------------------------------------------------------------------------
 # reading what sync left behind
 # --------------------------------------------------------------------------
-def _read_meta(path: Path, warnings: list[str]) -> list[dict[str, Any]]:
-    if not path.exists():
-        warnings.append(f"missing {path.name} ({path}) — run `mitsync sync`")
-        return []
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        warnings.append(f"cannot read {path}: {exc}")
-        return []
-    items = doc.get("items") if isinstance(doc, dict) else doc
-    return [i for i in items or [] if isinstance(i, dict)]
-
-
 def _course_folders(settings: Settings) -> dict[str, str]:
     """Mirror folder -> the student's folder name (falling back to itself)."""
-    from .organize import load_course_map
-
     mapping: dict[str, str] = {}
-    try:
-        entries = load_course_map(settings)
-    except MitsyncError as exc:
-        log.warning("course map unreadable (%s)", exc)
-        entries = []
+    entries = load_course_map(settings)
     by_canvas_id = {str(e.get("canvas_id")): str(e.get("folder") or "") for e in entries}
 
     for meta in sorted(settings.paths.canvas_mirror.glob("*/_meta/courses.json")):
         mirror = meta.parent.parent.name
-        course_id = None
-        try:
-            doc = json.loads(meta.read_text(encoding="utf-8"))
-            course_id = str(doc.get("course_canvas_id") or "")
-        except (OSError, json.JSONDecodeError):
-            pass
-        mapping[mirror] = by_canvas_id.get(course_id or "", "") or mirror
+        course_id = str(read_json(meta).get("course_canvas_id") or "")
+        mapping[mirror] = by_canvas_id.get(course_id, "") or mirror
     return mapping
 
 
 def _course_by_canvas_id(settings: Settings) -> dict[str, str]:
-    from .organize import load_course_map
-
     out: dict[str, str] = {}
-    try:
-        for entry in load_course_map(settings):
-            if entry.get("canvas_id") is not None and entry.get("folder"):
-                out[str(entry["canvas_id"])] = str(entry["folder"])
-    except MitsyncError:
-        pass
+    for entry in load_course_map(settings):
+        if entry.get("canvas_id") is not None and entry.get("folder"):
+            out[str(entry["canvas_id"])] = str(entry["folder"])
     for meta in sorted(settings.paths.canvas_mirror.glob("*/_meta/courses.json")):
-        try:
-            doc = json.loads(meta.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
+        doc = read_json(meta)
         course_id = str(doc.get("course_canvas_id") or "")
         if course_id and course_id not in out:
             out[course_id] = meta.parent.parent.name
@@ -130,7 +138,11 @@ def _assignment_items(settings: Settings, warnings: list[str]) -> list[dict[str,
     )
     for course_dir in mirror_dirs:
         course = folders.get(course_dir.name, course_dir.name)
-        for raw in _read_meta(course_dir / "_meta" / "assignments.json", warnings):
+        meta = course_dir / "_meta" / "assignments.json"
+        if not meta.exists():
+            warnings.append(f"missing {meta.name} ({meta}) — run `mitsync sync`")
+            continue
+        for raw in read_meta(meta):
             out.append(
                 {
                     "course": course,
@@ -152,7 +164,7 @@ def _planner_items(settings: Settings, warnings: list[str]) -> list[dict[str, An
         return []
     by_id = _course_by_canvas_id(settings)
     out: list[dict[str, Any]] = []
-    for raw in _read_meta(path, warnings):
+    for raw in read_meta(path):
         plannable = raw.get("plannable") if isinstance(raw.get("plannable"), dict) else {}
         course_id = str(raw.get("course_id") or "")
         submissions = raw.get("submissions")
@@ -222,12 +234,13 @@ def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(best.values())
 
 
-def _sort_key(item: dict[str, Any]) -> tuple[int, str, str, str]:
-    due = item.get("due_at") or ""
-    return (1 if not due else 0, due, item.get("course") or "", item.get("title") or "")
+def last_sync(settings: Settings) -> str | None:
+    """When `mitsync sync` last finished, per the manifest `runs` table.
 
-
-def _last_sync(settings: Settings) -> str | None:
+    The manifest is the authority: it records the run, not a side effect of one.
+    Everything that reports sync freshness -- the briefing, `_kb/AGENTS.md` --
+    reads it here so the two can never disagree.
+    """
     db = settings.paths.manifest_db
     if not db.exists():
         return None
@@ -235,7 +248,9 @@ def _last_sync(settings: Settings) -> str | None:
 
     with Manifest(db) as man:
         run = man.last_run("sync")
-    return (run or {}).get("finished") or (run or {}).get("started")
+    if run is None:
+        return None
+    return run["finished"] or run["started"]
 
 
 def build_due(settings: Settings) -> DueReport:
@@ -244,16 +259,23 @@ def build_due(settings: Settings) -> DueReport:
     items = _planner_items(settings, report.warnings)
     items += _assignment_items(settings, report.warnings)
     items += _calendar_items(settings, report)
-    report.items = sorted(_dedupe(items), key=_sort_key)
+    report.items = sorted(
+        _dedupe(items),
+        key=lambda i: (
+            1 if not i.get("due_at") else 0,
+            i.get("due_at") or "",
+            i.get("course") or "",
+            i.get("title") or "",
+        ),
+    )
     report.warnings = list(dict.fromkeys(report.warnings))
-    report.last_sync = _last_sync(settings)
+    report.last_sync = last_sync(settings)
     if report.last_sync is None:
         report.warnings.append("no successful `mitsync sync` recorded yet")
 
     path = settings.paths.kb / "due.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
     document = {
-        "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "generated_at": now_iso(),
         "last_sync": report.last_sync,
         "calendar_available": report.calendar_ok,
         "warnings": report.warnings,
@@ -290,22 +312,14 @@ def _due_table(report: DueReport) -> Table:
 def _parse(value: str | None) -> datetime | None:
     if not value:
         return None
-    text = str(value).strip().replace("Z", "+00:00")
     try:
-        parsed = datetime.fromisoformat(text)
+        parsed = parse_iso(value)
     except ValueError:
         try:
-            parsed = datetime.fromisoformat(text[:10])
+            parsed = parse_iso(str(value).strip()[:10])
         except ValueError:
             return None
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
-
-
-def _previous_briefing(settings: Settings, today: Path) -> datetime | None:
-    earlier = sorted(p for p in settings.paths.kb_briefings.glob("*.md") if p.name != today.name)
-    if not earlier:
-        return None
-    return _parse(earlier[-1].stem)
 
 
 def _recent_materials(settings: Settings, since: datetime | None) -> list[tuple[str, str, str]]:
@@ -351,9 +365,9 @@ def write_briefing(settings: Settings) -> Path:
     horizon = now + timedelta(days=BRIEFING_WINDOW_DAYS)
 
     briefings = settings.paths.kb_briefings
-    briefings.mkdir(parents=True, exist_ok=True)
     path = briefings / f"{now.strftime('%Y-%m-%d')}.md"
-    previous = _previous_briefing(settings, path)
+    earlier = sorted(p for p in briefings.glob("*.md") if p.name != path.name)
+    previous = _parse(earlier[-1].stem) if earlier else None
 
     upcoming = []
     undated = []
@@ -387,7 +401,10 @@ def write_briefing(settings: Settings) -> Path:
     if upcoming:
         lines.append("| when | course | what | type | done |")
         lines.append("| --- | --- | --- | --- | --- |")
-        for due, item in sorted(upcoming):
+        # Sort on the timestamp alone. A bare sorted() falls through to
+        # comparing the dicts when two deadlines share a due time, which is
+        # common (a course's items all land at 23:59) and raises TypeError.
+        for due, item in sorted(upcoming, key=lambda p: (p[0], p[1]["course"], p[1]["title"])):
             lines.append(
                 f"| {due.strftime('%a %d %b %H:%M')} | {item['course']} | {item['title']} "
                 f"| {item['type']} | {'yes' if item['submitted'] else ''} |"

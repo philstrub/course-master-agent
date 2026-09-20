@@ -22,7 +22,8 @@ bolted onto an API-only design.
 ## Decision
 
 Every judgment-requiring command takes a `Judge` interface
-(`judge(task, payload, schema) -> dict`) rather than a model client. Three
+(`judge(self, task: JudgeTask) -> dict`, in `mitsync/llm/base.py`) rather
+than a model client. Three
 implementations exist:
 
 - `api` — calls a configured cloud provider directly and returns its
@@ -46,8 +47,8 @@ by a grep-based guardrail test.
   common case for a student not wanting to pay for/manage an API key, and
   is exactly the mode the "downstream agent" secondary user exercises.
 - `--driver api` and `--driver agent` are required to produce identical
-  on-disk results for the same input (verified by the dual-mode parity
-  test in `docs/ENGINEERING_PLAN.md`), which constrains task-file schemas
+  on-disk results for the same input (exercised by
+  `tests/test_llm_drivers.py`), which constrains task-file schemas
   to be precise enough that either a model or a human/agent can satisfy
   them unambiguously.
 - Extra implementation cost: every judgment call site needs a defined

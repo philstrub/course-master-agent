@@ -1,13 +1,60 @@
-"""Deterministic text extraction: course documents -> `_kb/text/*.md`.
+"""
+# Extract
 
-No judgment, no model, no network. Every supported document in the Canvas
-mirror and in the student's own course folders is converted to markdown with
-YAML frontmatter recording where it came from. The output filename is the
-SHA-1 of the workspace-relative source path, so a source maps to exactly one
-text file forever.
+Course documents to plain markdown in `_kb/text/`, deterministically.
 
-Extraction is idempotent: a second run over unchanged sources rewrites
-nothing. `force=True` re-extracts regardless.
+## 1. What This Module Does
+
+Walks the Canvas mirror and the student's own course folders, converts every
+supported document (PDF, notebook, markdown, text, CSV) into markdown with
+YAML frontmatter recording where it came from, and writes it under
+`_kb/text/`. No judgment, no model, no network.
+
+## 2. Why This Module Exists
+
+Everything downstream that reasons about course content -- graph extraction,
+course notes, search -- needs the text, not the container. Doing that
+conversion once, deterministically, into a stable location means the expensive
+and non-deterministic parts of the tool never have to open a PDF, and a
+re-run costs nothing.
+
+## 3. How It Fits in the Architecture
+
+Between filing and knowledge: `sync` and `organize` put documents on disk,
+`extract` turns them into text, `graph` and `kb` read that text. It is pure
+I/O, so `mitsync extract` can never produce a pending judgment.
+
+## 4. Key Concepts
+
+**One source, one text file, forever.** The output filename is the SHA-1 of
+the workspace-relative source path, so a document always maps to the same
+text file and frontmatter always says which source it came from.
+
+**Idempotent.** A second run over unchanged sources rewrites nothing; the
+frontmatter's `source_sha256` (or size and mtime for files too large to hash)
+decides. `EXTRACTOR_VERSION` forces a re-extraction when the output shape
+changes. `force=True` re-extracts regardless.
+
+**The tool must never index itself.** `source_roots` judges each candidate
+root by its *resolved* target, not its name, because the OpenClaw setup
+symlinks `<workspace>/skills` at `_agent/skills`. `_agent/`, `_kb/` and every
+ignored subtree are pruned, and `tests/test_workspace_boundaries.py` enforces
+it. Repo files appearing in `_kb/` is a bug to report, not content to process.
+
+**Large documents are truncated, large datasets are sampled.** Text is capped
+at `MAX_TEXT_CHARS` with the truncation recorded in frontmatter and in the
+report; a CSV contributes its header and the first `CSV_SAMPLE_ROWS` rows,
+never the whole dataset. Notebook outputs and raw cells are dropped.
+
+**Why exceptions are caught here.** The parser boundary, and nothing else.
+PyMuPDF raises arbitrary types on a malformed PDF, and the stdlib readers
+raise `OSError`, `json.JSONDecodeError` and `csv.Error` on files the tool did
+not write; all of them are translated into `ExtractionFailed`, naming the file
+and, for a PDF, the page. `extract_all` records that in the report and keeps
+going -- one corrupt file must not end the run. A document that cannot be read
+is *failed*, never partially emitted: a placeholder page would otherwise reach
+the knowledge base and the judgment payloads as if it were the document's real
+content.
 """
 
 from __future__ import annotations
@@ -19,12 +66,12 @@ import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import frontmatter
 
+from .clock import now_iso
 from .logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -112,30 +159,24 @@ def source_roots(settings: Settings) -> list[Path]:
 
 def iter_sources(settings: Settings) -> Iterator[Path]:
     """Yield every candidate document, with ignored subtrees pruned."""
-    ws = settings.paths.workspace
+    paths = settings.paths
     for root in source_roots(settings):
         for dirpath, dirnames, filenames in os.walk(root):
             here = Path(dirpath)
             dirnames[:] = sorted(
                 d
                 for d in dirnames
-                if not settings.should_ignore(_rel(ws, here / d)) and not d.startswith(".")
+                if not settings.should_ignore(paths.safe_relative(here / d).as_posix())
+                and not d.startswith(".")
             )
             for name in sorted(filenames):
                 path = here / name
-                rel = _rel(ws, path)
+                rel = paths.safe_relative(path).as_posix()
                 if settings.should_ignore(rel) or name.startswith("."):
                     continue
                 if path.suffix.lower() not in SUPPORTED and path.suffix.lower() not in UNSUPPORTED:
                     continue
                 yield path
-
-
-def _rel(workspace: Path, path: Path) -> str:
-    try:
-        return path.resolve().relative_to(workspace).as_posix()
-    except ValueError:
-        return path.as_posix()
 
 
 def course_of(rel: str) -> str:
@@ -178,8 +219,10 @@ def _pdf_to_text(path: Path) -> tuple[str, dict[str, int]]:
         for i, page in enumerate(doc, start=1):
             try:
                 body = page.get_text("text")
-            except Exception as exc:  # noqa: BLE001
-                body = f"[page {i} could not be read: {exc}]"
+            except Exception as exc:  # noqa: BLE001 -- mupdf raises many types
+                # Fail the whole document. A placeholder here would land in the
+                # KB and in judgment payloads as if it were the page's content.
+                raise ExtractionFailed(f"page {i} is unreadable: {exc}") from exc
             chunks.append(f"## page {i}\n\n{body.strip()}")
         pages = doc.page_count
     return "\n\n".join(chunks), {"pages": pages}
@@ -266,35 +309,14 @@ _CONVERTERS = {
 # extraction
 # --------------------------------------------------------------------------
 def _sha256(path: Path) -> str | None:
-    try:
-        if path.stat().st_size > HASH_MAX_BYTES:
-            return None
-        h = hashlib.sha256()
-        with path.open("rb") as fh:
-            for block in iter(lambda: fh.read(1 << 20), b""):
-                h.update(block)
-        return h.hexdigest()
-    except OSError:
+    """Digest of `path`, or None when it is too large to be worth hashing."""
+    if path.stat().st_size > HASH_MAX_BYTES:
         return None
-
-
-def _title(path: Path) -> str:
-    stem = path.stem.replace("_", " ").replace("-", " ").strip()
-    return " ".join(stem.split()) or path.name
-
-
-def _is_current(out: Path, digest: str | None, size: int, mtime: int) -> bool:
-    """True if `out` was produced from this exact source by this extractor."""
-    try:
-        post = frontmatter.load(out)
-    except (OSError, ValueError):
-        return False
-    meta = post.metadata
-    if str(meta.get("extractor_version")) != EXTRACTOR_VERSION:
-        return False
-    if digest and meta.get("source_sha256"):
-        return str(meta["source_sha256"]) == digest
-    return meta.get("source_bytes") == size and meta.get("source_mtime") == mtime
+    h = hashlib.sha256()
+    with path.open("rb") as fh:
+        for block in iter(lambda: fh.read(1 << 20), b""):
+            h.update(block)
+    return h.hexdigest()
 
 
 def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path | None:
@@ -304,8 +326,7 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
     `extract_all` record that in the report rather than aborting the run.
     """
     src = Path(src)
-    ws = settings.paths.workspace
-    rel = _rel(ws, src)
+    rel = settings.paths.safe_relative(src).as_posix()
     if settings.should_ignore(rel):
         return None
     kind = SUPPORTED.get(src.suffix.lower())
@@ -324,8 +345,18 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
 
     out = text_path_for(settings, rel)
     digest = _sha256(src)
-    if not force and out.exists() and _is_current(out, digest, stat.st_size, int(stat.st_mtime)):
-        return None
+    if not force and out.exists():
+        # Already current? `digest` is None only above HASH_MAX_BYTES; those, and
+        # only those, fall back to comparing size and mtime.
+        prior = frontmatter.load(out).metadata
+        current = str(prior.get("extractor_version")) == EXTRACTOR_VERSION and (
+            str(prior.get("source_sha256")) == digest
+            if digest is not None
+            else prior.get("source_bytes") == stat.st_size
+            and prior.get("source_mtime") == int(stat.st_mtime)
+        )
+        if current:
+            return None
 
     body, counts = _CONVERTERS[kind](src)
     truncated = False
@@ -336,9 +367,9 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
     meta: dict[str, object] = {
         "source": rel,
         "course": course_of(rel),
-        "title": _title(src),
+        "title": " ".join(src.stem.replace("_", " ").replace("-", " ").split()) or src.name,
         "content_type": kind,
-        "extracted_at": datetime.now(UTC).isoformat(),
+        "extracted_at": now_iso(),
         "extractor_version": EXTRACTOR_VERSION,
         "source_bytes": stat.st_size,
         "source_mtime": int(stat.st_mtime),
@@ -348,7 +379,6 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
         meta["source_sha256"] = digest
     meta.update(counts)
 
-    out.parent.mkdir(parents=True, exist_ok=True)
     post = frontmatter.Post(body.strip() + "\n", **meta)
     out.write_text(frontmatter.dumps(post) + "\n", encoding="utf-8")
     log.debug("extracted %s -> %s", rel, out.name)
@@ -358,11 +388,9 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
 def extract_all(settings: Settings, *, force: bool = False) -> ExtractReport:
     """Extract every supported document under the mirror and course folders."""
     report = ExtractReport()
-    settings.paths.kb_text.mkdir(parents=True, exist_ok=True)
-    ws = settings.paths.workspace
     for src in iter_sources(settings):
         report.scanned += 1
-        rel = _rel(ws, src)
+        rel = settings.paths.safe_relative(src).as_posix()
         try:
             out = extract_file(settings, src, force=force)
         except ExtractionFailed as exc:
@@ -377,11 +405,8 @@ def extract_all(settings: Settings, *, force: bool = False) -> ExtractReport:
             continue
         report.extracted += 1
         report.outputs.append(out)
-        try:
-            if frontmatter.load(out).metadata.get("truncated"):
-                report.truncated.append(rel)
-        except (OSError, ValueError):  # pragma: no cover - just written
-            pass
+        if frontmatter.load(out).metadata.get("truncated"):
+            report.truncated.append(rel)
     log.info("extract: %s", report.summary())
     print(f"extract: {report.summary()}")
     for rel, why in report.failed:
@@ -398,10 +423,7 @@ def extracted_index(settings: Settings) -> dict[str, Path]:
     if not text_dir.is_dir():
         return index
     for path in sorted(text_dir.glob("*.md")):
-        try:
-            meta = frontmatter.load(path).metadata
-        except (OSError, ValueError):
-            continue
+        meta = frontmatter.load(path).metadata
         src = meta.get("source")
         if isinstance(src, str) and src:
             index[src] = path

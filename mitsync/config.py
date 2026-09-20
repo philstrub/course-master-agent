@@ -1,18 +1,77 @@
-"""Settings loaded from config/settings.yml, validated with pydantic v2."""
+"""
+# Configuration
+
+`config/settings.yml`, validated once into the `Settings` object every command
+shares.
+
+## 1. What This Module Does
+
+Loads and validates the settings file into a pydantic tree (Canvas, LLM,
+calendar, graph, organize, ignore globs), decides which judgment driver a run
+will use, and answers "is this path excluded?" for every walk in the tool. It
+also holds the two readers for JSON that mitsync itself wrote -- `read_json`
+and `read_meta`.
+
+## 2. Why This Module Exists
+
+Validation happens at the boundary so business logic can trust its inputs: a
+typo'd key or an unsupported provider fails at load with the file named, not
+three modules later as an `AttributeError`. The file is entirely optional --
+every field has a default -- because mitsync must work on a fresh checkout with
+no configuration at all.
+
+Secrets deliberately are not part of the model. `CanvasSettings.token` and
+`LLMSettings.api_key` read `os.environ` lazily, so a token can never be
+serialized into a settings dump, a task file, or a log line.
+
+## 3. How It Fits in the Architecture
+
+Every command starts at `cli._settings()`, so `load_settings()` is the one
+choke point covering all consumers -- including tests and OpenClaw skills that
+import the library and never touch Typer. It therefore calls
+`env.load_dotenv()` on every call: the `Settings` object is cached, that call
+is not, so a cache hit still sees a `.env`.
+
+`read_meta` lives here rather than next to its writer in `sync.py` so that
+readers of the mirror metadata (`deadlines`, `course_map`) can parse a local
+JSON file without importing the Canvas sync machinery, and therefore `httpx`.
+
+## 4. Key Concepts
+
+**Driver resolution is the whole policy.** `resolve_driver()`: an explicit
+`--driver` flag beats `settings.llm.driver`, and `auto` means `api` when an API
+key is present and `agent` otherwise. Zero credentials is a supported default,
+not a degraded mode.
+
+**Ignore globs are a guardrail, not a preference.** `DEFAULT_IGNORE_GLOBS`
+lives in Python and not only in the YAML because the YAML is optional: a
+missing settings file must not silently switch off the exclusion of `.venv`,
+`site-packages`, `node_modules` and `nandatown`. Patterns are gitignore-style,
+where `**` crosses directory separators and `*` does not.
+
+**Why exceptions are caught here.** Three handlers, all of them translating a
+foreign failure into a typed error that names the file. `yaml.YAMLError` and
+pydantic's `ValidationError` become `ConfigError`; `json.JSONDecodeError`
+becomes a `MitsyncError` carrying the path, because the stdlib error reports a
+line and column but not a filename, which is useless to an operator holding a
+dozen state files. Corrupt config and corrupt state are never absorbed into an
+empty default -- they raise.
+"""
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
 from .env import load_dotenv
-from .errors import ConfigError
+from .errors import ConfigError, MitsyncError
 from .paths import Paths
 
 Driver = Literal["api", "agent", "rules"]
@@ -92,25 +151,15 @@ class CalendarSettings(BaseModel):
     lookahead_days: int = 14
 
 
-class Neo4jSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    uri: str | None = None
-    user: str | None = None
-    password_env: str | None = None
-
-
 class GraphSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    backend: Literal["duckdb", "neo4j"] = "duckdb"
-    neo4j: Neo4jSettings = Field(default_factory=Neo4jSettings)
+    backend: Literal["duckdb"] = "duckdb"
 
 
 class OrganizeSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    include_existing: bool = False
     link_mode: Literal["hardlink", "copy", "symlink"] = "hardlink"
 
 
@@ -120,6 +169,10 @@ DEFAULT_IGNORE_GLOBS = [
     "**/site-packages/**",
     "**/node_modules/**",
     "**/__pycache__/**",
+    # Guardrail 5 in CLAUDE.md. It lives here, not only in config/settings.yml,
+    # because settings.yml is optional -- a missing file must not silently turn
+    # the most-repeated exclusion in this repo off.
+    "**/nandatown/**",
 ]
 
 
@@ -175,6 +228,19 @@ def _compile_globs(globs: tuple[str, ...]) -> tuple[re.Pattern[str], ...]:
     return tuple(_glob_to_regex(g) for g in globs)
 
 
+def read_json(path: Path) -> Any:
+    """Read a JSON file mitsync itself wrote, naming the file if it is corrupt.
+
+    `json.JSONDecodeError` carries a line and column but not a filename, which
+    is useless to an operator holding a dozen state files. Corrupt state is a
+    real failure -- it is never absorbed into an empty default.
+    """
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise MitsyncError(f"{path} is not valid JSON: {exc}") from exc
+
+
 def _read_yaml(path: Path) -> dict:
     try:
         raw = yaml.safe_load(path.read_text()) or {}
@@ -214,3 +280,20 @@ def load_settings(path: Path | None = None) -> Settings:
 def clear_cache() -> None:
     """Drop the settings cache; tests and `doctor --reload` use this."""
     _load_cached.cache_clear()
+
+
+def read_meta(path: Path) -> list[dict[str, Any]]:
+    """The ``items`` array of one ``_canvas/<course>/_meta/*.json`` file.
+
+    Lives here rather than beside the writer in ``sync.py`` so that readers of
+    the mirror metadata (``deadlines``, ``course_map``) do not have to import
+    the Canvas sync machinery -- and therefore ``httpx`` -- to parse a local
+    JSON file. ``sync`` re-exports it so the format stays documented next to
+    the code that writes it.
+
+    A corrupt file raises (``read_json``); a *missing* one is the caller's
+    call, because only the caller knows whether it is a gap to report or a bug.
+    """
+    doc = read_json(path)
+    items = doc.get("items") if isinstance(doc, dict) else doc
+    return [i for i in items or [] if isinstance(i, dict)]

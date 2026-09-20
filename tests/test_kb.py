@@ -12,7 +12,7 @@ from mitsync import extract as extract_mod
 from mitsync import graph as graph_mod
 from mitsync import kb as kb_mod
 from mitsync.config import Settings
-from mitsync.errors import JudgeUnavailable
+from mitsync.errors import JudgeUnavailable, MitsyncError
 from mitsync.llm.base import JudgeTask, validate_result
 from tests.test_extract import make_notebook, make_pdf
 from tests.test_graph import EmptyJudge, StubJudge, concept_judge
@@ -287,3 +287,12 @@ def test_buckets_handle_folders_that_predate_organize() -> None:
     }
     for rel, expected in cases.items():
         assert kb_mod._bucket(rel) == expected, rel
+
+
+def test_a_corrupt_due_json_raises_instead_of_rendering_zero_items(built: Settings) -> None:
+    """A truncated due.json used to render as "0 item(s)" in INDEX.md."""
+    due = built.paths.kb / "due.json"
+    due.parent.mkdir(parents=True, exist_ok=True)
+    due.write_text('{"items": [')
+    with pytest.raises(MitsyncError, match="not valid JSON"):
+        kb_mod.build(built)

@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from mitsync.config import Settings, load_settings
-from mitsync.organize import load_course_map
+from mitsync.course_map import load_course_map
 from mitsync.paths import Paths
 from mitsync.sync import (
     SyncReport,

@@ -1,16 +1,15 @@
-"""deadlines.py (due.json + briefing) and notify.py."""
+"""deadlines.py: due.json and the daily briefing."""
 
 from __future__ import annotations
 
 import json
-import os
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 import yaml
 
-from mitsync import deadlines, notify
+from mitsync import deadlines
 from mitsync.config import Settings
 from mitsync.manifest import FileRecord, Manifest
 
@@ -253,52 +252,35 @@ def test_briefing_is_catch_up_safe(seeded: Settings) -> None:
     assert first.split("_Generated")[0] == second.split("_Generated")[0]
 
 
-# --------------------------------------------------------------------------
-# notify
-# --------------------------------------------------------------------------
-def test_notify_is_a_no_op_when_silenced(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("MITSYNC_NO_NOTIFY", "1")
-    assert notify.notify("title", "message") is False
+def test_two_deadlines_at_the_same_time_do_not_crash_the_briefing(settings, monkeypatch):
+    """Two items due at the identical timestamp must not raise.
 
+    `sorted(upcoming)` on `(datetime, dict)` pairs falls through to comparing
+    the dicts when the timestamps tie, which raises TypeError. Ties are the
+    common case -- a whole course's assignments land at 23:59 -- so this broke
+    `mitsync brief` outright on real data.
+    """
+    from mitsync import deadlines as dl
 
-def test_notify_never_raises_without_a_notifier(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("MITSYNC_NO_NOTIFY", raising=False)
-    monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-    assert notify.notify("title", "message", subtitle="sub") is False
+    same = (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="seconds")
 
+    def _item(course: str, title: str) -> dict:
+        return {
+            "due_at": same,
+            "course": course,
+            "title": title,
+            "type": "assignment",
+            "submitted": False,
+            "source": "planner",
+        }
 
-def test_notify_never_raises_when_the_notifier_explodes(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("MITSYNC_NO_NOTIFY", raising=False)
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    script = bindir / "terminal-notifier"
-    script.write_text("#!/bin/sh\nexit 3\n")
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
-    assert notify.notify('he said "hi"', "line\nbreak") is False
+    report = dl.DueReport()
+    report.items = [
+        _item("Analytics Edge", "Problem Set 2"),
+        _item("Optimization", "Recitation prep"),
+    ]
+    monkeypatch.setattr(dl, "build_due", lambda _settings: report)
 
-
-def test_notify_uses_terminal_notifier_when_present(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
-) -> None:
-    monkeypatch.delenv("MITSYNC_NO_NOTIFY", raising=False)
-    bindir = tmp_path / "bin"
-    bindir.mkdir()
-    log = bindir / "argv.txt"
-    script = bindir / "terminal-notifier"
-    script.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {log}\nexit 0\n')
-    script.chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
-
-    assert notify.notify("mitsync", "2 items due", subtitle="today") is True
-    argv = log.read_text().splitlines()
-    assert "-title" in argv and "mitsync" in argv and "today" in argv
-
-
-def test_applescript_quoting_escapes_quotes_and_backslashes() -> None:
-    assert notify._applescript_quote('a "b" \\ c') == 'a \\"b\\" \\\\ c'
-    assert "\n" not in notify._applescript_quote("a\nb")
+    body = dl.write_briefing(settings).read_text()
+    assert "Problem Set 2" in body
+    assert "Recitation prep" in body

@@ -510,65 +510,6 @@ def test_already_bucketed_files_are_left_alone(prepared: Settings) -> None:
 
 
 # --------------------------------------------------------------------------
-# course map
-# --------------------------------------------------------------------------
-def test_suggest_course_map_writes_nothing_without_apply(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
-
-    report = organize.suggest_course_map(settings, RulesJudge(settings))
-
-    assert report.written is False
-    assert not (settings.paths.config_dir / "courses.yml").exists()
-    assert report.mappings and report.mappings[0]["folder"] == "Machine Learning"
-    assert "courses:" in report.yaml_text
-
-
-def test_suggest_course_map_apply_writes_and_preserves_hand_edits(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
-    write_course_map(
-        settings,
-        [{"canvas_id": 1, "folder": "My Own Name", "course_number": "15.095", "aliases": ["ML"]}],
-    )
-
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
-
-    assert report.written is True
-    entries = organize.load_course_map(settings)
-    assert entries[0]["folder"] == "My Own Name", "a hand-edited folder must survive"
-    assert entries[0]["aliases"] == ["ML"]
-    assert report.conflicts and report.conflicts[0]["proposed_folder"] == "Machine Learning"
-    assert 1 in report.preserved and not report.added
-
-
-def test_suggest_course_map_adds_new_courses(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
-    add_mirror_file(
-        settings, uuid="u2", canvas_id=102, name="b.pdf", mirror_folder="AI", course_canvas_id=2
-    )
-    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning", "aliases": []}])
-
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
-
-    assert report.added == [2]
-    assert {e["canvas_id"] for e in organize.load_course_map(settings)} == {1, 2}
-
-
-def test_observed_course_numbers_are_mined_from_filenames(prepared: Settings) -> None:
-    path = prepared.paths.workspace / "Machine Learning" / "15_095_hw1.pdf"
-    path.write_text("x")
-    assert organize.observed_course_numbers(prepared) == {"15.095": ["Machine Learning"]}
-
-
-def test_suggest_course_map_without_any_canvas_courses(settings: Settings) -> None:
-    write_naming(settings)
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
-    assert report.mappings == [] and report.written is False
-
-
-# --------------------------------------------------------------------------
 # the agent driver round trip (task file -> result -> replay)
 # --------------------------------------------------------------------------
 def test_agent_driver_task_carries_the_rules_and_replays(prepared: Settings) -> None:

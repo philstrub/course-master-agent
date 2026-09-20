@@ -1,28 +1,85 @@
-"""Curate the Canvas mirror into the student's own course folders.
+"""
+# Organize
 
-Three stages, deliberately separated so nothing moves without review:
+File the Canvas mirror into the student's own course folders -- proposed
+first, applied only on review, and always undoable.
 
-``suggest_course_map``
-    Propose ``config/courses.yml`` (Canvas course -> workspace folder). Prints a
-    YAML draft; writes only with ``apply=True``, and never clobbers hand-edited
-    entries -- conflicts are reported, not resolved.
-``plan``
-    Ask the :class:`~mitsync.llm.base.Judge` where every unfiled file should go,
-    validate each destination against the workspace guardrails, and write
-    ``state/plans/plan-<ts>.json``. **This never touches the filesystem.**
-``apply_plan`` / ``undo``
+## 1. What This Module Does
+
+Two stages, deliberately separated so nothing moves without review:
+
+`plan`
+    Ask a `Judge` where every unfiled file should go, validate each proposed
+    destination against the workspace guardrails, and write
+    `state/plans/plan-<ts>.json`. **This never touches the filesystem.**
+`apply_plan` / `undo`
     Execute a saved plan and reverse it. Canvas-mirrored files are *linked or
-    copied* into the curated folder -- ``_canvas/`` stays the source of truth and
-    is never emptied. Only pre-existing student files are really moved, and only
-    those need (and get) an undo log entry that restores them byte-for-byte.
+    copied* into the curated folder; `_canvas/` stays the source of truth and
+    is never emptied. Only pre-existing student files are really moved, and
+    only those need -- and get -- an undo entry that restores them
+    byte-for-byte.
 
-The filing rules themselves live in ``config/naming.md`` and are injected
-verbatim into every judgment payload, so editing that prose changes the next
-plan with no code change.
+## 2. Why This Module Exists
+
+The student's course folders are their own. A tool that reorganises them on a
+model's say-so, with no preview and no way back, is not one anybody should
+run. Hence the plan/apply split, the confidence threshold below which a
+placement is shown rather than applied, the explicit confirmation before any
+pre-existing file is moved, and the undo log that refuses to reverse anything
+whose bytes changed in the meantime.
+
+## 3. How It Fits in the Architecture
+
+Sits above `manifest` (which says what is mirrored and not yet filed) and
+`course_map` (which says which Canvas course is which folder), and below
+`kb`, which reuses `BUCKETS` and `classify_bucket` for its display order.
+`organize` imports `course_map`, never the reverse.
+
+## 4. Key Concepts
+
+**The filing rules are prose, not code.** `config/naming.md` is read fresh on
+every run and injected verbatim into the judgment payload, so editing that
+file changes the next plan with no code change. Filing rules must never be
+hardcoded in Python. `classify_bucket` is the deterministic fallback used by
+the rules driver, not the policy itself.
+
+**Buckets.** `lectures`, `recitations`, `assignments`, `data`, `syllabus`,
+`notes`, `other` -- the vocabulary `naming.md` allows inside a course folder.
+Grouping context (a Canvas module name, a Canvas folder, the student's own
+subfolder) always beats the filename: a file inside `Recitation 2/` is a
+recitation even when it is called `walkthrough.pdf`.
+
+**Destinations are untrusted input.** They come from a language model.
+`validate_destination` rejects absolute paths, `..` traversal, anything
+outside the workspace, the reserved `_canvas`/`_agent`/`_kb` trees, ignored
+paths, and directory-only destinations -- at plan time *and* again at apply
+time, because a plan file can be edited between the two.
+
+**A name collision never overwrites.** An identical file already at the
+destination is a skip; a different one gets a suffixed name and is flagged for
+review.
+
+**Why exceptions are caught here.** Three, each at a real boundary:
+
+1. `ValueError` from `validate_destination` -- this is untrusted judge output
+   being validated. A bad destination is recorded in `plan.rejected` (or the
+   apply report's errors) with the reason, and the run continues; one
+   hallucinated path must not cost the other forty placements.
+2. `OSError` around an individual file operation -- a hardlink across
+   filesystems falls back to a copy, and a failed move or unlink is recorded
+   per file so the undo log still describes everything that *did* happen. An
+   apply that aborted midway with no log would be the worst possible outcome.
+3. `OSError` in `_prune_empty`, narrowed to `ENOTEMPTY`/`EEXIST` -- on macOS
+   Finder can write a `.DS_Store` between the emptiness check and the `rmdir`.
+   Losing that race means the directory is no longer ours to remove, so the
+   climb stops. Every other `OSError` raises: a directory this tool can
+   neither read nor remove inside its own workspace is a state worth failing
+   on, not one to pass over in silence.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import json
 import os
@@ -34,14 +91,23 @@ from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-import yaml
 from rich.console import Console
 from rich.table import Table
 
-from .errors import ConfigError, MitsyncError
+from .clock import now_iso
+from .config import read_json
+from .course_map import (
+    SEPARATORS_RX,
+    existing_course_folders,
+    folder_for_canvas_id,
+    is_ignored,
+    naming_rules,
+    walk,
+)
+from .errors import MitsyncError
 from .llm.base import make_task, validate_result
 from .logging import get_logger
-from .sync import filter_excluded_courses
+from .paths import unique_path
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import Settings
@@ -51,18 +117,16 @@ console = Console()
 
 __all__ = [
     "ApplyReport",
-    "MapReport",
     "Plan",
     "PlanEntry",
     "UndoReport",
     "apply_plan",
-    "load_course_map",
     "plan",
-    "suggest_course_map",
     "undo",
 ]
 
-#: Subfolders `config/naming.md` allows inside a course folder.
+#: Subfolders `config/naming.md` allows inside a course folder. Canonical: the
+#: knowledge base derives its own display order from this tuple.
 BUCKETS = ("lectures", "recitations", "assignments", "data", "syllabus", "notes", "other")
 
 #: Top-level names that are mitsync's own, never a filing destination.
@@ -71,44 +135,70 @@ RESERVED_TOP_LEVEL = ("_canvas", "_agent", "_kb")
 #: Placements below this are shown for review instead of applied (naming.md §6).
 REVIEW_THRESHOLD = 0.5
 
-# 15.095 / 15_095 / 15095 / 15 095 / 15.C57, as they turn up inside filenames.
-_COURSE_NUMBER_RX = re.compile(r"\b(\d{1,2})[._\s]?([A-Za-z]?\d{2,4})\b")
-_SEPARATORS_RX = re.compile(r"[._\-]+")
-_DIGITS_RX = re.compile(r"\D")
+#: Bucket classification, ordered: first match wins. Patterns run against a
+#: *normalised* string where `_`, `-` and `.` become spaces, so real filenames
+#: like `15_095_hw1.pdf`, `Lec03_2026.pdf` and `deliv_1_15072_Fall2026.pdf`
+#: tokenise the way a reader would expect rather than hiding the signal inside
+#: one long word.
+_BUCKET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
+    (
+        "syllabus",
+        re.compile(r"\bsyllab|\bcourse info|\blogistics?\b|\bgrading\b|\bschedule\b", re.I),
+    ),
+    (
+        "recitations",
+        re.compile(r"\brecit\w*|\brec\b|\brec\s?\d|\bsection\b|\bsection\s?\d|\btutorial", re.I),
+    ),
+    (
+        "assignments",
+        re.compile(
+            r"\bhw\b|\bhw\s?\d|homework|assign\w*|deliv\w*|\bpset|problem\s?set"
+            r"|\bps\s?\d|\bexam\b|midterm|\bquiz|\bproject\b|solution",
+            re.I,
+        ),
+    ),
+    (
+        "lectures",
+        re.compile(
+            r"\blec\b|\blec\s?\d|lecture|\bslides?\b|\bunit\b|\bunit\s?\d|\bmodule\b"
+            r"|\bsession\b|\bsession\s?\d|\bclass\s?\d|\bweek\s?\d",
+            re.I,
+        ),
+    ),
+    ("notes", re.compile(r"\bnotes?\b", re.I)),
+)
+
+#: Extensions that make a file `data/` regardless of what it is called.
+_DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".parquet"}
 
 
-def course_numbers_in(text: str) -> list[str]:
-    """Course numbers in canonical dotted form found in `text`.
+def classify_bucket(filename: str, *grouping: str | None) -> str:
+    """The `config/naming.md` bucket for one file.
 
-    A bare four-digit year (`Fall_2026`) is not a course number, so anything
-    that looks like one and carries no separator of its own is skipped.
+    `grouping` is the context the file was found in -- a Canvas module name, a
+    Canvas folder, the student's own subfolders -- in priority order. Grouping
+    always wins over the filename (naming.md: a file inside "Recitation 2/" is a
+    recitation even when it is called `walkthrough.pdf`). Only when no grouping
+    text matches does the data extension, and then the filename itself, decide.
     """
-    out: list[str] = []
-    for m in _COURSE_NUMBER_RX.finditer(_SEPARATORS_RX.sub(" ", text)):
-        whole = m.group(0)
-        digits = _DIGITS_RX.sub("", whole)
-        if len(digits) == 4 and 1900 <= int(digits) <= 2099 and not re.search(r"[.\s]", whole):
+    for text in grouping:
+        if not text:
             continue
-        out.append(f"{m.group(1)}.{m.group(2)}")
-    return out
+        for bucket, rx in _BUCKET_PATTERNS:
+            if rx.search(SEPARATORS_RX.sub(" ", text)):
+                return bucket
+    if PurePosixPath(filename).suffix.lower() in _DATA_EXTS:
+        return "data"
+    stem = SEPARATORS_RX.sub(" ", PurePosixPath(filename).stem)
+    for bucket, rx in _BUCKET_PATTERNS:
+        if rx.search(stem):
+            return bucket
+    return "other"
 
 
 # --------------------------------------------------------------------------
 # reports
 # --------------------------------------------------------------------------
-@dataclass
-class MapReport:
-    """What `mitsync map` proposed, kept, and (optionally) wrote."""
-
-    mappings: list[dict[str, Any]] = field(default_factory=list)
-    added: list[int] = field(default_factory=list)
-    preserved: list[int] = field(default_factory=list)
-    conflicts: list[dict[str, Any]] = field(default_factory=list)
-    path: Path | None = None
-    written: bool = False
-    yaml_text: str = ""
-
-
 @dataclass
 class PlanEntry:
     """One proposed placement. ``uuid`` is empty for pre-existing files."""
@@ -168,305 +258,12 @@ class UndoReport:
 # --------------------------------------------------------------------------
 # small helpers
 # --------------------------------------------------------------------------
-def _now() -> str:
-    return datetime.now(UTC).isoformat(timespec="seconds")
-
-
-def _stamp() -> str:
-    return datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-
-
 def sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with open(path, "rb") as fh:
         for chunk in iter(lambda: fh.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()
-
-
-def _rel(settings: Settings, path: Path) -> str:
-    return path.resolve().relative_to(settings.paths.workspace).as_posix()
-
-
-def is_ignored(settings: Settings, relpath: str) -> bool:
-    """True if a workspace-relative path (file or directory) is excluded.
-
-    Directory globs such as ``AI_Studio/nandatown/**`` only match *contents*, so
-    a directory is also probed with a trailing slash. This is what keeps the
-    9,400-file `nandatown` repo out of every walk, plan and report.
-    """
-    rel = str(relpath).strip("/")
-    if not rel:
-        return False
-    return settings.should_ignore(rel) or settings.should_ignore(rel + "/")
-
-
-def naming_rules(settings: Settings) -> str:
-    """The verbatim prose from ``config/naming.md`` (empty + warning if absent)."""
-    path = settings.paths.config_dir / "naming.md"
-    if not path.exists():
-        log.warning("config/naming.md is missing (%s); judging with no filing rules", path)
-        return ""
-    return path.read_text(encoding="utf-8")
-
-
-def _rules_sha(rules: str) -> str:
-    return hashlib.sha256(rules.encode("utf-8")).hexdigest()[:16]
-
-
-# --------------------------------------------------------------------------
-# course map
-# --------------------------------------------------------------------------
-def courses_file(settings: Settings) -> Path:
-    return settings.paths.config_dir / "courses.yml"
-
-
-def load_course_map(settings: Settings) -> list[dict[str, Any]]:
-    """Entries from ``config/courses.yml``; ``[]`` when unset or absent."""
-    path = courses_file(settings)
-    if not path.exists():
-        return []
-    try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except yaml.YAMLError as exc:
-        raise ConfigError(f"{path} is not valid YAML: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise ConfigError(f"{path} must contain a YAML mapping at the top level")
-    entries = raw.get("courses") or []
-    if not isinstance(entries, list):
-        raise ConfigError(f"{path}: `courses` must be a list")
-    return [dict(e) for e in entries if isinstance(e, dict)]
-
-
-def folder_for_canvas_id(settings: Settings, canvas_id: Any) -> str | None:
-    """The student's folder for a Canvas course id, per ``config/courses.yml``."""
-    if canvas_id in (None, ""):
-        return None
-    for entry in load_course_map(settings):
-        if str(entry.get("canvas_id")) == str(canvas_id):
-            folder = entry.get("folder")
-            return str(folder) if folder else None
-    return None
-
-
-def existing_course_folders(settings: Settings) -> list[str]:
-    """Top-level workspace folders that look like the student's own courses."""
-    ws = settings.paths.workspace
-    out: list[str] = []
-    if not ws.exists():
-        return out
-    for child in sorted(ws.iterdir()):
-        if not child.is_dir() or child.name.startswith((".", "_")):
-            continue
-        if is_ignored(settings, child.name):
-            continue
-        out.append(child.name)
-    return out
-
-
-def _subfolders(settings: Settings, folder: str) -> list[str]:
-    root = settings.paths.workspace / folder
-    if not root.is_dir():
-        return []
-    return sorted(
-        c.name
-        for c in root.iterdir()
-        if c.is_dir()
-        and not c.name.startswith(".")
-        and not is_ignored(settings, f"{folder}/{c.name}")
-    )
-
-
-def observed_course_numbers(settings: Settings) -> dict[str, list[str]]:
-    """Course numbers mined out of existing filenames -> the folders they sit in."""
-    found: dict[str, set[str]] = {}
-    for folder in existing_course_folders(settings):
-        for path in _walk(settings, settings.paths.workspace / folder):
-            for number in course_numbers_in(path.stem):
-                found.setdefault(number, set()).add(folder)
-    return {k: sorted(v) for k, v in sorted(found.items())}
-
-
-def _walk(settings: Settings, root: Path):
-    """Yield files under ``root``, pruning every ignored directory."""
-    if not root.is_dir():
-        return
-    ws = settings.paths.workspace
-    for dirpath, dirnames, filenames in os.walk(root):
-        here = Path(dirpath)
-        rel_dir = here.resolve().relative_to(ws).as_posix()
-        dirnames[:] = [
-            d
-            for d in sorted(dirnames)
-            if not d.startswith(".") and not is_ignored(settings, f"{rel_dir}/{d}")
-        ]
-        for name in sorted(filenames):
-            if name.startswith("."):
-                continue
-            if is_ignored(settings, f"{rel_dir}/{name}"):
-                continue
-            yield here / name
-
-
-def _canvas_courses(settings: Settings) -> list[dict[str, Any]]:
-    """Canvas courses from the manifest, falling back to `_canvas/*/_meta/`."""
-    courses: list[dict[str, Any]] = []
-    db = settings.paths.manifest_db
-    if db.exists():
-        from .manifest import Manifest
-
-        with Manifest(db) as man:
-            for rec in man.list_courses():
-                courses.append(
-                    {
-                        "id": rec.canvas_id,
-                        "name": rec.name,
-                        "course_code": rec.course_code,
-                        "term": rec.term_name,
-                        "mirror_folder": rec.folder,
-                    }
-                )
-    if courses:
-        return courses
-    for meta in sorted(settings.paths.canvas_mirror.glob("*/_meta/courses.json")):
-        for item in _meta_items(meta):
-            courses.append(
-                {
-                    "id": item.get("id"),
-                    "name": item.get("name") or "",
-                    "course_code": item.get("course_code"),
-                    "term": (item.get("term") or {}).get("name"),
-                    "mirror_folder": item.get("mirror_folder") or meta.parent.parent.name,
-                }
-            )
-    return courses
-
-
-def _meta_items(path: Path) -> list[dict[str, Any]]:
-    try:
-        doc = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
-        log.warning("cannot read %s (%s)", path, exc)
-        return []
-    items = doc.get("items") if isinstance(doc, dict) else doc
-    return [i for i in items or [] if isinstance(i, dict)]
-
-
-def suggest_course_map(settings: Settings, judge: Any, *, apply: bool = False) -> MapReport:
-    """Propose (and with ``apply``, write) the Canvas course -> folder mapping."""
-    courses, excluded = filter_excluded_courses(
-        _canvas_courses(settings), settings.canvas.exclude_courses
-    )
-    for item in excluded:
-        console.print(
-            f"[dim]skipping canvas {item['canvas_id']} ({item['name']}): {item['reason']}[/dim]"
-        )
-    folders = existing_course_folders(settings)
-    report = MapReport(path=courses_file(settings))
-
-    if not courses:
-        console.print("[yellow]No Canvas courses known yet — run `mitsync sync` first.[/yellow]")
-        report.yaml_text = _dump_courses_yaml([])
-        return report
-
-    payload = {
-        "courses": [
-            {
-                "id": int(c["id"]) if str(c.get("id") or "").isdigit() else 0,
-                "name": str(c.get("name") or ""),
-                "course_code": c.get("course_code"),
-                "term": c.get("term"),
-            }
-            for c in courses
-        ],
-        "existing_folders": folders,
-        "observed_course_numbers": observed_course_numbers(settings),
-    }
-    task = make_task(
-        "course_map",
-        payload,
-        rules=naming_rules(settings),
-        origin_command="map",
-        origin_args={"apply": apply},
-    )
-    result = validate_result(task, judge.judge(task))
-    proposed = {int(m["canvas_id"]): m for m in result.get("mappings", [])}
-
-    existing = {int(e["canvas_id"]): e for e in load_course_map(settings) if "canvas_id" in e}
-    merged: dict[int, dict[str, Any]] = {}
-    for cid, entry in existing.items():
-        merged[cid] = dict(entry)
-        report.preserved.append(cid)
-        prop = proposed.get(cid)
-        if prop and str(prop.get("folder")) != str(entry.get("folder")):
-            report.conflicts.append(
-                {
-                    "canvas_id": cid,
-                    "existing_folder": entry.get("folder"),
-                    "proposed_folder": prop.get("folder"),
-                }
-            )
-    for cid, prop in proposed.items():
-        if cid in merged:
-            continue
-        merged[cid] = {
-            "canvas_id": cid,
-            "folder": prop["folder"],
-            "course_number": prop.get("course_number"),
-            "aliases": list(prop.get("aliases") or []),
-        }
-        report.added.append(cid)
-
-    report.mappings = [merged[k] for k in sorted(merged)]
-    report.yaml_text = _dump_courses_yaml(report.mappings)
-
-    console.print(_map_table(report, proposed))
-    console.print("[bold]config/courses.yml draft:[/bold]")
-    console.print(report.yaml_text)
-    for conflict in report.conflicts:
-        console.print(
-            f"[yellow]conflict:[/yellow] canvas {conflict['canvas_id']} is mapped to "
-            f"'{conflict['existing_folder']}' but '{conflict['proposed_folder']}' was proposed; "
-            f"your edit was kept."
-        )
-
-    if apply:
-        path = courses_file(settings)
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(report.yaml_text, encoding="utf-8")
-        report.written = True
-        console.print(f"[green]wrote[/green] {path}")
-    else:
-        console.print("[dim]nothing written; re-run with --apply to save.[/dim]")
-    return report
-
-
-def _dump_courses_yaml(mappings: list[dict[str, Any]]) -> str:
-    header = (
-        "# Canvas course -> workspace folder mapping.\n"
-        "# Generated by `mitsync map --apply`; hand edits are preserved on re-run.\n\n"
-    )
-    body = yaml.safe_dump({"courses": mappings}, sort_keys=False, allow_unicode=True)
-    return header + body
-
-
-def _map_table(report: MapReport, proposed: dict[int, dict[str, Any]]) -> Table:
-    table = Table(title="course map")
-    for col in ("canvas_id", "folder", "number", "aliases", "confidence", "status"):
-        table.add_column(col)
-    for entry in report.mappings:
-        cid = int(entry["canvas_id"])
-        prop = proposed.get(cid, {})
-        status = "new" if cid in report.added else "kept (yours)"
-        table.add_row(
-            str(cid),
-            str(entry.get("folder") or ""),
-            str(entry.get("course_number") or ""),
-            ", ".join(entry.get("aliases") or []),
-            f"{prop.get('confidence', ''):.2f}" if prop.get("confidence") is not None else "",
-            status,
-        )
-    return table
 
 
 # --------------------------------------------------------------------------
@@ -544,8 +341,8 @@ def _preexisting_files(settings: Settings) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     for folder in existing_course_folders(settings):
         root = settings.paths.workspace / folder
-        for path in _walk(settings, root):
-            rel = _rel(settings, path)
+        for path in walk(settings, root):
+            rel = settings.paths.safe_relative(path).as_posix()
             inner = PurePosixPath(rel).relative_to(folder).parts
             if len(inner) == 2 and inner[0] in BUCKETS:
                 continue  # already filed the way naming.md wants
@@ -575,9 +372,9 @@ def plan(settings: Settings, judge: Any, *, include_existing: bool = False) -> P
         candidates += _preexisting_files(settings)
 
     the_plan = Plan(
-        plan_id=f"plan-{_stamp()}",
-        created_at=_now(),
-        naming_rules_sha=_rules_sha(rules),
+        plan_id=f"plan-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}",
+        created_at=now_iso(),
+        naming_rules_sha=hashlib.sha256(rules.encode("utf-8")).hexdigest()[:16],
     )
 
     if not candidates:
@@ -602,7 +399,14 @@ def plan(settings: Settings, judge: Any, *, include_existing: bool = False) -> P
             for c in candidates
         ],
         "existing_folders": {
-            f: _subfolders(settings, f) for f in existing_course_folders(settings)
+            folder: sorted(
+                c.name
+                for c in (settings.paths.workspace / folder).iterdir()
+                if c.is_dir()
+                and not c.name.startswith(".")
+                and not is_ignored(settings, f"{folder}/{c.name}")
+            )
+            for folder in existing_course_folders(settings)
         },
     }
     task = make_task(
@@ -667,13 +471,7 @@ def plan(settings: Settings, judge: Any, *, include_existing: bool = False) -> P
 
 
 def _write_plan(settings: Settings, the_plan: Plan) -> Path:
-    plans = settings.paths.plans_dir
-    plans.mkdir(parents=True, exist_ok=True)
-    path = plans / f"{the_plan.plan_id}.json"
-    n = 2
-    while path.exists():
-        path = plans / f"{the_plan.plan_id}-{n}.json"
-        n += 1
+    path = unique_path(settings.paths.plans_dir / f"{the_plan.plan_id}.json")
     path.write_text(json.dumps(the_plan.as_dict(), indent=2) + "\n", encoding="utf-8")
     return path
 
@@ -708,13 +506,13 @@ def load_plan(settings: Settings, plan_path: Path | str | None) -> Plan:
     path = Path(plan_path)
     if not path.exists():
         raise MitsyncError(f"plan file not found: {path}")
-    doc = json.loads(path.read_text(encoding="utf-8"))
+    doc = read_json(path)
     return Plan(
-        plan_id=doc.get("plan_id") or path.stem,
-        created_at=doc.get("created_at") or "",
-        naming_rules_sha=doc.get("naming_rules_sha") or "",
-        entries=[PlanEntry(**e) for e in doc.get("entries", [])],
-        rejected=list(doc.get("rejected", [])),
+        plan_id=doc["plan_id"],
+        created_at=doc["created_at"],
+        naming_rules_sha=doc["naming_rules_sha"],
+        entries=[PlanEntry(**e) for e in doc["entries"]],
+        rejected=list(doc["rejected"]),
         path=path,
     )
 
@@ -746,16 +544,6 @@ def _place(source: Path, dest: Path, mode: str) -> str:
             log.info("hardlink %s -> %s failed (%s); copying instead", source, dest, exc)
     shutil.copy2(source, dest)
     return "copy"
-
-
-def _suffixed(dest: Path) -> Path:
-    stem, suffix = dest.stem, dest.suffix
-    n = 2
-    while True:
-        candidate = dest.with_name(f"{stem}-{n}{suffix}")
-        if not candidate.exists():
-            return candidate
-        n += 1
 
 
 def apply_plan(
@@ -796,18 +584,13 @@ def apply_plan(
 
         flagged = False
         if dest.exists():
-            try:
-                same = sha256_file(dest) == sha256_file(source)
-            except OSError as exc:  # pragma: no cover - defensive
-                report.errors.append({"file_id": entry.file_id, "error": str(exc)})
-                continue
-            if same:
+            if sha256_file(dest) == sha256_file(source):
                 report.skipped.append({**asdict(entry), "status": "identical file already there"})
                 if entry.uuid:
                     filed.append((entry.uuid, dest_rel))
                 continue
-            dest = _suffixed(dest)
-            dest_rel = _rel_of(ws, dest)
+            dest = unique_path(dest)
+            dest_rel = settings.paths.safe_relative(dest).as_posix()
             flagged = True
 
         src_sha = sha256_file(source)
@@ -850,10 +633,6 @@ def apply_plan(
     return report
 
 
-def _rel_of(workspace: Path, path: Path) -> str:
-    return path.resolve().relative_to(workspace.resolve()).as_posix()
-
-
 def _record_filed(settings: Settings, filed: list[tuple[str, str]]) -> None:
     if not filed:
         return
@@ -867,18 +646,12 @@ def _record_filed(settings: Settings, filed: list[tuple[str, str]]) -> None:
 def _write_undo_log(
     settings: Settings, the_plan: Plan, mode: str, operations: list[dict[str, Any]]
 ) -> Path:
-    undo_dir = settings.paths.undo_dir
-    undo_dir.mkdir(parents=True, exist_ok=True)
-    path = undo_dir / f"undo-{the_plan.plan_id}.json"
-    n = 2
-    while path.exists():
-        path = undo_dir / f"undo-{the_plan.plan_id}-{n}.json"
-        n += 1
+    path = unique_path(settings.paths.undo_dir / f"undo-{the_plan.plan_id}.json")
     doc = {
         "log_id": path.stem,
         "plan_id": the_plan.plan_id,
         "plan_path": str(the_plan.path) if the_plan.path else None,
-        "applied_at": _now(),
+        "applied_at": now_iso(),
         "link_mode": mode,
         "operations": operations,
         "undone_at": None,
@@ -944,12 +717,7 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
             continue
         expected = op.get("destination_sha256")
         if expected and not dest.is_symlink():
-            try:
-                actual = sha256_file(dest)
-            except OSError as exc:  # pragma: no cover - defensive
-                report.errors.append({"path": op["destination"], "error": str(exc)})
-                continue
-            if actual != expected:
+            if sha256_file(dest) != expected:
                 report.refused.append(
                     {
                         "path": op["destination"],
@@ -985,7 +753,7 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
                 man.set_filed_path(uuid, None)
 
     if not report.errors and not report.refused:
-        doc["undone_at"] = _now()
+        doc["undone_at"] = now_iso()
         path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
 
     console.print(
@@ -1000,18 +768,25 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
 
 
 def _prune_empty(directory: Path, workspace: Path) -> None:
-    """Remove directories this tool emptied, never climbing past the workspace."""
+    """Remove directories this tool emptied, never climbing past the workspace.
+
+    Both failure modes used to return silently, which gave "I cannot read this
+    directory" (a real problem, usually permissions) and "something appeared in
+    it while I looked" (a benign macOS race -- Finder writing .DS_Store between
+    the emptiness check and the rmdir) the same answer: none.
+
+    Only the race is tolerated, and only by stopping the climb. Anything else
+    raises, because a directory this tool cannot read or remove inside its own
+    workspace is a state worth failing on.
+    """
     current = directory
     while current != workspace and workspace in current.parents:
-        try:
-            next(current.iterdir())
-            return
-        except StopIteration:
-            pass
-        except OSError:
+        if any(current.iterdir()):
             return
         try:
             current.rmdir()
-        except OSError:
-            return
+        except OSError as exc:
+            if exc.errno in (errno.ENOTEMPTY, errno.EEXIST):
+                return  # lost the race; the directory is no longer ours to remove
+            raise
         current = current.parent

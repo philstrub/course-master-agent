@@ -1,23 +1,80 @@
-"""The handoff layer: everything a cold agent needs, written to `_kb/`.
+"""
+# Knowledge Base
 
-`build()` produces the global index, one index and one notes page per course,
-a machine-readable manifest, and `_kb/AGENTS.md` -- the bootstrap file written
-for an LLM rather than a human. Output is deterministic: no wall-clock stamps
-land in the generated files, so re-running `kb build` over unchanged inputs
-rewrites byte-identical content.
+The handoff layer: everything a cold agent needs to help with coursework,
+written to `_kb/`.
+
+## 1. What This Module Does
+
+`build()` regenerates the whole `_kb/` tree from state already on disk: a
+global index, one index and one notes page per course, `_kb/manifest.json`,
+and `_kb/AGENTS.md`.
+
+## 2. Why This Module Exists
+
+`_kb/AGENTS.md` is the point of the module, and it is written for an LLM
+rather than for a human: it is the file an agent reads when it is helping with
+coursework instead of running the tool. Everything else here exists to make
+that file, and the pages it points at, true.
+
+The output is deterministic -- no wall-clock stamps land in the generated
+files -- so re-running `kb build` over unchanged inputs rewrites byte-identical
+content and produces no diff to review.
+
+## 3. How It Fits in the Architecture
+
+The top of the stack: it reads the manifest, the extracted text, the graph,
+and `due.json`, and writes only into `_kb/`. It imports `organize.BUCKETS`
+rather than restating the filing vocabulary, so the knowledge base and the
+filer can never disagree about what a bucket is.
+
+`build()` first calls `graph.extract_graph` with **no judge** on purpose, so
+that every extracted document has `Course` and `Resource` nodes to cite. Judged
+triple extraction is `graph extract`, which has its own subcommand and its own
+resolve path; `kb build` must never raise `PendingJudgment` out of graph
+extraction, because the CLI has no way to resolve it from here.
+
+## 4. Key Concepts
+
+**One course per judgment round trip.** Under the agent driver, `kb build`
+judges one course's notes at a time and keeps the courses already written, so
+each `resolve` advances by exactly one course and stops at the next with a
+fresh task file. Repeat until it exits 0.
+
+**Notes always exist.** When there is no judge, or the judge is unavailable,
+or its answer fails validation, the course still gets a `NOTES.md` -- a
+deterministic skeleton assembled from the file inventory, carrying
+`NOTES_PENDING_MARKER` and a plain statement of why it is a skeleton. This is a
+product contract, not a fallback: an agent reading `_kb/` must never find a
+missing page where a course should be, and must never mistake an inventory for
+a summary.
+
+**Document excerpts are untrusted data.** They are quoted into the judgment
+payload with an explicit instruction that their contents are never
+instructions.
+
+**Why exceptions are caught here.** One place, `_course_notes`, and it is the
+contract above: a `MitsyncError` from the judge, an empty result, or a
+`ResultValidationError` each produce the skeleton, record the course in
+`report.notes_pending`, and let the build finish. `PendingJudgment` is
+re-raised first, because that one is control flow for the agent driver rather
+than a failure.
 """
 
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .config import read_json
+from .deadlines import last_sync as last_successful_sync
 from .errors import MitsyncError, PendingJudgment
+from .graph import write_if_changed
 from .logging import get_logger
+from .organize import BUCKETS as FILING_BUCKETS
+from .organize import classify_bucket
 
 if TYPE_CHECKING:  # pragma: no cover
     from .config import Settings
@@ -28,14 +85,12 @@ KB_VERSION = "1"
 EXCERPT_CHARS = 1200
 NOTES_PENDING_MARKER = "<!-- mitsync: topic notes pending judgment -->"
 
+#: Display order for the generated pages: the syllabus first because that is
+#: what a cold reader wants, then `organize.BUCKETS` (the canonical filing
+#: vocabulary) in its own order, then the files nothing has filed yet.
 BUCKETS = (
     "syllabus",
-    "lectures",
-    "recitations",
-    "assignments",
-    "data",
-    "notes",
-    "other",
+    *(b for b in FILING_BUCKETS if b != "syllabus"),
     "canvas mirror (unfiled)",
 )
 
@@ -66,73 +121,40 @@ class KBReport:
 # --------------------------------------------------------------------------
 # inventory
 # --------------------------------------------------------------------------
-# Grouping hints for course folders that have not been through `organize apply`
-# yet, so the index is useful on the student's own names ("Assignment 1/").
-_BUCKET_HINTS: tuple[tuple[str, re.Pattern[str]], ...] = (
-    ("syllabus", re.compile(r"syllab|grading|logistic|schedule", re.I)),
-    ("recitations", re.compile(r"recitation|\brec\b|\bsection\b", re.I)),
-    (
-        "assignments",
-        re.compile(r"assign|homework|\bhw\b|pset|problem.?set|deliv|project|exam|quiz", re.I),
-    ),
-    ("lectures", re.compile(r"lecture|\blec\b|slide|session|\bunit\b|\bmodule\b", re.I)),
-    ("notes", re.compile(r"\bnotes?\b", re.I)),
-)
-_DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".parquet"}
-
-
 def _bucket(rel: str) -> str:
+    """Which page section a workspace-relative path belongs under.
+
+    Course folders that have already been through `organize apply` say so in the
+    path itself; anything else -- the Canvas mirror, and the student's own names
+    like "Assignment 1/" -- is classified from its subfolders and filename.
+    """
     parts = Path(rel).parts
     if parts and parts[0] == "_canvas":
         return "canvas mirror (unfiled)"
     if len(parts) > 2 and parts[1].lower() in BUCKETS:
         return parts[1].lower()
-    subfolders = "/".join(parts[1:-1])
-    name = parts[-1] if parts else ""
-    for bucket, rx in _BUCKET_HINTS:
-        if rx.search(subfolders):
-            return bucket
-    if Path(name).suffix.lower() in _DATA_EXTS:
-        return "data"
-    for bucket, rx in _BUCKET_HINTS:
-        if rx.search(name):
-            return bucket
-    return "other"
-
-
-def _node_ids_by_source(settings: Settings) -> dict[str, list[str]]:
-    try:
-        from . import graph as graph_mod
-
-        nodes = graph_mod.load_nodes(settings)
-    except MitsyncError as exc:  # a broken ontology must not block the KB
-        log.warning("kb build: graph unavailable (%s)", exc)
-        return {}
-    out: dict[str, list[str]] = {}
-    for node_id, node in nodes.items():
-        for src in node.get("src") or []:
-            out.setdefault(str(src), []).append(node_id)
-    return {k: sorted(v) for k, v in out.items()}
+    return classify_bucket(parts[-1] if parts else "", "/".join(parts[1:-1]))
 
 
 def inventory(settings: Settings) -> dict[str, list[dict[str, Any]]]:
     """course -> its files, each with bucket, extracted text path and node ids."""
     from . import extract as extract_mod
+    from . import graph as graph_mod
 
     ws = settings.paths.workspace
     texts = extract_mod.extracted_index(settings)
-    node_ids = _node_ids_by_source(settings)
+    node_ids: dict[str, list[str]] = {}
+    for node_id, node in graph_mod.load_nodes(settings).items():
+        for source in node.get("src") or []:
+            node_ids.setdefault(str(source), []).append(node_id)
     courses: dict[str, list[dict[str, Any]]] = {}
     for src in extract_mod.iter_sources(settings):
-        rel = src.resolve().relative_to(ws).as_posix()
+        rel = settings.paths.safe_relative(src).as_posix()
         if settings.should_ignore(rel):
             continue
         course = extract_mod.course_of(rel) or "(unassigned)"
         text = texts.get(rel)
-        try:
-            size = src.stat().st_size
-        except OSError:
-            size = 0
+        size = src.stat().st_size
         courses.setdefault(course, []).append(
             {
                 "path": rel,
@@ -143,7 +165,7 @@ def inventory(settings: Settings) -> dict[str, list[dict[str, Any]]]:
                 ),
                 "bytes": size,
                 "text": text.relative_to(ws).as_posix() if text else None,
-                "node_ids": node_ids.get(rel, []),
+                "node_ids": sorted(node_ids.get(rel, [])),
             }
         )
     for files in courses.values():
@@ -151,37 +173,12 @@ def inventory(settings: Settings) -> dict[str, list[dict[str, Any]]]:
     return dict(sorted(courses.items()))
 
 
-def _last_sync(settings: Settings) -> str:
-    """Newest mtime in the Canvas mirror, as a stable ISO date."""
-    mirror = settings.paths.canvas_mirror
-    newest = 0.0
-    if mirror.is_dir():
-        for path in mirror.rglob("*"):
-            rel = path.name
-            try:
-                rel = path.resolve().relative_to(settings.paths.workspace).as_posix()
-            except ValueError:
-                pass
-            if settings.should_ignore(rel) or not path.is_file():
-                continue
-            try:
-                newest = max(newest, path.stat().st_mtime)
-            except OSError:
-                continue
-    if not newest:
-        return "never (run `mitsync sync`)"
-    return datetime.fromtimestamp(newest, tz=UTC).strftime("%Y-%m-%d %H:%M UTC")
-
-
 def _due_summary(settings: Settings) -> tuple[Path | None, list[dict[str, Any]]]:
     """`_kb/due.json` if another module has produced it; tolerate its absence."""
     path = settings.paths.kb / "due.json"
     if not path.exists():
         return None, []
-    try:
-        data = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        return path, []
+    data = read_json(path)
     items = data.get("items") if isinstance(data, dict) else data
     return path, [i for i in items or [] if isinstance(i, dict)]
 
@@ -191,14 +188,8 @@ def _due_summary(settings: Settings) -> tuple[Path | None, list[dict[str, Any]]]
 # --------------------------------------------------------------------------
 def _write(report: KBReport, path: Path, body: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    text = body.rstrip() + "\n"
-    if not path.exists() or path.read_text(encoding="utf-8") != text:
-        path.write_text(text, encoding="utf-8")
+    write_if_changed(path, body)
     report.written.append(path)
-
-
-def _course_dir(settings: Settings, course: str) -> Path:
-    return settings.paths.kb_courses / course
 
 
 def _course_index(settings: Settings, course: str, files: list[dict[str, Any]]) -> str:
@@ -292,12 +283,9 @@ def _course_notes(
     for f in files:
         excerpt = ""
         if f["text"]:
-            try:
-                import frontmatter
+            import frontmatter
 
-                excerpt = frontmatter.load(ws / f["text"]).content[:EXCERPT_CHARS]
-            except (OSError, ValueError):
-                excerpt = ""
+            excerpt = frontmatter.load(ws / f["text"]).content[:EXCERPT_CHARS]
         documents.append(
             {
                 "source": f["path"],
@@ -345,12 +333,9 @@ def _course_notes(
 
 
 def _concept_labels(settings: Settings, course: str) -> list[str]:
-    try:
-        from . import graph as graph_mod
+    from . import graph as graph_mod
 
-        nodes = graph_mod.load_nodes(settings)
-    except MitsyncError:
-        return []
+    nodes = graph_mod.load_nodes(settings)
     prefix = f"{course}/"
     labels = {
         node["label"]
@@ -372,7 +357,7 @@ def _global_index(
         "# Knowledge base index",
         "",
         f"Workspace: `{settings.paths.workspace}`  ",
-        f"Canvas mirror last updated: {last_sync}",
+        f"Last successful `mitsync sync`: {last_sync}",
         "",
         "Start at [AGENTS.md](AGENTS.md) if you are an agent picking this up cold.",
         "",
@@ -427,7 +412,7 @@ def _agents_md(settings: Settings, courses: dict[str, list[dict[str, Any]]], las
         "blindly.",
         "",
         f"Workspace root: `{settings.paths.workspace}`  ",
-        f"Canvas mirror last updated: {last_sync}",
+        f"Last successful `mitsync sync`: {last_sync}",
         "",
         "## 1. Folder contract",
         "",
@@ -558,30 +543,18 @@ def _agents_md(settings: Settings, courses: dict[str, list[dict[str, Any]]], las
 # --------------------------------------------------------------------------
 # entry point
 # --------------------------------------------------------------------------
-def _refresh_graph_backbone(settings: Settings) -> None:
-    """Make sure every extracted document has Course/Resource nodes to cite.
-
-    Deliberately runs with NO judge: `mitsync kb build` must never raise
-    PendingJudgment from graph extraction (the CLI has no resolve path for it).
-    Judged triple extraction is `graph.extract_graph(settings, judge)`, which
-    needs its own CLI subcommand.
-    """
-    try:
-        from . import graph as graph_mod
-
-        graph_mod.extract_graph(settings, None)
-    except MitsyncError as exc:  # a broken ontology must not block the KB
-        log.warning("kb build: graph backbone skipped (%s)", exc)
-
-
 def build(settings: Settings, judge: Any = None) -> KBReport:
     """Regenerate every page under `_kb/`."""
-    settings.paths.kb.mkdir(parents=True, exist_ok=True)
-    settings.paths.kb_courses.mkdir(parents=True, exist_ok=True)
-    _refresh_graph_backbone(settings)
+    from . import graph as graph_mod
+
+    # Give every extracted document Course/Resource nodes to cite, deliberately
+    # with NO judge: `mitsync kb build` must never raise PendingJudgment from
+    # graph extraction (the CLI has no resolve path for it). Judged triple
+    # extraction is `graph extract`, which has its own subcommand.
+    graph_mod.extract_graph(settings, None)
 
     courses = inventory(settings)
-    last_sync = _last_sync(settings)
+    last_sync = last_successful_sync(settings) or "never (run `mitsync sync`)"
     report = KBReport(
         courses=list(courses),
         files=sum(len(f) for f in courses.values()),
@@ -589,7 +562,7 @@ def build(settings: Settings, judge: Any = None) -> KBReport:
     )
 
     for course, files in courses.items():
-        cdir = _course_dir(settings, course)
+        cdir = settings.paths.kb_courses / course
         _write(report, cdir / "INDEX.md", _course_index(settings, course, files))
         _write(report, cdir / "NOTES.md", _course_notes(settings, judge, course, files, report))
 
@@ -599,7 +572,7 @@ def build(settings: Settings, judge: Any = None) -> KBReport:
     manifest = {
         "kb_version": KB_VERSION,
         "workspace": str(settings.paths.workspace),
-        "canvas_last_updated": last_sync,
+        "last_sync": last_sync,
         "courses": {
             course: {
                 "index": f"_kb/courses/{course}/INDEX.md",

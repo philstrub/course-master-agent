@@ -1,30 +1,63 @@
-"""DuckDB manifest: the record of what has been mirrored from Canvas.
+"""
+# Manifest
 
-Three tables live in `state/manifest.duckdb`:
+The record of what has been mirrored from Canvas, and where it ended up.
 
-``files``
-    One row per Canvas file, keyed by the Canvas ``uuid`` (a synthetic
-    ``canvas-<id>`` key is used when Canvas omits one). ``mirror_path`` is where
-    :mod:`mitsync.sync` put the bytes; ``filed_path`` is where
-    :mod:`mitsync.organize` later copied/linked them (``NULL`` until then).
-    Both are workspace-relative POSIX strings.
-``courses``
-    One row per Canvas course seen, keyed by ``canvas_id``. ``folder`` is the
-    sanitized mirror folder name under ``_canvas/``; the mapping to the
-    student's own human-named folder lives in ``config/courses.yml``.
-``runs``
-    Append-only log of command invocations with a JSON ``stats`` blob, so jobs
-    can be catch-up safe (work is derived from manifest state, never from
-    "time since last run").
+## 1. What This Module Does
 
-Opening is idempotent: the schema is created if absent and left alone if
-present. Upserts are delete-then-insert semantics via ``INSERT OR REPLACE``.
+Owns `state/manifest.duckdb` and the three tables in it:
+
+`files`
+    One row per Canvas file, keyed by the Canvas `uuid` (a synthetic
+    `canvas-<id>` key is used when Canvas omits one). `mirror_path` is where
+    `sync` put the bytes; `filed_path` is where `organize` later copied or
+    linked them, and is `NULL` until then. Both are workspace-relative POSIX
+    strings.
+`courses`
+    One row per Canvas course seen, keyed by `canvas_id`. `folder` is the
+    sanitized mirror folder name under `_canvas/`; the mapping to the
+    student's own human-named folder is a separate question and lives in
+    `config/courses.yml`.
+`runs`
+    Append-only log of command invocations with a JSON `stats` blob.
+
+## 2. Why This Module Exists
+
+Every scheduled job in this tool has to be catch-up safe: work is derived from
+manifest state versus Canvas state, never from "time since the last run", so a
+laptop that was shut for a week resumes correctly instead of skipping the
+window it missed. That requires durable state describing what is already
+mirrored, and this is it.
+
+It is also what decouples the two halves of the tool. `sync` writes rows;
+`organize` reads them to decide what still needs filing and writes back
+`filed_path`. Neither has to walk the filesystem to find out what the other
+did.
+
+## 3. How It Fits in the Architecture
+
+A storage leaf: it knows about rows, not about Canvas or about filing. `sync`,
+`organize`, `deadlines` and `course_map` are the consumers. The database is
+*not* a source of truth for file content -- `_canvas/` is, and the mirror can
+always be re-synced -- but it is the authority on when a command last ran.
+
+## 4. Key Concepts
+
+**Idempotent open.** The schema is created if absent and left alone if
+present; upserts are `INSERT OR REPLACE`.
+
+**`first_seen` and `filed_path` are protected on upsert.** A re-sync must not
+reset when a file was first seen, and `sync` (which knows nothing about
+filing) must not blank a `filed_path` that `organize` owns.
+
+**Runs are append-only.** `last_run` answers sync-freshness questions for the
+briefing and for `_kb/AGENTS.md`, so both read the same authority and can
+never disagree.
 """
 
 from __future__ import annotations
 
 import json
-from collections.abc import Iterator
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
@@ -127,7 +160,6 @@ class Manifest:
 
     def __init__(self, db_path: Path) -> None:
         self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._con = duckdb.connect(str(self.db_path))
         self._con.execute(_SCHEMA)
 
@@ -167,7 +199,7 @@ class Manifest:
         row = self._con.execute(
             f"SELECT {', '.join(_FILE_COLUMNS)} FROM files WHERE uuid = ?", [uuid]
         ).fetchone()
-        return _to_file(row) if row else None
+        return FileRecord(*row) if row else None
 
     def list_files(
         self, course: str | None = None, *, unfiled_only: bool = False
@@ -188,7 +220,7 @@ class Manifest:
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY last_synced DESC, mirror_path"
-        return [_to_file(r) for r in self._con.execute(sql, params).fetchall()]
+        return [FileRecord(*r) for r in self._con.execute(sql, params).fetchall()]
 
     def set_filed_path(self, uuid: str, filed_path: str | None) -> None:
         self._con.execute("UPDATE files SET filed_path = ? WHERE uuid = ?", [filed_path, uuid])
@@ -225,17 +257,5 @@ class Manifest:
         ).fetchone()
         if row is None:
             return None
-        try:
-            stats = json.loads(row[3]) if row[3] else {}
-        except json.JSONDecodeError:  # pragma: no cover - defensive
-            log.warning("run stats for %s are not valid JSON", command)
-            stats = {}
+        stats = json.loads(row[3]) if row[3] else {}
         return {"command": row[0], "started": row[1], "finished": row[2], "stats": stats}
-
-    # -- convenience -------------------------------------------------------
-    def iter_files(self) -> Iterator[FileRecord]:
-        yield from self.list_files()
-
-
-def _to_file(row: tuple) -> FileRecord:
-    return FileRecord(*row)

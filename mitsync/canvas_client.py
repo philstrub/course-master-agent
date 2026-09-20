@@ -1,24 +1,79 @@
-"""HTTP client for the Canvas LMS REST API.
+"""
+# Canvas Client
+
+The HTTP client for the Canvas LMS REST API, and the chokepoint that makes
+Canvas access read-only.
+
+## 1. What This Module Does
+
+Issues every request mitsync ever makes to Canvas: single GETs, paginated
+collections, and file downloads. It hides Canvas's pagination, absorbs its
+throttling, and translates every non-2xx response into a typed
+`MitsyncError` before returning to the caller.
+
+## 2. Why This Module Exists
 
 This is the one place HTTP correctness matters, so everything awkward about
-Canvas is centralized here:
+Canvas is centralized here rather than rediscovered by each caller:
 
-* **Pagination** — Canvas defaults to 10 items per page and advertises the next
-  page only in the ``Link`` header. :meth:`CanvasClient.paginate` always sends
-  ``per_page`` and follows ``rel="next"`` URLs as opaque strings.
-* **Throttling** — responses carry ``X-Request-Cost`` and
-  ``X-Rate-Limit-Remaining``. The docs disagree on whether throttling surfaces
-  as 429 or 403, so *both* are treated as throttle signals when the body or
-  headers look rate-limited; a plain 403 on a resource is access-denied. The
-  client also pauses proactively once the remaining budget drops below
-  ``settings.canvas.min_rate_limit_remaining``.
-* **Pre-signed download URLs** — a file's ``url`` field is short lived and is
-  never cached. :meth:`CanvasClient.download` re-resolves it via
-  ``GET /files/:id`` immediately before streaming, and retries exactly once
-  through a fresh resolve if the download 403s mid-flight
-  (:class:`~mitsync.errors.StalePresignedURL`).
+* **Pagination** -- Canvas defaults to 10 items per page and advertises the
+  next page only in the `Link` header. `paginate` always sends `per_page` and
+  follows `rel="next"` URLs as opaque strings.
+* **Throttling** -- responses carry `X-Request-Cost` and
+  `X-Rate-Limit-Remaining`. The docs disagree about whether throttling
+  surfaces as 429 or 403, so *both* are treated as throttle signals when the
+  body or headers look rate-limited; a plain 403 on a resource is
+  access-denied. The client also pauses proactively once the remaining budget
+  drops below `settings.canvas.min_rate_limit_remaining`.
+* **Pre-signed download URLs** -- a file's `url` field is short-lived and is
+  never cached. `download` re-resolves it via `GET /files/:id` immediately
+  before streaming, and retries exactly once through a fresh resolve if the
+  download 403s mid-flight.
 
 Requests are deliberately serial: Canvas penalizes concurrency.
+
+## 3. How It Fits in the Architecture
+
+`sync` is the only production consumer; everything else reads the mirror and
+the manifest that `sync` leaves behind, so no other module needs `httpx`. The
+client knows nothing about courses, folders or filing -- it returns Canvas
+payloads verbatim and lets `sync` decide what they mean.
+
+## 4. Key Concepts
+
+**Read-only is enforced, not assumed.** Canvas holds graded work: a stray
+write could submit, delete or overwrite real coursework. `_request` refuses any
+method outside `READ_ONLY_METHODS` (`GET`, `HEAD`) with `CanvasWriteRefused`,
+at the single chokepoint every request passes through, so no future caller can
+introduce a write by accident. `tests/test_canvas_read_only.py` additionally
+scans every module for HTTP write calls. Do not relax either check.
+
+**Downloads are atomic.** Bytes land in a sibling `.part` file and are renamed
+into place, so a killed run never leaves a half-written file in the mirror.
+The sha256 is computed from the same stream.
+
+**Nothing raw escapes.** A caller only ever has to catch `MitsyncError`. A
+404 is split by its body text into `CanvasFeatureDisabled` (the course turned
+that tab off -- expected, skip it) and `CanvasNotFound` (a genuine miss, worth
+reporting); the marker wording was verified against canvas.mit.edu on
+2026-09-20 as `{"message": "That page has been disabled for this course"}`.
+
+**Why exceptions are caught here.** Canvas is a genuinely external system, and
+this module is the boundary where its failures become typed errors. Four
+handlers, and only four:
+
+1. `httpx.HTTPStatusError` and `httpx.TransportError` -- translated into the
+   `Canvas*` error family, or retried with jittered backoff for the statuses
+   that are worth retrying.
+2. A non-JSON body on a `200` -- a throttled Canvas answers with an HTML error
+   page and a success status. `_json` turns that into `CanvasRateLimited`;
+   anything else re-raises, so no caller ever receives a silently empty
+   payload.
+3. `StalePresignedURL` -- caught exactly once in `download`, to re-resolve the
+   URL and retry. A second failure propagates.
+4. `httpx.ResponseNotRead` -- a streamed response has no buffered body, so the
+   two helpers that inspect `response.text` fall back to the headers. That
+   exception type only, and for that reason only.
 """
 
 from __future__ import annotations
@@ -166,7 +221,7 @@ class CanvasClient:
     # -- internals ---------------------------------------------------------
     def _resolve_url(self, file_id: int) -> str:
         record = self.get(f"/files/{file_id}")
-        url = (record or {}).get("url")
+        url = record.get("url")
         if not url:
             raise StalePresignedURL(f"Canvas returned no download url for file {file_id}")
         return url
@@ -294,7 +349,8 @@ def _json(response: httpx.Response) -> Any:
         return None
     try:
         return response.json()
-    except ValueError as exc:  # pragma: no cover - defensive
+    except ValueError as exc:
+        # Canvas answers a throttled request with an HTML error page and a 200.
         if _looks_throttled(response):
             raise CanvasRateLimited(None) from exc
         raise
@@ -311,7 +367,8 @@ def _body_message(response: httpx.Response) -> str:
     """Canvas's human-readable message, tolerating an empty or non-JSON body."""
     try:
         text = response.text
-    except Exception:  # pragma: no cover - streaming body not read
+    except httpx.ResponseNotRead:
+        # `download()` streams; its body is never buffered, so there is no text.
         return ""
     if not (text or "").strip():
         return ""
@@ -344,7 +401,8 @@ def _looks_throttled(response: httpx.Response) -> bool:
         return True
     try:
         body = response.text
-    except Exception:  # pragma: no cover - streaming body not read
+    except httpx.ResponseNotRead:
+        # A streamed download has no buffered body; headers above are the signal.
         return False
     return bool(_THROTTLE_MARKERS.search(body or ""))
 

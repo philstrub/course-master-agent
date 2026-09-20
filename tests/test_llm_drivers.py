@@ -1,3 +1,28 @@
+"""
+# Judgment Driver Tests
+
+The three drivers, the task specs, and the structural rule that keeps provider
+SDKs out of the rest of the codebase.
+
+Three groups. The `rules` driver is checked for producing schema-valid results
+for every task it claims to handle, and for returning a well-formed empty
+answer rather than raising on one it does not. The `agent` driver is checked by
+running it and asserting on the task file it wrote and the `PendingJudgment` it
+raised, then feeding results back through `resolve_task` -- valid ones accepted,
+malformed ones rejected with the failing JSON path named. Every registered spec
+under `mitsync/llm/tasks/` is checked for the four required keys.
+
+The last group is the important one and is enforced with `ast`, not mocks:
+no module outside `mitsync/llm/` imports a provider SDK, the provider imports
+inside `api_driver` sit within functions rather than at module scope, and the
+package therefore imports cleanly with none of them installed. That invariant
+is what makes mitsync usable with zero credentials and testable without a
+network, so these tests fail loudly by design.
+
+The payload constants at the top of the file are realistic but fictitious
+course material; no test calls a model, reads a key, or touches the network.
+"""
+
 from __future__ import annotations
 
 import ast

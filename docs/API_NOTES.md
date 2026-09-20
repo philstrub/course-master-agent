@@ -133,15 +133,10 @@ Canvas instance, so the general Canvas LMS REST API docs
 
 ### Client library
 
-- `canvasapi` (ucfopen) is the mature, actively maintained Python client. **We do not use it.**
-  `mitsync` calls the REST API directly with `httpx` because the sync layer needs the raw
-  `Link`, `X-Rate-Limit-Remaining` and `X-Request-Cost` headers, per-download re-resolution of
-  pre-signed URLs, and streamed downloads with sha256 — all of which `canvasapi` abstracts away.
-  It remains a reasonable reference implementation for endpoint shapes
-  for this API and is the intended wrapper underneath `canvas_client.py`
-  for the standard resources, with raw HTTP used for planner/announcement
-  calls if the library lags the API.
-  (https://github.com/ucfopen/canvasapi)
+`mitsync` calls the REST API directly with `httpx`. It does not use `canvasapi`:
+the sync layer needs the raw `Link`, `X-Rate-Limit-Remaining` and
+`X-Request-Cost` headers, per-download re-resolution of pre-signed URLs, and
+streamed downloads with sha256 — all of which that library abstracts away.
 
 ### UNVERIFIED — must remain marked as such in any implementation notes
 
@@ -227,14 +222,8 @@ universal binary at `~/.local/bin/ical-guy` (sha256
 ad-hoc signed, so Gatekeeper objects on first run and the TCC grant may
 need re-granting after an upgrade.
 
-### Rejected alternatives (and why)
-
-| Alternative | Why rejected |
-|---|---|
-| `icalBuddy` | Unmaintained; reads Calendar's sqlite cache directly, which requires Full Disk Access rather than the narrower Calendars permission |
-| AppleScript / driving Calendar.app directly | Documented to be multi-second to outright hanging when the query touches an Exchange-backed calendar |
-| Reading `~/Library/Calendars` directly | Requires Full Disk Access; the on-disk format is private/undocumented and not a supported integration point |
-| CalDAV against MIT's Exchange/M365 backend | Microsoft has never supported CalDAV for Exchange/M365; the supported network path is Exchange Web Services (EWS), which Microsoft is retiring in October 2026, with Microsoft Graph as the replacement — that would require registering an app in MIT's Entra tenant, which MIT's tenant policy may block for a student account (**UNVERIFIED**) |
+Alternatives to EventKit, and why each was rejected: see
+`docs/ADR/0003-calendar-read-only-eventkit.md`. ADRs own decisions.
 
 ## OpenClaw (optional host)
 

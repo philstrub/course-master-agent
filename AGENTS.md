@@ -23,9 +23,13 @@ The key principle:
 
 ## Code Style and Code Patterns
 
-- **No defensive code.** No try/except "just in case." Missing config → `FileNotFoundError`. Bad query → raise. The only exception handling is at the API boundary (FastAPI exception handlers converting Python exceptions to HTTP responses). Defensive code hides bugs — in an agent-first system, a clear error is infinitely more useful than a silent failure.
+- **No defensive code.** No try/except "just in case." Missing config → `FileNotFoundError`. Bad query → raise. Defensive code hides bugs — in an agent-first system, a clear error is infinitely more useful than a silent failure.
+  The only exception handling is at a boundary. In this repo there are exactly two:
+  1. **The CLI entry point** — `cli.run()` turning a `MitsyncError` into an exit code and a one-line message, and `_pending` turning `PendingJudgment` into exit 20.
+  2. **Genuinely external failure** — a Canvas HTTP status, a pre-signed URL that expired mid-download, a missing `ical-guy` binary, a TCC denial, malformed JSON from a third-party CLI, an optional provider SDK that is not installed, or untrusted judge output being validated. Each of these translates the foreign failure into a typed `MitsyncError` with remediation text. Each one must say in the module docstring why it is there.
+  Everything else raises. Catching a `MitsyncError` inside the library to return `[]`, `{}` or `None` is the specific anti-pattern this rule exists to prevent.
 - **Pydantic everywhere.** Configs, API requests/responses, all data models. Validates at the boundary so business logic can trust its inputs.
-- **Logging:** `logger.info("[function_name] message")`. Function name in square brackets at the start of every log line.
+- **Logging:** one `log = logging.getLogger(__name__)` per module; the logger name carries the attribution, so do not hand-prefix messages with the function name.
 - **Lean and concise.** Three similar lines > premature abstraction. No helpers for one-time ops. No feature flags. No backward-compatibility shims.
 - **Prefer the best supported stack over workaround code.** If the repository is in active development and a cleaner implementation requires upgrading dependencies, evaluate that path first instead of settling for an older pattern or compatibility fallback. Keep the workaround only when an official compatibility constraint clearly blocks the upgrade, and document that reason in the relevant plan or module docstring.
 - **Terminology:** "nodes" and "edges" everywhere. Not vertices, not entities, not relationships. "Node types" (not entity types), "edge types" (not relationship types).

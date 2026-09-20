@@ -1,14 +1,67 @@
-"""The `mitsync` command line.
+"""
+# CLI
 
-Business logic lives in sibling modules owned by other phases; this file only
-wires commands to them. Those modules are imported LAZILY inside each command
-body so the CLI stays importable before they land, and a missing module prints
-a clear "not implemented yet" message and exits 2.
+The `mitsync` command line: the only place an error becomes an exit code.
+
+## 1. What This Module Does
+
+Defines the Typer app and wires each command to the sibling module that does
+the work. Business logic lives in those modules; this file contains argument
+parsing, output, the `resolve` replay table, and `doctor`.
+
+## 2. Why This Module Exists
+
+It is one of the two exception boundaries the codebase allows. `run()` turns
+any escaped `MitsyncError` into a one-line message and exit 1 instead of a
+stack trace, and `_pending` turns a `PendingJudgment` into exit code 20 plus
+the instructions for resolving it. Everything below raises; only here does a
+failure become a process outcome.
+
+## 3. How It Fits in the Architecture
+
+The top layer, importing everything and imported by nothing. Because the
+library is also used directly -- by tests and by OpenClaw skills that never
+touch Typer -- no module below may exit the process or print a fatal error, and
+this file is where that discipline is paid for.
+
+## 4. Key Concepts
+
+**Four commands can need judgment.** `map`, `organize plan`, `graph extract`
+and `kb build`. Everything else (`sync`, `calendar`, `due`, `brief`,
+`extract`, `graph rebuild`, `graph query`, `doctor`, `resolve`) is pure I/O and
+can never produce a pending task.
+
+**The resolve loop.** Under `--driver agent`, a command writes a task file and
+exits 20 without calling any model. `mitsync resolve <task> --result <json>`
+validates the agent's answer against the task's schema and then *replays the
+originating command* with it, so the effect is exactly what `--driver api`
+would have produced. `REPLAY` is that table, keyed by the `origin_command`
+stored in the task file; `_PreJudged` and `_PerCourseJudged` are the
+`Judge` implementations that feed the stored answer back in. `kb build` uses
+the per-course variant because it judges one course per round trip.
+
+**Planning and applying are separate commands.** `organize plan` writes a plan
+and moves nothing; `organize apply` is the only thing that touches the
+student's files, and it records an undo log.
+
+**`doctor` is the cold-start surface.** It reports what is configured, what is
+missing, where each secret came from (never its value), and whether the
+workspace directories are writable.
+
+**Why exceptions are caught here.** This is the boundary, so the handlers are
+the point rather than an exception to the rule. `run()` catches `MitsyncError`
+and `PendingJudgment` as the backstop; individual commands catch only the
+failure they specifically expect -- a pending judgment to print the task file,
+a denied calendar grant, a rejected agent result -- so that a new failure mode
+can never be silently absorbed by a command and still reaches `run()`.
+`doctor` additionally catches `ImportError` and `MitsyncError` per check,
+because reporting a broken component is its entire job.
 """
 
 from __future__ import annotations
 
 import json
+import os
 import shutil
 import sys
 from datetime import UTC, datetime, timedelta
@@ -19,8 +72,18 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
+from . import calendar_read, deadlines
+from . import course_map as course_map_mod
+from . import extract as extract_mod
+from . import graph as graph_mod
+from . import kb as kb_mod
+from . import organize as organize_mod
+from . import sync as sync_mod
 from .config import Settings, load_settings
+from .env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
 from .errors import EXIT_PENDING_JUDGMENT, MitsyncError, PendingJudgment
+from .llm.agent_driver import load_task, resolve_task
+from .llm.base import get_judge, load_task_spec
 from .logging import setup_logging
 
 console = Console()
@@ -43,31 +106,11 @@ DriverOpt = Annotated[
     typer.Option("--driver", help="Judgment driver: api, agent, or rules."),
 ]
 
-_PHASES = {
-    "sync": 2,
-    "canvas_client": 2,
-    "manifest": 2,
-    "organize": 3,
-    "calendar_read": 4,
-    "deadlines": 4,
-    "extract": 5,
-    "graph": 6,
-    "kb": 7,
-    "notify": 8,
-}
-
 
 def _settings() -> Settings:
     s = load_settings()
     s.paths.ensure()
     return s
-
-
-def _not_implemented(module: str, exc: Exception) -> None:
-    phase = _PHASES.get(module, "?")
-    console.print(f"[yellow]`mitsync {module}` is not implemented yet (phase {phase}).[/yellow]")
-    console.print(f"[dim]{type(exc).__name__}: {exc}[/dim]")
-    raise typer.Exit(2)
 
 
 def _pending(exc: PendingJudgment) -> None:
@@ -77,12 +120,6 @@ def _pending(exc: PendingJudgment) -> None:
     console.print()
     console.print(exc.instructions)
     raise typer.Exit(EXIT_PENDING_JUDGMENT)
-
-
-def _judge(settings: Settings, driver: str | None):
-    from .llm.base import get_judge
-
-    return get_judge(settings, driver)
 
 
 @app.callback()
@@ -105,12 +142,12 @@ def sync(
 ) -> None:
     """Mirror Canvas files into the workspace `_canvas/` tree."""
     settings = _settings()
-    try:
-        from . import sync as sync_mod
-
-        sync_mod.run_sync(settings, course=course, dry_run=dry_run, full=full)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("sync", exc)
+    report = sync_mod.run_sync(settings, course=course, dry_run=dry_run, full=full)
+    # A sync that recorded errors must not look like success. scripts/mitsync-cron.sh
+    # branches on the exit code, so exiting 0 here would report a revoked token as
+    # "Completed with no errors" on every scheduled run.
+    if report.errors:
+        raise SystemExit(1)
 
 
 # --------------------------------------------------------------------------
@@ -127,14 +164,10 @@ def map_courses(
     """Match Canvas courses to the workspace course folders."""
     settings = _settings()
     try:
-        from . import organize as organize_mod
-
         judge = _resolved_judge(settings, driver, resolve)
-        organize_mod.suggest_course_map(settings, judge, apply=apply)
+        course_map_mod.suggest_course_map(settings, judge, apply=apply)
     except PendingJudgment as exc:
         _pending(exc)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("organize", exc)
 
 
 @organize_app.command("plan")
@@ -150,14 +183,10 @@ def organize_plan(
     """Propose destinations for newly mirrored files (writes a plan, changes nothing)."""
     settings = _settings()
     try:
-        from . import organize as organize_mod
-
         judge = _resolved_judge(settings, driver, resolve)
         organize_mod.plan(settings, judge, include_existing=include_existing)
     except PendingJudgment as exc:
         _pending(exc)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("organize", exc)
 
 
 @organize_app.command("apply")
@@ -167,16 +196,13 @@ def organize_apply(
     ] = None,
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
 ) -> None:
-    """Apply a plan, recording an undo log."""
-    settings = _settings()
-    if not yes and not typer.confirm("Apply this plan to the workspace?", default=False):
-        raise typer.Exit(1)
-    try:
-        from . import organize as organize_mod
+    """Apply a plan, recording an undo log.
 
-        organize_mod.apply_plan(settings, plan_path, yes=yes)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("organize", exc)
+    The only confirmation prompt lives in ``organize.apply_plan``, which knows
+    how many pre-existing files would actually move; ``--yes`` suppresses it.
+    """
+    settings = _settings()
+    organize_mod.apply_plan(settings, plan_path, yes=yes)
 
 
 @organize_app.command("undo")
@@ -187,12 +213,7 @@ def organize_undo(
 ) -> None:
     """Reverse a previously applied plan."""
     settings = _settings()
-    try:
-        from . import organize as organize_mod
-
-        organize_mod.undo(settings, log_id)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("organize", exc)
+    organize_mod.undo(settings, log_id)
 
 
 # --------------------------------------------------------------------------
@@ -208,12 +229,7 @@ def calendar_cmd(
     start = datetime.now(UTC)
     end = start + timedelta(days=days or settings.calendar.lookahead_days)
     try:
-        from . import calendar_read
-
         events = calendar_read.read_events(settings, start, end)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("calendar_read", exc)
-        return
     except MitsyncError as exc:
         # A missing binary or a denied TCC grant is expected, not exceptional:
         # print the remediation the module supplied rather than a traceback.
@@ -222,31 +238,24 @@ def calendar_cmd(
     if as_json:
         console.print_json(json.dumps([e.to_dict() for e in events], indent=2, default=str))
     else:
-        _print_rows("Events", ["when", "title", "calendar"], events)
+        graph_mod.print_rows(
+            "Events",
+            [{"when": e.when, "title": e.title, "calendar": e.calendar} for e in events],
+        )
 
 
 @app.command()
 def due() -> None:
     """Collect upcoming assignment deadlines."""
     settings = _settings()
-    try:
-        from . import deadlines
-
-        deadlines.build_due(settings)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("deadlines", exc)
+    deadlines.build_due(settings)
 
 
 @app.command()
 def brief() -> None:
     """Write a daily briefing combining deadlines and calendar."""
     settings = _settings()
-    try:
-        from . import deadlines
-
-        deadlines.write_briefing(settings)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("deadlines", exc)
+    deadlines.write_briefing(settings)
 
 
 # --------------------------------------------------------------------------
@@ -258,24 +267,14 @@ def extract(
 ) -> None:
     """Extract text from mirrored documents into `_kb/text/`."""
     settings = _settings()
-    try:
-        from . import extract as extract_mod
-
-        extract_mod.extract_all(settings, force=force)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("extract", exc)
+    extract_mod.extract_all(settings, force=force)
 
 
 @graph_app.command("rebuild")
 def graph_rebuild() -> None:
     """Re-derive the whole graph from `_kb/graph/*.jsonl`."""
     settings = _settings()
-    try:
-        from . import graph as graph_mod
-
-        graph_mod.rebuild(settings)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("graph", exc)
+    graph_mod.rebuild(settings)
 
 
 @graph_app.command("extract")
@@ -292,14 +291,10 @@ def graph_extract(
     """Turn extracted text into graph nodes and edges (deterministic backbone + judgment)."""
     settings = _settings()
     try:
-        from . import graph as graph_mod
-
         judge = _resolved_judge(settings, driver, resolve)
         graph_mod.extract_graph(settings, judge, since=since)
     except PendingJudgment as exc:
         _pending(exc)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("graph", exc)
 
 
 @graph_app.command("query")
@@ -309,12 +304,7 @@ def graph_query(
 ) -> None:
     """Query the knowledge graph."""
     settings = _settings()
-    try:
-        from . import graph as graph_mod
-
-        graph_mod.query(settings, sql=sql, canned=canned)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("graph", exc)
+    graph_mod.query(settings, sql=sql, canned=canned)
 
 
 @kb_app.command("build")
@@ -332,43 +322,15 @@ def kb_build(
     """
     settings = _settings()
     try:
-        from . import kb as kb_mod
-
         judge = _resolved_judge(settings, driver, resolve) if (driver or resolve) else None
         kb_mod.build(settings, judge)
     except PendingJudgment as exc:
         _pending(exc)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("kb", exc)
 
 
 # --------------------------------------------------------------------------
 # resolve: hand an agent's judgment back to the command that asked for it
 # --------------------------------------------------------------------------
-def _replay_map(settings: Settings, result: dict[str, Any], args: dict[str, Any]) -> None:
-    from . import organize as organize_mod
-
-    organize_mod.suggest_course_map(
-        settings, _PreJudged(result), apply=bool(args.get("apply", False))
-    )
-
-
-def _replay_organize_plan(settings: Settings, result: dict[str, Any], args: dict[str, Any]) -> None:
-    from . import organize as organize_mod
-
-    organize_mod.plan(
-        settings,
-        _PreJudged(result),
-        include_existing=bool(args.get("include_existing", False)),
-    )
-
-
-def _replay_graph_extract(settings: Settings, result: dict[str, Any], args: dict[str, Any]) -> None:
-    from . import graph as graph_mod
-
-    graph_mod.extract_graph(settings, _PreJudged(result), since=args.get("since"))
-
-
 class _PerCourseJudged:
     """Return a resolved result for one course; defer every other course again.
 
@@ -389,19 +351,21 @@ class _PerCourseJudged:
         return self._fallback.judge(task)
 
 
-def _replay_kb_build(settings: Settings, result: dict[str, Any], args: dict[str, Any]) -> None:
-    from . import kb as kb_mod
-
-    judge = _PerCourseJudged(result, args.get("course"), _judge(settings, "agent"))
-    kb_mod.build(settings, judge)
-
-
-# Originating command name (stored in the task file) -> replay function.
+# Originating command name (stored in the task file) -> how to replay it with
+# the agent's answer. Each takes (settings, validated result, origin_args).
 REPLAY: dict[str, Any] = {
-    "map": _replay_map,
-    "organize plan": _replay_organize_plan,
-    "graph extract": _replay_graph_extract,
-    "kb build": _replay_kb_build,
+    "map": lambda s, result, args: course_map_mod.suggest_course_map(
+        s, _PreJudged(result), apply=bool(args.get("apply", False))
+    ),
+    "organize plan": lambda s, result, args: organize_mod.plan(
+        s, _PreJudged(result), include_existing=bool(args.get("include_existing", False))
+    ),
+    "graph extract": lambda s, result, args: graph_mod.extract_graph(
+        s, _PreJudged(result), since=args.get("since")
+    ),
+    "kb build": lambda s, result, args: kb_mod.build(
+        s, _PerCourseJudged(result, args.get("course"), get_judge(s, "agent"))
+    ),
 }
 
 
@@ -418,7 +382,7 @@ class _PreJudged:
 def _resolved_judge(settings: Settings, driver: str | None, resolve: Path | None):
     """Use a stored agent result if --resolve was passed, else a real driver."""
     if resolve is None:
-        return _judge(settings, driver)
+        return get_judge(settings, driver)
     return _PreJudged(json.loads(Path(resolve).read_text()))
 
 
@@ -429,8 +393,6 @@ def resolve(
 ) -> None:
     """Validate an agent's judgment and replay the command that needed it."""
     settings = _settings()
-    from .llm.agent_driver import load_task, resolve_task
-
     try:
         validated = resolve_task(task_path, result)
     except MitsyncError as exc:
@@ -446,24 +408,12 @@ def resolve(
             "task file for the caller to pick up.[/yellow]"
         )
         return
-    try:
-        replay(settings, validated, task.origin_args)
-    except (ImportError, AttributeError) as exc:
-        _not_implemented("organize", exc)
+    replay(settings, validated, task.origin_args)
 
 
 # --------------------------------------------------------------------------
 # doctor
 # --------------------------------------------------------------------------
-def _print_rows(title: str, columns: list[str], rows: Any) -> None:
-    table = Table(title=title)
-    for c in columns:
-        table.add_column(c)
-    for row in rows or []:
-        table.add_row(*[str(row.get(c, "")) for c in columns])
-    console.print(table)
-
-
 def _writable(path: Path) -> bool:
     try:
         path.mkdir(parents=True, exist_ok=True)
@@ -475,18 +425,11 @@ def _writable(path: Path) -> bool:
         return False
 
 
-def _dotenv_hint() -> str:
-    """Note the escape hatch in a doctor row, but only while it is active."""
-    from .env import DISABLE_ENV, dotenv_disabled
-
-    return f" ({DISABLE_ENV}=0: .env loading is disabled)" if dotenv_disabled() else ""
-
-
-def _secret_source(name: str) -> str:
-    """Where a secret came from. Never includes the value itself."""
-    from .env import source_of
-
-    return source_of(name)
+def _secret_source(dotenv_sources: dict[str, str], name: str) -> str:
+    """Where a secret came from, given `load_dotenv()`'s mapping. Never the value."""
+    if not os.environ.get(name):
+        return NOT_SET
+    return dotenv_sources.get(name, ENVIRONMENT)
 
 
 @app.command()
@@ -526,13 +469,17 @@ def doctor() -> None:
         _render_doctor(checks)
         raise typer.Exit(1)
 
+    dotenv_sources = load_dotenv()
+    # Note the escape hatch in the rows below, but only while it is active.
+    hint = f" ({DISABLE_ENV}=0: .env loading is disabled)" if dotenv_disabled() else ""
+
     tok_env = settings.canvas.token_env
     add(
         "PASS" if settings.canvas.token else "WARN",
         "canvas token",
-        f"${tok_env} is set (source: {_secret_source(tok_env)})"
+        f"${tok_env} is set (source: {_secret_source(dotenv_sources, tok_env)})"
         if settings.canvas.token
-        else f"${tok_env} is not set{_dotenv_hint()}; `mitsync sync` "
+        else f"${tok_env} is not set{hint}; `mitsync sync` "
         f"will fail. Create a token in Canvas > Account > Settings.",
     )
 
@@ -542,9 +489,9 @@ def doctor() -> None:
     add(
         "PASS" if has_key else "WARN",
         "llm api key",
-        f"${key_env} is set (source: {_secret_source(key_env)})"
+        f"${key_env} is set (source: {_secret_source(dotenv_sources, key_env)})"
         if has_key
-        else f"${key_env} is not set{_dotenv_hint()} (fine: the agent driver needs no key)",
+        else f"${key_env} is not set{hint} (fine: the agent driver needs no key)",
     )
     add(
         "PASS",
@@ -584,8 +531,6 @@ def doctor() -> None:
         add("FAIL", "duckdb", f"import failed ({exc}); run `uv sync`")
 
     try:
-        from .llm.base import load_task_spec
-
         names = sorted(p.stem for p in (Path(__file__).parent / "llm" / "tasks").glob("*.json"))
         for n in names:
             load_task_spec(n)

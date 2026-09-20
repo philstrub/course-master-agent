@@ -23,7 +23,7 @@ import pytest
 
 from mitsync import calendar_read
 from mitsync.config import Settings
-from mitsync.errors import CalendarAccessDenied, MitsyncError
+from mitsync.errors import CalendarAccessDenied, ConfigError, MitsyncError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "calendar"
 
@@ -566,14 +566,16 @@ def test_tag_course_matches_the_number_in_a_location_or_notes(
     assert calendar_read.tag_course(settings, event) == "Optimization"
 
 
-def test_tagging_survives_a_broken_course_map(
+def test_a_broken_course_map_is_reported_not_swallowed(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """A typo in courses.yml must fail loudly, not untag every event."""
     path = settings.paths.config_dir / "courses.yml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("courses: [oops: [")
     fake_cli(tmp_path, monkeypatch, stdout=ICAL_GUY_JSON)
-    assert all(e.course is None for e in calendar_read.read_events(settings))
+    with pytest.raises(ConfigError, match="not valid YAML"):
+        calendar_read.read_events(settings)
 
 
 # --------------------------------------------------------------------------

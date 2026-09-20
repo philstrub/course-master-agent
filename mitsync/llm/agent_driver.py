@@ -1,9 +1,60 @@
-"""The `agent` driver: no model call at all.
+"""
+# Agent Driver
 
-Writes a self-contained task file and exits. The driving agent (Claude Code,
-OpenClaw, any chatbot) reads it, reasons, writes a result JSON, and runs
-`mitsync resolve <task> --result <result.json>`, which validates the result and
-replays the originating command so it applies deterministically.
+No model call at all: write the question to a file and let the driving agent
+answer it.
+
+## 1. What This Module Does
+
+`AgentJudge.judge` serialises the whole task -- payload, rules, instructions,
+result schema, the originating command, and step-by-step resolution
+instructions -- into `state/tasks/<name>-<UTC stamp>-<hash>.json`, then raises
+`PendingJudgment`. `resolve_task` reads an agent's answer back, validates it
+against the task's schema, and stores it beside the task file.
+
+## 2. Why This Module Exists
+
+mitsync is usually run *by* an agent that is already a capable model. Paying a
+second model to make the same judgment is wasteful and adds a credential
+requirement for no benefit, which is why this is the default driver when no API
+key is configured.
+
+The task file is deliberately self-contained: an agent that has never seen this
+repo can read one file and know what to decide, what rules apply, what shape
+the answer must take, and exactly which command to run next. That is what makes
+the loop work across Claude Code, OpenClaw, or any other chatbot.
+
+## 3. How It Fits in the Architecture
+
+Selected by `base.get_judge` for driver `agent`. The `PendingJudgment` it
+raises propagates untouched through every caller -- `graph` and `kb` both
+re-raise it ahead of their broader handlers -- and becomes **exit code 20** in
+the CLI. `mitsync resolve` then calls `resolve_task` and hands the validated
+answer to the replay table in `cli`, which re-runs the originating command so
+the decision is applied by exactly the same code path `--driver api` would have
+used.
+
+## 4. Key Concepts
+
+**Exit code 20 means pending, not broken.** Anything wrapping mitsync must
+treat 20 as "answer the task and re-run", not as a failure.
+
+**Nothing is applied by the driver.** Judgment and effect stay separate: this
+module writes a question, and `resolve` -- after validation -- produces the
+same file moves, writes and log entries the API driver would have.
+
+**The task filename carries a timestamp and a content hash**, so concurrent or
+repeated runs never collide and an answer can always be matched to the exact
+question it answers.
+
+**One round trip per judgment.** `kb build` deliberately judges one course per
+task file, so a resolve keeps the courses already written and stops at the next
+unresolved one with a fresh task.
+
+**Why no exception is caught here.** Nothing external is called. A malformed
+result file raises from `json` or from `validate_result`, which names the
+failing JSON path; the agent fixes that path and runs `resolve` again rather
+than forcing a bad answer through.
 """
 
 from __future__ import annotations
@@ -14,6 +65,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from ..clock import now_iso
 from ..errors import PendingJudgment
 from ..logging import get_logger
 from .base import JudgeTask, validate_result
@@ -48,38 +100,31 @@ class AgentJudge:
         self.settings = settings
 
     def judge(self, task: JudgeTask) -> dict[str, Any]:
-        task_path = write_task(task, self.settings)
+        """Write the task file to state/tasks/<name>-<ts>-<hash>.json and stop."""
+        body = task.model_dump(by_alias=True)
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[
+            :8
+        ]
+        task_path = self.settings.paths.tasks_dir / f"{task.name}-{stamp}-{digest}.json"
         result_path = task_path.with_suffix(".result.json")
+
+        document = {
+            "task": task.name,
+            "version": task.version,
+            "created_at": now_iso(),
+            "origin_command": task.origin_command,
+            "origin_args": task.origin_args,
+            "instructions": task.instructions,
+            "rules": task.rules,
+            "payload": task.payload,
+            "result_schema": task.schema_,
+            "result_path": str(result_path),
+            "how_to_resolve": _how_to_resolve(task_path, result_path),
+        }
+        task_path.write_text(json.dumps(document, indent=2, default=str) + "\n")
+        log.info("wrote judgment task %s", task_path)
         raise PendingJudgment(task_path, task.name, _how_to_resolve(task_path, result_path))
-
-
-def write_task(task: JudgeTask, settings: Settings) -> Path:
-    """Serialize a JudgeTask to state/tasks/<name>-<ts>-<hash>.json."""
-    tasks_dir = settings.paths.tasks_dir
-    tasks_dir.mkdir(parents=True, exist_ok=True)
-
-    body = task.model_dump(by_alias=True)
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    digest = hashlib.sha256(json.dumps(body, sort_keys=True, default=str).encode()).hexdigest()[:8]
-    task_path = tasks_dir / f"{task.name}-{stamp}-{digest}.json"
-    result_path = task_path.with_suffix(".result.json")
-
-    document = {
-        "task": task.name,
-        "version": task.version,
-        "created_at": datetime.now(UTC).isoformat(),
-        "origin_command": task.origin_command,
-        "origin_args": task.origin_args,
-        "instructions": task.instructions,
-        "rules": task.rules,
-        "payload": task.payload,
-        "result_schema": task.schema_,
-        "result_path": str(result_path),
-        "how_to_resolve": _how_to_resolve(task_path, result_path),
-    }
-    task_path.write_text(json.dumps(document, indent=2, default=str) + "\n")
-    log.info("wrote judgment task %s", task_path)
-    return task_path
 
 
 def load_task(task_path: Path | str) -> JudgeTask:

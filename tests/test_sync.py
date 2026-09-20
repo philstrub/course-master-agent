@@ -1,3 +1,37 @@
+"""
+# Sync Tests
+
+Mirroring Canvas end to end against a fake Canvas, and the invariants the
+mirror has to keep.
+
+`FakeCanvas` serves the fixtures under `tests/fixtures/canvas/` through
+`httpx.MockTransport`, with switches for the failure shapes that matter
+(`files_403`, `pages_404`). Term dates in the fixtures are placeholders
+rewritten relative to today at import, so the "current term" tests do not rot.
+Nothing here touches the network or a real token.
+
+What the file is really guarding:
+
+* **Idempotence and catch-up.** A second run downloads nothing, a missing
+  mirror file is re-fetched, `--full` re-checks everything without creating
+  spurious versions, and a file whose bytes changed is re-downloaded with the
+  previous version kept beside it rather than overwritten.
+* **State ownership.** `first_seen` is stable across runs and a `filed_path`
+  written by `organize` survives a re-sync.
+* **Partial failure is not total failure.** A 403 on Files falls back to
+  walking modules, a 404 from a disabled Pages tab is a notice rather than an
+  error, and a download failure is reported on the run rather than raised --
+  but a run that recorded errors still exits non-zero.
+* **Course selection.** Explicit terms, the dateless "Default Term" rule, and
+  `canvas.exclude_courses`.
+* **The metadata contract.** The `_meta` files everything downstream reads,
+  including announcements fetched over explicit term-spanning dates and a
+  planner written once globally.
+
+Dry-run tests assert that nothing at all is written, which is the property the
+whole review-before-apply design depends on.
+"""
+
 from __future__ import annotations
 
 import json
@@ -8,6 +42,7 @@ import httpx
 import pytest
 
 from mitsync.canvas_client import CanvasClient
+from mitsync.errors import CanvasAuthError
 from mitsync.manifest import Manifest
 from mitsync.sync import course_folder_name, run_sync
 
@@ -503,12 +538,15 @@ def test_planner_is_written_once_globally(settings):
 # --------------------------------------------------------------------------
 # failure modes
 # --------------------------------------------------------------------------
-def test_missing_token_exits_with_a_clear_message(settings, monkeypatch, capsys):
+def test_missing_token_raises_a_typed_error_with_remediation(settings, monkeypatch):
+    """`run_sync` is a library call: it raises, it never exits the process.
+
+    `cli.run()` is the single place a `MitsyncError` becomes an exit code, so
+    tests and OpenClaw skills that call `run_sync` directly can catch this.
+    """
     monkeypatch.delenv("CANVAS_TOKEN", raising=False)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CanvasAuthError, match="CANVAS_TOKEN"):
         run_sync(settings, dry_run=True)
-    assert exc.value.code == 1
-    assert "CANVAS_TOKEN" in capsys.readouterr().out
 
 
 def test_download_failure_is_reported_not_raised(settings):
@@ -577,3 +615,24 @@ def test_exclude_courses_setting_drops_a_course_before_any_work(settings):
     assert set(report.courses) == {ML}
     assert [e["reason"] for e in report.excluded] == ["excluded by config"]
     assert "/api/v1/courses/28452/modules" not in fake.paths
+
+
+def test_a_sync_that_recorded_errors_exits_nonzero(monkeypatch, workspace):
+    """A recorded error must not exit 0.
+
+    scripts/mitsync-cron.sh branches on the exit code. When course discovery
+    failed, run_sync filed the failure as an error row and the CLI still exited
+    0, so a revoked Canvas token reported "Completed with no errors" on every
+    scheduled run instead of alerting.
+    """
+    from typer.testing import CliRunner
+
+    from mitsync import cli
+    from mitsync.sync import SyncReport
+
+    report = SyncReport(dry_run=True)
+    report.add_error("-", "courses", "Canvas rejected the token (401)")
+    monkeypatch.setattr(cli.sync_mod, "run_sync", lambda *a, **k: report)
+
+    result = CliRunner().invoke(cli.app, ["sync", "--dry-run"])
+    assert result.exit_code == 1

@@ -1,8 +1,55 @@
-"""The Judge interface, task specs, and result validation.
+"""
+# Judge Interface
 
-Every judgment step in mitsync builds a JudgeTask and hands it to a Judge. The
-three drivers (api / agent / rules) are interchangeable and must produce results
-that validate against the same JSON schema, so callers apply them identically.
+The task specification, the `Judge` protocol, and the result validation every
+driver is held to.
+
+## 1. What This Module Does
+
+Defines `JudgeTask` (what to decide, the data, the rules, and the output
+shape), the `Judge` protocol, `make_task` for building a task from a
+registered spec, `validate_result` for checking an answer against that
+task's JSON schema, and `get_judge` for resolving the configured driver.
+
+## 2. Why This Module Exists
+
+The three drivers are only interchangeable if "a correct answer" means the
+same thing for all of them. That definition is a JSON schema, it lives in the
+task spec, and it is enforced here -- on the model's reply in `api_driver`, on
+the agent's file in `resolve`, and on the heuristic's output in tests. A
+caller can therefore apply any result without knowing where it came from.
+
+Validation failures name the failing JSON path rather than saying "invalid",
+because the consumer of that message is often an agent that has to correct its
+own answer and try again.
+
+## 3. How It Fits in the Architecture
+
+The seam between the callers (`course_map`, `organize`, `graph`, `kb`) and the
+drivers. Callers import `make_task`, `validate_result` and `get_judge` and
+nothing else; the drivers are imported lazily inside `get_judge` so that
+choosing one never imports the others.
+
+## 4. Key Concepts
+
+**Task specs are data, not code.** `tasks/<name>.json` holds the name,
+version, schema and instructions. Registering a new kind of judgment is a new
+spec file plus a caller, and an unknown task name fails loudly with the list of
+available ones.
+
+**`origin_command` and `origin_args` make replay possible.** They are stored
+on the task and written into the task file so `mitsync resolve` can re-run the
+command that asked the question, with the answer substituted in.
+
+**Rules travel with the task.** `task.rules` is the applicable prose supplied
+by the caller -- for filing, the verbatim current text of `config/naming.md`.
+It is passed through untouched, which is what makes that file the tuning
+surface.
+
+**Why an exception is raised, not caught, here.** `ResultValidationError` is
+this module's product: it carries the failing paths so the caller (or the
+agent) can fix the answer. Nothing in this file catches anything; a missing or
+malformed task spec is a `ConfigError` naming the file.
 """
 
 from __future__ import annotations
@@ -110,8 +157,6 @@ def get_judge(settings: Settings, driver: str | None = None) -> Judge:
         from .agent_driver import AgentJudge
 
         return AgentJudge(settings)
-    if resolved == "rules":
-        from .rules_driver import RulesJudge
+    from .rules_driver import RulesJudge
 
-        return RulesJudge(settings)
-    raise ConfigError(f"unknown driver {resolved!r}")
+    return RulesJudge(settings)

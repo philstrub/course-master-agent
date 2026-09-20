@@ -1,12 +1,82 @@
-"""The knowledge graph: append-only JSONL truth, a rebuildable DuckDB projection.
+"""
+# Knowledge Graph
 
-Canonical storage is `_kb/graph/nodes.jsonl` and `_kb/graph/triples.jsonl`.
-They are append-only and are the ONLY source of truth. `state/graph.duckdb` is
-a cache: deleting it and running `rebuild()` must reproduce identical query
-results, and a test asserts exactly that.
+Append-only JSONL truth, a rebuildable DuckDB projection, and an ontology that
+every record must satisfy.
 
-Every node and edge is validated against `config/ontology.yml` before it is
-projected; a violation raises `OntologyError` naming the offending record.
+## 1. What This Module Does
+
+Turns extracted course text into nodes and edges, stores them, projects them
+into a queryable database, and renders one greppable markdown page per node.
+`extract_graph` writes a deterministic backbone and then asks a judge for the
+rest; `rebuild` re-derives everything downstream from the JSONL; `query` runs
+a canned query by name or raw SQL.
+
+## 2. Why This Module Exists
+
+An agent helping with coursework needs to answer "what does this concept
+appear in?" across a whole term, which no single document can answer. The
+graph is that cross-document index.
+
+Its storage split exists because judged facts accumulate slowly and expensively
+and must never be lost to a schema change or a corrupted database.
+`_kb/graph/nodes.jsonl` and `_kb/graph/triples.jsonl` are append-only and are
+the ONLY source of truth. `state/graph.duckdb` is a cache: deleting it and
+running `rebuild()` must reproduce identical query results, and a test asserts
+exactly that. The markdown entity pages exist for the same reason in the other
+direction -- an agent with nothing but `grep` can still read the graph.
+
+## 3. How It Fits in the Architecture
+
+Reads `_kb/text/*.md` written by `extract`; is read by `kb`, which cites
+concept nodes in the course notes it generates. `graph extract` is one of the
+four commands that can need judgment; `graph rebuild` and `graph query` are
+pure I/O and never can.
+
+## 4. Key Concepts
+
+**Nodes and edges.** Not vertices, not entities, not relationships. Node
+types and edge types.
+
+**The ontology is configuration.** `config/ontology.yml` declares the allowed
+node types, edge types, and which node types an edge may join. Every node and
+edge is validated against it before it is projected, and a violation raises
+`OntologyError` naming the offending record. The configured repo copy wins; an
+unconfigured checkout falls back to the copy shipped beside the package.
+
+**The deterministic backbone.** A `Course` node per folder, a `Resource` node
+per document, and a `part_of` edge joining them are always written, with no
+model involved. The graph is therefore useful with no credentials at all;
+judgment adds concepts, sessions, assignments and their relations on top.
+
+**Projection rules.** For nodes, the last line wins per id and `src` unions
+across lines; for edges, `(s, p, o, src)` is the dedupe key. Appending the
+same fact twice is free, which is what makes the append-only file safe to
+re-run against.
+
+**Regeneration leaves mtimes alone.** `write_if_changed` only writes on a real
+change, so a rebuild over unchanged inputs looks like a no-op to every tool
+watching the tree.
+
+**Why exceptions are caught here.** Four handlers, in two groups.
+
+Genuinely external or corrupt input: `yaml.YAMLError` on the ontology becomes
+an `OntologyError` naming the file, and a malformed line in the JSONL becomes
+a `MitsyncError` naming the file and line number -- mitsync wrote that file, so
+malformed means mitsync wrote garbage, and the append-only source of truth must
+never be read past a bad line.
+
+Untrusted judge output being validated: `ResultValidationError` and
+`OntologyError` around an individual judged record reject that record into
+`report.rejected` and keep the run. A model that invents one edge type must not
+discard the other two hundred facts in the same run.
+
+One more, and it is a deliberate product contract rather than defensiveness: a
+`MitsyncError` from the judge itself (an unavailable driver, or the `rules`
+driver, which honestly has no heuristic for mining triples from prose)
+degrades to the deterministic backbone and is reported in `judge_note`.
+`PendingJudgment` is re-raised first and always -- swallowing it would silently
+disable the agent driver.
 """
 
 from __future__ import annotations
@@ -17,12 +87,14 @@ import re
 import tempfile
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import yaml
+from rich.console import Console
+from rich.table import Table
 
+from .clock import now_iso
 from .errors import MitsyncError, OntologyError, PendingJudgment
 from .logging import get_logger
 
@@ -121,17 +193,15 @@ def _show(record: dict[str, Any]) -> str:
     return json.dumps(record, sort_keys=True, default=str)[:400]
 
 
-def ontology_path(settings: Settings) -> Path:
-    """`config/ontology.yml` from the configured repo, falling back to the package."""
-    candidate = settings.paths.config_dir / "ontology.yml"
-    if candidate.exists():
-        return candidate
-    return Path(__file__).resolve().parent.parent / "config" / "ontology.yml"
-
-
 def load_ontology(settings: Settings) -> Ontology:
-    """Parse and validate `config/ontology.yml`."""
-    path = ontology_path(settings)
+    """Parse and validate `config/ontology.yml`.
+
+    The configured repo wins; a checkout that has not been configured falls back
+    to the copy shipped beside the package.
+    """
+    path = settings.paths.config_dir / "ontology.yml"
+    if not path.exists():
+        path = Path(__file__).resolve().parent.parent / "config" / "ontology.yml"
     if not path.exists():
         raise OntologyError(f"ontology file not found: {path}")
     try:
@@ -212,10 +282,6 @@ class GraphReport:
         return ", ".join(bits)
 
 
-def _now() -> str:
-    return datetime.now(UTC).isoformat()
-
-
 def nodes_jsonl(settings: Settings) -> Path:
     return settings.paths.kb_graph / NODES_FILE
 
@@ -235,8 +301,9 @@ def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
             try:
                 record = json.loads(line)
             except json.JSONDecodeError as exc:
-                log.warning("%s:%d is not valid JSON, skipping (%s)", path, lineno, exc)
-                continue
+                # mitsync wrote this file. Malformed means mitsync wrote garbage,
+                # and the append-only source of truth must never be read past it.
+                raise MitsyncError(f"{path}:{lineno} is not valid JSON: {exc}") from exc
             if isinstance(record, dict):
                 yield record
 
@@ -256,7 +323,7 @@ def normalize_node(node: dict[str, Any]) -> dict[str, Any]:
         "label": str(node.get("label") or node.get("id", "")),
         "attrs": dict(node.get("attrs") or {}),
         "src": sorted({str(s) for s in src}),
-        "ts": str(node.get("ts") or _now()),
+        "ts": str(node.get("ts") or now_iso()),
         "extractor_version": str(node.get("extractor_version") or EXTRACTOR_VERSION),
     }
 
@@ -270,7 +337,7 @@ def normalize_edge(edge: dict[str, Any]) -> dict[str, Any]:
         "attrs": dict(edge.get("attrs") or {}),
         "src": str(edge.get("src") or ""),
         "conf": float(conf) if isinstance(conf, int | float) else 1.0,
-        "ts": str(edge.get("ts") or _now()),
+        "ts": str(edge.get("ts") or now_iso()),
         "extractor_version": str(edge.get("extractor_version") or EXTRACTOR_VERSION),
     }
 
@@ -285,7 +352,7 @@ def load_nodes(settings: Settings) -> dict[str, dict[str, Any]]:
     for raw in _read_jsonl(nodes_jsonl(settings)):
         node = normalize_node(raw)
         if not node["id"]:
-            continue
+            raise MitsyncError(f"{nodes_jsonl(settings)} has a node record with no id: {raw!r}")
         prior = out.get(node["id"])
         if prior is not None:
             node["src"] = sorted(set(prior["src"]) | set(node["src"]))
@@ -303,7 +370,9 @@ def load_edges(settings: Settings) -> list[dict[str, Any]]:
     for index, raw in enumerate(_read_jsonl(triples_jsonl(settings))):
         edge = normalize_edge(raw)
         if not (edge["s"] and edge["p"] and edge["o"]):
-            continue
+            raise MitsyncError(
+                f"{triples_jsonl(settings)} has an edge record missing s/p/o: {raw!r}"
+            )
         key = edge_key(edge)
         rank = (_version_key(edge["extractor_version"]), index)
         prior = best.get(key)
@@ -313,7 +382,6 @@ def load_edges(settings: Settings) -> list[dict[str, Any]]:
 
 
 def _append(path: Path, records: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         for record in records:
             fh.write(json.dumps(record, sort_keys=True, default=str) + "\n")
@@ -328,7 +396,13 @@ def append_nodes(settings: Settings, nodes: Iterable[dict[str, Any]]) -> int:
         node = normalize_node(raw)
         ontology.validate_node(node)
         prior = existing.get(node["id"])
-        if prior is not None and _same_node(prior, node):
+        if prior is not None and (
+            prior["type"] == node["type"]
+            and prior["label"] == node["label"]
+            and prior["attrs"] == node["attrs"]
+            and set(node["src"]).issubset(set(prior["src"]))
+            and prior["extractor_version"] == node["extractor_version"]
+        ):
             continue
         if prior is not None:
             node["src"] = sorted(set(prior["src"]) | set(node["src"]))
@@ -337,16 +411,6 @@ def append_nodes(settings: Settings, nodes: Iterable[dict[str, Any]]) -> int:
     if fresh:
         _append(nodes_jsonl(settings), fresh)
     return len(fresh)
-
-
-def _same_node(a: dict[str, Any], b: dict[str, Any]) -> bool:
-    return (
-        a["type"] == b["type"]
-        and a["label"] == b["label"]
-        and a["attrs"] == b["attrs"]
-        and set(b["src"]).issubset(set(a["src"]))
-        and a["extractor_version"] == b["extractor_version"]
-    )
 
 
 def append_edges(settings: Settings, edges: Iterable[dict[str, Any]]) -> int:
@@ -407,7 +471,6 @@ class DuckDBBackend:
     def _connect(self):
         import duckdb
 
-        self.path.parent.mkdir(parents=True, exist_ok=True)
         con = duckdb.connect(str(self.path))
         con.execute(_CREATE_NODES.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         con.execute(_CREATE_EDGES.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
@@ -483,7 +546,12 @@ class DuckDBBackend:
         """Drop every table and reload from the JSONL files."""
         nodes = list(load_nodes(self.settings).values())
         edges = load_edges(self.settings)
-        _validate_all(self.settings, nodes, edges)
+        ontology = load_ontology(self.settings)
+        for node in nodes:
+            ontology.validate_node(node)
+        node_types = {n["id"]: n["type"] for n in nodes}
+        for edge in edges:
+            ontology.validate_edge(edge, node_types)
 
         con = self._connect()
         try:
@@ -510,7 +578,7 @@ class DuckDBBackend:
             con.close()
 
 
-def _write_if_changed(path: Path, body: str) -> None:
+def write_if_changed(path: Path, body: str) -> None:
     """Write only on a real change, so regeneration leaves mtimes alone."""
     text = body.rstrip() + "\n"
     if not path.exists() or path.read_text(encoding="utf-8") != text:
@@ -523,47 +591,16 @@ def _write_ndjson(path: Path, records: list[dict[str, Any]], columns: tuple[str,
             fh.write(json.dumps({c: record.get(c) for c in columns}, default=str) + "\n")
 
 
-class Neo4jBackend:
-    """Placeholder for the Neo4j projection."""
-
-    def __init__(self, settings: Settings) -> None:
-        self.settings = settings
-        raise NotImplementedError(
-            "the neo4j graph backend is not implemented; set graph.backend: duckdb in "
-            "config/settings.yml (graph.neo4j.uri / user / password_env are reserved for it)"
-        )
-
-    def upsert_nodes(self, nodes: Iterable[dict]) -> int:  # pragma: no cover - unreachable
-        raise NotImplementedError
-
-    def upsert_edges(self, edges: Iterable[dict]) -> int:  # pragma: no cover - unreachable
-        raise NotImplementedError
-
-    def query(self, q: str, params: dict | None = None) -> list[dict]:  # pragma: no cover
-        raise NotImplementedError
-
-    def rebuild(self) -> None:  # pragma: no cover - unreachable
-        raise NotImplementedError
-
-
 def get_backend(settings: Settings) -> GraphBackend:
     backend = settings.graph.backend
     if backend == "duckdb":
         return DuckDBBackend(settings)
-    if backend == "neo4j":
-        return Neo4jBackend(settings)
-    raise MitsyncError(f"unknown graph backend {backend!r}; expected 'duckdb' or 'neo4j'")
-
-
-def _validate_all(
-    settings: Settings, nodes: list[dict[str, Any]], edges: list[dict[str, Any]]
-) -> None:
-    ontology = load_ontology(settings)
-    for node in nodes:
-        ontology.validate_node(node)
-    node_types = {n["id"]: n["type"] for n in nodes}
-    for edge in edges:
-        ontology.validate_edge(edge, node_types)
+    raise MitsyncError(
+        f"unsupported graph backend {backend!r}: only 'duckdb' is implemented. "
+        "A neo4j projection would need a running Neo4j server, connection settings "
+        "(uri, user, password env var) and a GraphBackend implementation over the bolt "
+        "driver -- none of which exist. Set graph.backend: duckdb in config/settings.yml."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -594,9 +631,9 @@ def write_entity_pages(settings: Settings) -> int:
         incoming.setdefault(edge["o"], []).append(edge)
 
     def link(node_id: str) -> str:
-        node = nodes.get(node_id)
-        label = node["label"] if node else node_id
-        return f"[{label}]({entity_filename(node_id)})"
+        # `validate_edge` has already rejected any edge whose endpoint is not a
+        # known node, so every id reaching here is in `nodes`.
+        return f"[{nodes[node_id]['label']}]({entity_filename(node_id)})"
 
     keep: set[str] = set()
     for node_id, node in nodes.items():
@@ -640,7 +677,7 @@ def write_entity_pages(settings: Settings) -> int:
         srcs = sorted({*node["src"], *(e["src"] for e in rows if e["src"])})
         lines += [f"- `{s}`" for s in srcs] or ["- none"]
         lines.append("")
-        _write_if_changed(out_dir / name, "\n".join(lines))
+        write_if_changed(out_dir / name, "\n".join(lines))
 
     for stale in out_dir.glob("*.md"):
         if stale.name not in keep:
@@ -653,7 +690,6 @@ def write_entity_pages(settings: Settings) -> int:
 # --------------------------------------------------------------------------
 def rebuild(settings: Settings) -> GraphReport:
     """Re-derive the DuckDB projection and the entity pages from JSONL."""
-    settings.paths.kb_graph.mkdir(parents=True, exist_ok=True)
     backend = get_backend(settings)
     backend.rebuild()
     report = GraphReport(
@@ -789,14 +825,12 @@ def query(
         for name, spec in sorted(CANNED.items()):
             print(f"  {name}: {spec.help}")
 
-    _print_rows(title, rows)
+    print_rows(title, rows)
     return rows
 
 
-def _print_rows(title: str, rows: list[dict[str, Any]]) -> None:
-    from rich.console import Console
-    from rich.table import Table
-
+def print_rows(title: str, rows: list[dict[str, Any]]) -> None:
+    """Print a table whose columns are whatever keys the first row carries."""
     console = Console()
     if not rows:
         console.print(f"[dim]{title}: no rows[/dim]")
@@ -820,46 +854,6 @@ def course_id(course: str) -> str:
     return "course:" + slug(course)
 
 
-def _chunks(text: str) -> list[str]:
-    body = text.strip()
-    if not body:
-        return []
-    out = [body[i : i + CHUNK_CHARS] for i in range(0, len(body), CHUNK_CHARS)]
-    return out[:MAX_CHUNKS_PER_DOC]
-
-
-def _scaffold(
-    docs: list[dict[str, Any]],
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """Deterministic backbone: a Course node per folder, a Resource per document."""
-    nodes: dict[str, dict[str, Any]] = {}
-    edges: list[dict[str, Any]] = []
-    for doc in docs:
-        rel, course = doc["source"], doc["course"]
-        rid = resource_id(rel)
-        nodes[rid] = {
-            "id": rid,
-            "type": "Resource",
-            "label": doc["title"],
-            "attrs": {
-                "title": doc["title"],
-                "path": rel,
-                "content_type": doc["content_type"],
-            },
-            "src": [rel],
-        }
-        if not course:
-            continue
-        cid = course_id(course)
-        node = nodes.setdefault(
-            cid,
-            {"id": cid, "type": "Course", "label": course, "attrs": {"name": course}, "src": []},
-        )
-        node["src"] = sorted({*node["src"], rel})
-        edges.append({"s": rid, "p": "part_of", "o": cid, "src": rel, "conf": 1.0})
-    return list(nodes.values()), edges
-
-
 def _documents(settings: Settings, since: str | None) -> list[dict[str, Any]]:
     import frontmatter
 
@@ -870,10 +864,7 @@ def _documents(settings: Settings, since: str | None) -> list[dict[str, Any]]:
     if not text_dir.is_dir():
         return docs
     for path in sorted(text_dir.glob("*.md")):
-        try:
-            post = frontmatter.load(path)
-        except (OSError, ValueError):
-            continue
+        post = frontmatter.load(path)
         rel = str(post.metadata.get("source") or "")
         if not rel or settings.should_ignore(rel):
             continue
@@ -901,13 +892,34 @@ def extract_graph(settings: Settings, judge: Any, *, since: str | None = None) -
     that returns an empty result (the `rules` driver has no handler for
     `graph_extract`) degrades to the backbone and is reported, never fatal.
     """
-    settings.paths.kb_graph.mkdir(parents=True, exist_ok=True)
     ontology = load_ontology(settings)
     docs = _documents(settings, since)
     report = GraphReport(documents=len(docs))
 
-    nodes, edges = _scaffold(docs)
-    report.appended_nodes += append_nodes(settings, nodes)
+    # The deterministic backbone: a Course node per folder, a Resource per doc.
+    nodes: dict[str, dict[str, Any]] = {}
+    edges: list[dict[str, Any]] = []
+    for doc in docs:
+        rel, course = doc["source"], doc["course"]
+        rid = resource_id(rel)
+        nodes[rid] = {
+            "id": rid,
+            "type": "Resource",
+            "label": doc["title"],
+            "attrs": {"title": doc["title"], "path": rel, "content_type": doc["content_type"]},
+            "src": [rel],
+        }
+        if not course:
+            continue  # a document outside every course folder has no Course to join
+        cid = course_id(course)
+        node = nodes.setdefault(
+            cid,
+            {"id": cid, "type": "Course", "label": course, "attrs": {"name": course}, "src": []},
+        )
+        node["src"] = sorted({*node["src"], rel})
+        edges.append({"s": rid, "p": "part_of", "o": cid, "src": rel, "conf": 1.0})
+
+    report.appended_nodes += append_nodes(settings, list(nodes.values()))
     report.appended_edges += append_edges(settings, edges)
 
     if judge is not None and docs:
@@ -939,7 +951,10 @@ def _judge_documents(
         for n in list(load_nodes(settings).values())[:KNOWN_NODE_SAMPLE]
     ]
     for doc in docs:
-        parts = _chunks(doc["text"])
+        body = doc["text"].strip()
+        parts = [body[i : i + CHUNK_CHARS] for i in range(0, len(body), CHUNK_CHARS)][
+            :MAX_CHUNKS_PER_DOC
+        ]
         for index, chunk in enumerate(parts):
             report.chunks += 1
             task = make_task(

@@ -1,3 +1,22 @@
+"""
+# Config Tests
+
+Settings loading, driver resolution, ignore globs, and the workspace boundary.
+
+Covers four things that have to hold before any command is safe to run: a
+settings file parses into the expected tree and an invalid one raises
+`ConfigError` naming the file; `resolve_driver()` follows the documented
+precedence (explicit flag > settings > `auto`, where `auto` means `api` with a
+key and `agent` without); `should_ignore()` matches gitignore-style globs,
+including with the settings file entirely absent, because the built-in
+guardrail globs must survive that; and `Paths` containment rejects paths that
+escape the workspace.
+
+Uses the shared `settings` and `workspace` fixtures from `conftest.py`, plus
+bare `tmp_path` for the no-settings-file cases, where the point is precisely
+that no fixture-supplied config is in play.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -78,6 +97,27 @@ def test_missing_settings_file_uses_defaults(tmp_path: Path) -> None:
     s = load_settings(tmp_path / "nope.yml")
     assert s.canvas.token_env == "CANVAS_TOKEN"
     assert s.llm.driver == "auto"
+
+
+@pytest.mark.parametrize(
+    "relpath",
+    [
+        "AI_Studio/nandatown/x/y.py",
+        "AI_Studio/nandatown/README.md",
+        "nandatown/notes.md",
+        "Analytics Lab/.venv/lib/python3.11/os.py",
+    ],
+)
+def test_guardrails_survive_a_missing_settings_file(tmp_path: Path, relpath: str) -> None:
+    """Guardrail 5 must not depend on config/settings.yml existing.
+
+    `load_settings` falls back to `{}` when the file is absent, so the
+    nandatown exclusion has to live in DEFAULT_IGNORE_GLOBS or a fresh
+    checkout would silently walk it.
+    """
+    s = load_settings(tmp_path / "definitely-absent.yml")
+    assert s.source_path is not None and not s.source_path.exists()
+    assert s.should_ignore(relpath) is True
 
 
 def test_invalid_settings_raise(tmp_path: Path) -> None:

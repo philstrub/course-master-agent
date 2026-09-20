@@ -84,15 +84,6 @@ then re-run the original command.
 Same commands with `--driver api`; no manual `resolve` step, since the
 configured provider answers judgment calls directly.
 
-```
-mitsync sync
-mitsync organize plan --driver api
-mitsync organize apply
-mitsync kb build --driver api
-mitsync kb build --driver api
-mitsync brief
-```
-
 ### Checking on things
 
 ```
@@ -100,30 +91,6 @@ mitsync due                 # what's due, all courses
 mitsync doctor              # manifest/graph/Canvas/calendar health check
 mitsync graph query --canned concepts_by_course   # or --sql "SELECT ..."
 ```
-
-## OpenClaw wiring (optional)
-
-1. Confirm Node 24.16+/26.1+ is active (`node --version`).
-2. `openclaw gateway install` — sets up the LaunchAgent-managed gateway on
-   port 18789.
-3. Add `mitsync`'s workspace directory to `tools.fs.workspaceOnly` in
-   `~/.openclaw/openclaw.json`, and add the exact `mitsync` invocations you
-   want auto-approved to `tools.exec.mode: allowlist` (argv + cwd).
-4. Register a SKILL.md for `mitsync` under `<workspace>/skills` if you
-   want OpenClaw's chat surface to invoke it conversationally (owned by
-   the implementing agent's `skills/` directory).
-5. Schedule the daily sync:
-   ```
-   openclaw cron add --name mitsync-sync --cron "0 7 * * *" --tz America/New_York
-   ```
-   Point this cron entry at `mitsync sync` (no driver needed; add `--driver api` to judgment steps if a
-   key is configured) followed by `mitsync kb build`. Because a sleeping
-   Mac skips missed cron runs, this job must derive its work from current
-   manifest state ("what's not yet synced") — which `sync`'s incremental
-   design already guarantees — rather than assuming it ran at the last
-   scheduled time.
-6. Re-confirm calendar access under this specific LaunchAgent context (see
-   setup step 3) — a grant made in a Terminal session does not carry over.
 
 ## Failure modes
 
@@ -141,10 +108,6 @@ mitsync graph query --canned concepts_by_course   # or --sql "SELECT ..."
 ---
 
 # OpenClaw integration
-
-> This section supersedes the short "OpenClaw wiring (optional)" notes above
-> for anything it contradicts; that section predates the scripts described
-> here.
 
 ## What OpenClaw adds, and what it does not
 
@@ -179,53 +142,24 @@ directly — nothing in `mitsync` imports, shells out to, or checks for it.
 
 Do these in order. Each step assumes the previous one passed.
 
-1. **Node.** OpenClaw needs **Node 24.16+ or 26.1+**. The known baseline on
-   this machine is **v20.19.2 via nvm, which is too old**. Upgrade with your
-   own version manager (`nvm install 24 && nvm alias default 24`), open a new
-   shell, and confirm with `node --version`. `install.sh` refuses to continue
-   on an unsupported Node rather than half-configuring the system.
-2. **Install OpenClaw** and onboard:
-   ```
-   curl -fsSL https://openclaw.ai/install.sh | bash
-   openclaw onboard
-   openclaw gateway install      # creates a macOS LaunchAgent; gateway on :18789
-   ```
-3. **Run the setup checker** — safe to re-run any number of times:
-   ```
-   cd /Users/filippostrub/Desktop/MIT/courses/_agent
-   ./openclaw/install.sh
-   ```
-   It verifies macOS and Node, checks `openclaw` and `uv`, runs `uv sync`,
-   creates the `<workspace>/skills` symlink (refusing to clobber a real
-   directory), chmods the scripts, and finishes with `mitsync doctor`.
-4. **Merge the config fragment by hand.** `install.sh` deliberately does not
-   touch `~/.openclaw/openclaw.json`:
-   ```
-   cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak
-   $EDITOR ~/.openclaw/openclaw.json     # merge keys from openclaw/openclaw.config.json5
-   openclaw doctor
-   ```
-   The fragment sets `workspace`, `tools.fs.workspaceOnly: true`,
-   `tools.exec.mode: "allowlist"` with exact-argv+cwd entries, the model
-   default, and `env.file`.
-5. **Secrets.** `CANVAS_TOKEN` goes in `~/.openclaw/.env` (mode 600), never
-   committed and never in `openclaw.json`. The CLI reads it from there too: it
-   loads `_agent/.env` first, then `~/.openclaw/.env`, first file to define a
-   key wins, and a variable already set in the real environment (as the gateway
-   and the cron wrapper do) always wins over both. So a single
-   `~/.openclaw/.env` serves the gateway and a hand-run `mitsync`; keep a
-   gitignored `_agent/.env` instead if you want the CLI to use a different
-   token. `mitsync doctor` names the source of each secret (never its value),
-   and `MITSYNC_DOTENV=0` disables `.env` loading if you need to debug
-   precedence. Deliberately do **not** set `ANTHROPIC_API_KEY` in either file: with no key, mitsync's driver resolves to
-   `agent`, which is the whole point of hosting it here — the OpenClaw model
-   is the judge.
-6. **Calendar grant, twice.** Once interactively from Terminal, once from the
+1. Install Node **24.16+ or 26.1+** (the machine's nvm baseline v20.19.2 is too
+   old), then OpenClaw: `curl -fsSL https://openclaw.ai/install.sh | bash`,
+   `openclaw onboard`, `openclaw gateway install`.
+2. `./openclaw/install.sh` — idempotent setup checker. Verifies macOS and Node,
+   checks `openclaw` and `uv`, runs `uv sync`, creates the `<workspace>/skills`
+   symlink (refusing to clobber a real directory), and ends with
+   `mitsync doctor`. It refuses to continue on an unsupported Node.
+3. Merge `openclaw/openclaw.config.json5` into `~/.openclaw/openclaw.json` by
+   hand — back it up first, then `openclaw doctor`. `install.sh` deliberately
+   never touches that file.
+4. Put `CANVAS_TOKEN` in `~/.openclaw/.env` (mode 600), never in
+   `openclaw.json`. Deliberately set **no** `ANTHROPIC_API_KEY`: with no key the
+   driver resolves to `agent`, which is the whole point of hosting it here — the
+   OpenClaw model is the judge. `mitsync doctor` names the source of each secret
+   (never its value); `MITSYNC_DOTENV=0` disables `.env` loading.
+5. Grant calendar access twice — once interactively from Terminal, once from the
    LaunchAgent gateway. See the TCC row in the failure table.
-7. **Register the schedule:**
-   ```
-   ./openclaw/cron.sh
-   ```
+6. `./openclaw/cron.sh` — registers the three jobs.
 
 ## The cron schedule
 
@@ -264,9 +198,10 @@ defaults to true):
 | `mit-briefing` | "what's due this week?" |
 | `mit-kb` | "what covers convex duality?" |
 
-Only `map`, `organize plan`, and `graph extract` take a `--driver` and can exit
-20. `brief` and `kb build` take no driver — `kb build` runs with no judge by
-design and degrades to a skeleton note rather than failing.
+Four commands take a `--driver` and can exit 20: `map`, `organize plan`,
+`graph extract`, and `kb build`. Without `--driver`, `kb build` is fully
+deterministic and writes inventory-skeleton course notes; with one, it judges
+the notes a course at a time.
 
 ## The exit-20 protocol, unattended
 

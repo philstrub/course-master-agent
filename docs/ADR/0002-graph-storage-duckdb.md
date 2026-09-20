@@ -43,7 +43,7 @@ format or any caller.
   the ontology mapping, run `graph rebuild`, and the projection reflects
   the new ontology without rewriting or losing any historical JSONL line.
   Triples that don't map cleanly under the new ontology are flagged by
-  `doctor` (`OntologyMismatchError`) rather than silently dropped or
+  `doctor` (`OntologyError`) rather than silently dropped or
   guessed at.
 - Corruption of `state/graph.duckdb` (crash mid-write, disk issue) is a
   non-event: delete it and re-run `graph rebuild`. There is no backup

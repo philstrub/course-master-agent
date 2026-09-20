@@ -11,7 +11,7 @@ import pytest
 from mitsync import extract as extract_mod
 from mitsync import graph as graph_mod
 from mitsync.config import Settings
-from mitsync.errors import OntologyError
+from mitsync.errors import MitsyncError, OntologyError
 from mitsync.llm.base import JudgeTask, validate_result
 from tests.test_extract import make_notebook, make_pdf
 
@@ -463,11 +463,12 @@ def test_duckdb_is_the_default_backend(settings: Settings) -> None:
     assert isinstance(graph_mod.get_backend(settings), graph_mod.GraphBackend)
 
 
-def test_neo4j_backend_is_a_clear_stub(settings: Settings) -> None:
-    settings.graph.backend = "neo4j"
-    with pytest.raises(NotImplementedError) as exc:
+def test_an_unimplemented_backend_fails_with_a_clear_message(settings: Settings) -> None:
+    settings.graph.backend = "neo4j"  # type: ignore[assignment] -- not in the Literal
+    with pytest.raises(MitsyncError) as exc:
         graph_mod.get_backend(settings)
     assert "graph.backend" in str(exc.value)
+    assert "neo4j" in str(exc.value)
 
 
 def test_backend_upserts_are_replacements_not_duplicates(settings: Settings) -> None:
@@ -486,3 +487,23 @@ def test_backend_upserts_are_replacements_not_duplicates(settings: Settings) -> 
         "SELECT conf FROM edges WHERE s='resource:slides' AND p='covers' AND o='concept:cart'"
     )
     assert rows == [{"conf": 0.1}]
+
+
+# --------------------------------------------------------------------------
+# corruption in the append-only source of truth is loud, never skipped
+# --------------------------------------------------------------------------
+def test_a_malformed_jsonl_line_raises_naming_the_file_and_line(seeded: Settings) -> None:
+    """mitsync wrote nodes.jsonl. Garbage in it means mitsync wrote garbage."""
+    graph_mod.extract_graph(seeded, None)
+    path = graph_mod.nodes_jsonl(seeded)
+    path.write_text(path.read_text() + "{not json\n")
+    with pytest.raises(MitsyncError, match="not valid JSON"):
+        graph_mod.load_nodes(seeded)
+
+
+def test_a_node_record_with_no_id_raises(seeded: Settings) -> None:
+    graph_mod.extract_graph(seeded, None)
+    path = graph_mod.nodes_jsonl(seeded)
+    path.write_text(path.read_text() + json.dumps({"type": "Concept", "label": "x"}) + "\n")
+    with pytest.raises(MitsyncError, match="no id"):
+        graph_mod.load_nodes(seeded)

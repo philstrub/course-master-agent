@@ -1,3 +1,40 @@
+"""
+# Test Fixtures
+
+The temp workspace every test runs against, so no test can see the real one.
+
+## 1. What This Module Does
+
+Provides three fixtures. `workspace` builds a throwaway course directory under
+`tmp_path` containing an `_agent/config/settings.yml` and a couple of course
+folders, and points `MITSYNC_WORKSPACE` at it. `settings` loads that file and
+re-points `Settings.paths` at the temp repo. `_clear_settings_cache` is
+autouse and drops the `lru_cache` in `mitsync.config` around every test.
+
+## 2. Why This Module Exists
+
+`mitsync` operates on the user's actual course folders and can move files, so
+a test that resolved the real workspace would be destructive. Redirecting the
+root in one place makes that impossible by construction rather than by every
+test remembering to.
+
+The autouse cache clear exists because `load_settings` is cached per path:
+without it, one test's monkeypatched environment would leak into the next
+through a cached `Settings` object.
+
+## 3. The Fixture Contract
+
+Anything taking `settings` gets a workspace at `<tmp>/courses` with
+`Machine Learning/` and `AI_Studio/` already present, every mitsync directory
+created by `Paths.ensure()`, and `TEST_LLM_KEY` -- the API-key variable named
+by the test settings -- explicitly unset, so `resolve_driver()` answers
+`agent` unless a test sets it. `AI_Studio/nandatown/**` is in the test ignore
+globs because several tests assert that the exclusion actually prunes.
+
+No fixture here touches the network, a real Canvas token, a real calendar, or
+a provider SDK.
+"""
+
 from __future__ import annotations
 
 import textwrap

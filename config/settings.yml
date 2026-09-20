@@ -34,14 +34,9 @@ calendar:
   lookahead_days: 14
 
 graph:
-  backend: duckdb                # duckdb | neo4j
-  neo4j:
-    uri: null
-    user: null
-    password_env: null
+  backend: duckdb                # the only implemented backend
 
 organize:
-  include_existing: false        # true = also file pre-existing workspace files
   link_mode: hardlink            # hardlink | copy | symlink
 
 # Paths (workspace-relative) never scanned, mirrored, or organized.
@@ -51,4 +46,6 @@ ignore_globs:
   - "**/site-packages/**"
   - "**/node_modules/**"
   - "**/__pycache__/**"
-  - "AI_Studio/nandatown/**"
+  # Broad on purpose: this list REPLACES DEFAULT_IGNORE_GLOBS wholesale, so it must
+  # not be narrower than the default. Matches nandatown wherever it appears.
+  - "**/nandatown/**"
