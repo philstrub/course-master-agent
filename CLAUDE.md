@@ -105,6 +105,12 @@ the next unresolved one with a fresh task file. Repeat until it exits 0.
 2. **Never write to Apple Calendar.** `calendar_read.py` is read-only by
    design; do not add, wire up, or invoke any EventKit write API, and don't
    ask the user for calendar write permission.
+2b. **Never write to Canvas.** Canvas holds graded work, so this is enforced,
+   not assumed: `CanvasClient._request` refuses any method outside
+   `READ_ONLY_METHODS` ({GET, HEAD}) with `CanvasWriteRefused`, and
+   `tests/test_canvas_read_only.py` scans every module for HTTP write calls.
+   Do not add a submission, upload, comment, or deletion path, and do not
+   relax that check.
 3. **Never commit secrets.** API keys, Canvas tokens, and OpenClaw config
    live in the environment or `config/settings.yml` (gitignored); never
    paste a token into a commit, a task file, an issue, or a KB note.

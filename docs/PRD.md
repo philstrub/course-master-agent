@@ -45,7 +45,9 @@ with a virtualenv that must never be treated as course material.
 
 ## Non-goals
 
-- No writes to Canvas (no submissions, no posts, no grades).
+- No writes to Canvas (no submissions, no posts, no grades). Enforced in code:
+  `CanvasClient._request` refuses any method outside `{GET, HEAD}` with
+  `CanvasWriteRefused`, and a test scans every module for HTTP write calls.
 - No writes to Apple Calendar, ever, under any driver or mode.
 - No re-hosting or redistribution of course material outside the student's
   own machine (no cloud storage, no sharing links, no third-party sync).

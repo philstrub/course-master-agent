@@ -475,6 +475,20 @@ def _writable(path: Path) -> bool:
         return False
 
 
+def _dotenv_hint() -> str:
+    """Note the escape hatch in a doctor row, but only while it is active."""
+    from .env import DISABLE_ENV, dotenv_disabled
+
+    return f" ({DISABLE_ENV}=0: .env loading is disabled)" if dotenv_disabled() else ""
+
+
+def _secret_source(name: str) -> str:
+    """Where a secret came from. Never includes the value itself."""
+    from .env import source_of
+
+    return source_of(name)
+
+
 @app.command()
 def doctor() -> None:
     """Check the environment and print what works, what is missing, and how to fix it."""
@@ -516,9 +530,9 @@ def doctor() -> None:
     add(
         "PASS" if settings.canvas.token else "WARN",
         "canvas token",
-        f"${tok_env} is set"
+        f"${tok_env} is set (source: {_secret_source(tok_env)})"
         if settings.canvas.token
-        else f"${tok_env} is not set; `mitsync sync` "
+        else f"${tok_env} is not set{_dotenv_hint()}; `mitsync sync` "
         f"will fail. Create a token in Canvas > Account > Settings.",
     )
 
@@ -528,9 +542,9 @@ def doctor() -> None:
     add(
         "PASS" if has_key else "WARN",
         "llm api key",
-        f"${key_env} is set"
+        f"${key_env} is set (source: {_secret_source(key_env)})"
         if has_key
-        else f"${key_env} is not set (fine: the agent driver needs no key)",
+        else f"${key_env} is not set{_dotenv_hint()} (fine: the agent driver needs no key)",
     )
     add(
         "PASS",

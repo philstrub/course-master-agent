@@ -35,10 +35,19 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .errors import CanvasAccessDenied, CanvasAuthError, CanvasRateLimited, StalePresignedURL
+from .errors import (
+    CanvasAccessDenied,
+    CanvasAuthError,
+    CanvasRateLimited,
+    CanvasWriteRefused,
+    StalePresignedURL,
+)
 from .logging import get_logger
 
 log = get_logger(__name__)
+
+# The only HTTP methods this client may ever issue. See _request().
+READ_ONLY_METHODS = frozenset({"GET", "HEAD"})
 
 __all__ = ["CanvasClient"]
 
@@ -187,6 +196,12 @@ class CanvasClient:
     def _request(
         self, method: str, url: str, params: dict[str, Any] | None = None
     ) -> httpx.Response:
+        # mitsync is a READ-ONLY Canvas client, by requirement, not by convention.
+        # Canvas holds graded work: a stray write could submit, delete or overwrite
+        # real coursework. Enforce it at the single chokepoint every request passes
+        # through, so no future caller can introduce a write by accident.
+        if method.upper() not in READ_ONLY_METHODS:
+            raise CanvasWriteRefused(method, url)
         last: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:

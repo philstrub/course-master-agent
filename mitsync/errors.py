@@ -62,3 +62,19 @@ class PendingJudgment(MitsyncError):
         self.task_name = task_name
         self.instructions = instructions
         super().__init__(f"Judgment '{task_name}' pending: {self.task_path}")
+
+
+class CanvasWriteRefused(MitsyncError):
+    """A non-read HTTP method was attempted against Canvas.
+
+    mitsync never writes to Canvas -- it holds graded work. This is raised at the
+    client chokepoint rather than trusted to caller discipline.
+    """
+
+    def __init__(self, method: str, url: str) -> None:
+        self.method = method
+        self.url = url
+        super().__init__(
+            f"refusing {method.upper()} to Canvas ({url}): mitsync is read-only. "
+            "Canvas holds graded work; no command may modify it."
+        )

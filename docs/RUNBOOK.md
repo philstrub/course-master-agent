@@ -202,9 +202,16 @@ Do these in order. Each step assumes the previous one passed.
    The fragment sets `workspace`, `tools.fs.workspaceOnly: true`,
    `tools.exec.mode: "allowlist"` with exact-argv+cwd entries, the model
    default, and `env.file`.
-5. **Secrets.** `CANVAS_TOKEN` goes in `~/.openclaw/.env` (mode 600), never in
-   the repo and never in `openclaw.json`. Deliberately do **not** set
-   `ANTHROPIC_API_KEY` there: with no key, mitsync's driver resolves to
+5. **Secrets.** `CANVAS_TOKEN` goes in `~/.openclaw/.env` (mode 600), never
+   committed and never in `openclaw.json`. The CLI reads it from there too: it
+   loads `_agent/.env` first, then `~/.openclaw/.env`, first file to define a
+   key wins, and a variable already set in the real environment (as the gateway
+   and the cron wrapper do) always wins over both. So a single
+   `~/.openclaw/.env` serves the gateway and a hand-run `mitsync`; keep a
+   gitignored `_agent/.env` instead if you want the CLI to use a different
+   token. `mitsync doctor` names the source of each secret (never its value),
+   and `MITSYNC_DOTENV=0` disables `.env` loading if you need to debug
+   precedence. Deliberately do **not** set `ANTHROPIC_API_KEY` in either file: with no key, mitsync's driver resolves to
    `agent`, which is the whole point of hosting it here — the OpenClaw model
    is the judge.
 6. **Calendar grant, twice.** Once interactively from Terminal, once from the

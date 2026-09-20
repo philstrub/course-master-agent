@@ -11,6 +11,7 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
+from .env import load_dotenv
 from .errors import ConfigError
 from .paths import Paths
 
@@ -196,7 +197,14 @@ def _load_cached(path_str: str | None) -> Settings:
 
 
 def load_settings(path: Path | None = None) -> Settings:
-    """Load settings (cached per path). Missing file -> all defaults."""
+    """Load settings (cached per path). Missing file -> all defaults.
+
+    Loads `.env` first (idempotent, see `mitsync.env`) so that secrets read
+    lazily off `os.environ` -- the Canvas token, the LLM key, and therefore
+    `resolve_driver()` -- see values placed in a `.env` file. The settings
+    object is cached; this call is not, so it also covers a cache hit.
+    """
+    load_dotenv()
     return _load_cached(str(path) if path else None)
 
 
