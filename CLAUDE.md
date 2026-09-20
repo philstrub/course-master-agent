@@ -12,7 +12,8 @@ works as an entry point.
 A Python CLI (`mitsync`, under `_agent/mitsync/`) that syncs MIT Canvas
 course material, files it into the student's own folders, reads (never
 writes) Apple Calendar, and builds a knowledge graph. Full picture:
-`docs/PRD.md` and `docs/ENGINEERING_PLAN.md`.
+`docs/PRD.md` and `docs/ENGINEERING_PLAN.md`; the package layout is in
+`README.md`.
 
 ## The dual execution model, and how you fit in
 
@@ -102,7 +103,7 @@ the next unresolved one with a fresh task file. Repeat until it exits 0.
    student's course folders before `mitsync` touched it) without a
    `organize plan` (dry run) that the user has explicitly reviewed and
    approved. `organize apply` on unreviewed plans is not your call to make.
-2. **Never write to Apple Calendar.** `calendar_read.py` is read-only by
+2. **Never write to Apple Calendar.** `schedule/calendar.py` is read-only by
    design; do not add, wire up, or invoke any EventKit write API, and don't
    ask the user for calendar write permission.
 2b. **Never write to Canvas.** Canvas holds graded work, so this is enforced,

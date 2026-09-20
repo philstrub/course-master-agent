@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import pytest
 
-from mitsync import course_map
-from mitsync.config import Settings
+from mitsync.core.config import Settings
+from mitsync.filing import course_map
 from mitsync.llm.rules_driver import RulesJudge
 from tests.test_organize import add_mirror_file, write_course_map, write_naming
 
@@ -89,8 +89,8 @@ def test_deadlines_no_longer_drags_in_organize() -> None:
     import sys
 
     probe = (
-        "import sys, mitsync.deadlines, mitsync.calendar_read; "
-        "print('mitsync.organize' in sys.modules)"
+        "import sys, mitsync.schedule.deadlines, mitsync.schedule.calendar; "
+        "print('mitsync.filing.organize' in sys.modules)"
     )
     out = subprocess.run(  # noqa: S603
         [sys.executable, "-c", probe], capture_output=True, text=True, check=True

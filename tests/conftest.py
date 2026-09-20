@@ -9,7 +9,7 @@ Provides three fixtures. `workspace` builds a throwaway course directory under
 `tmp_path` containing an `_agent/config/settings.yml` and a couple of course
 folders, and points `MITSYNC_WORKSPACE` at it. `settings` loads that file and
 re-points `Settings.paths` at the temp repo. `_clear_settings_cache` is
-autouse and drops the `lru_cache` in `mitsync.config` around every test.
+autouse and drops the `lru_cache` in `mitsync.core.config` around every test.
 
 ## 2. Why This Module Exists
 
@@ -42,9 +42,9 @@ from pathlib import Path
 
 import pytest
 
-from mitsync import config as config_mod
-from mitsync.config import Settings, load_settings
-from mitsync.paths import Paths
+from mitsync.core import config as config_mod
+from mitsync.core.config import Settings, load_settings
+from mitsync.core.paths import Paths
 
 SETTINGS_YML = textwrap.dedent(
     """

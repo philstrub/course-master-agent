@@ -31,8 +31,8 @@ from pathlib import Path
 
 import pytest
 
-from mitsync.config import Settings
-from mitsync.errors import PendingJudgment
+from mitsync.core.config import Settings
+from mitsync.core.errors import PendingJudgment
 from mitsync.llm import base
 from mitsync.llm.agent_driver import AgentJudge, resolve_task
 from mitsync.llm.base import ResultValidationError, get_judge, make_task, validate_result

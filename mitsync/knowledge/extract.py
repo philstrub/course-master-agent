@@ -71,11 +71,11 @@ from typing import TYPE_CHECKING
 
 import frontmatter
 
-from .clock import now_iso
-from .logging import get_logger
+from mitsync.core.clock import now_iso
+from mitsync.core.logging import get_logger
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 

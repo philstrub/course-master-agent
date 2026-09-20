@@ -68,16 +68,16 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .config import read_json
-from .deadlines import last_sync as last_successful_sync
-from .errors import MitsyncError, PendingJudgment
-from .graph import write_if_changed
-from .logging import get_logger
-from .organize import BUCKETS as FILING_BUCKETS
-from .organize import classify_bucket
+from mitsync.core.config import read_json
+from mitsync.core.errors import MitsyncError, PendingJudgment
+from mitsync.core.logging import get_logger
+from mitsync.filing.organize import BUCKETS as FILING_BUCKETS
+from mitsync.filing.organize import classify_bucket
+from mitsync.knowledge.graph import write_if_changed
+from mitsync.schedule.deadlines import last_sync as last_successful_sync
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 
@@ -138,8 +138,8 @@ def _bucket(rel: str) -> str:
 
 def inventory(settings: Settings) -> dict[str, list[dict[str, Any]]]:
     """course -> its files, each with bucket, extracted text path and node ids."""
-    from . import extract as extract_mod
-    from . import graph as graph_mod
+    from mitsync.knowledge import extract as extract_mod
+    from mitsync.knowledge import graph as graph_mod
 
     ws = settings.paths.workspace
     texts = extract_mod.extracted_index(settings)
@@ -276,7 +276,7 @@ def _course_notes(
         report.notes_pending.append(course)
         return _notes_skeleton(course, files, "no judgment driver was supplied")
 
-    from .llm.base import ResultValidationError, make_task, validate_result
+    from mitsync.llm.base import ResultValidationError, make_task, validate_result
 
     ws = settings.paths.workspace
     documents = []
@@ -333,7 +333,7 @@ def _course_notes(
 
 
 def _concept_labels(settings: Settings, course: str) -> list[str]:
-    from . import graph as graph_mod
+    from mitsync.knowledge import graph as graph_mod
 
     nodes = graph_mod.load_nodes(settings)
     prefix = f"{course}/"
@@ -399,7 +399,7 @@ def _global_index(
 
 
 def _agents_md(settings: Settings, courses: dict[str, list[dict[str, Any]]], last_sync: str) -> str:
-    from . import graph as graph_mod
+    from mitsync.knowledge import graph as graph_mod
 
     due_path, due_items = _due_summary(settings)
     canned = sorted(graph_mod.CANNED)
@@ -545,7 +545,7 @@ def _agents_md(settings: Settings, courses: dict[str, list[dict[str, Any]]], las
 # --------------------------------------------------------------------------
 def build(settings: Settings, judge: Any = None) -> KBReport:
     """Regenerate every page under `_kb/`."""
-    from . import graph as graph_mod
+    from mitsync.knowledge import graph as graph_mod
 
     # Give every extracted document Course/Resource nodes to cite, deliberately
     # with NO judge: `mitsync kb build` must never raise PendingJudgment from

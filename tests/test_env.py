@@ -13,10 +13,10 @@ from pathlib import Path
 
 import pytest
 
-from mitsync import env as env_mod
 from mitsync.cli import _secret_source
-from mitsync.config import Settings, load_settings
-from mitsync.env import (
+from mitsync.core import env as env_mod
+from mitsync.core.config import Settings, load_settings
+from mitsync.core.env import (
     ENVIRONMENT,
     NOT_SET,
     OPENCLAW_DOTENV,
@@ -24,7 +24,7 @@ from mitsync.env import (
     load_dotenv,
     parse_dotenv,
 )
-from mitsync.paths import Paths
+from mitsync.core.paths import Paths
 
 SECRET = "sentinel-not-a-real-token-0001"
 OTHER = "sentinel-not-a-real-token-0002"
@@ -156,7 +156,7 @@ def test_parse_quoting_comments_export_whitespace_and_equals():
 
 
 def test_malformed_lines_are_skipped_without_raising(caplog: pytest.LogCaptureFixture):
-    with caplog.at_level(logging.DEBUG, logger="mitsync.env"):
+    with caplog.at_level(logging.DEBUG, logger="mitsync.core.env"):
         parsed = parse_dotenv(
             "NO_EQUALS_HERE\n=novalue\n1BAD=x\nBAD KEY=x\nGOOD=ok\n", origin="fake.env"
         )

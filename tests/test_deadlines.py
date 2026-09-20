@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mitsync import deadlines
-from mitsync.config import Settings
-from mitsync.manifest import FileRecord, Manifest
+from mitsync.canvas.manifest import FileRecord, Manifest
+from mitsync.core.config import Settings
+from mitsync.schedule import deadlines
 
 MIRROR = "Machine Learning 15.095"
 
@@ -260,7 +260,7 @@ def test_two_deadlines_at_the_same_time_do_not_crash_the_briefing(settings, monk
     common case -- a whole course's assignments land at 23:59 -- so this broke
     `mitsync brief` outright on real data.
     """
-    from mitsync import deadlines as dl
+    from mitsync.schedule import deadlines as dl
 
     same = (datetime.now(UTC) + timedelta(days=1)).isoformat(timespec="seconds")
 

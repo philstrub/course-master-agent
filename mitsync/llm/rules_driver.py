@@ -56,13 +56,13 @@ import re
 from pathlib import PurePosixPath
 from typing import TYPE_CHECKING, Any
 
-from ..course_map import course_numbers_in
-from ..logging import get_logger
-from ..organize import classify_bucket
-from .base import JudgeTask
+from mitsync.core.logging import get_logger
+from mitsync.filing.course_map import course_numbers_in
+from mitsync.filing.organize import classify_bucket
+from mitsync.llm.base import JudgeTask
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 

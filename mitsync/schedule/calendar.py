@@ -107,13 +107,13 @@ from typing import TYPE_CHECKING, Any
 
 from rich.console import Console
 
-from .clock import parse_iso
-from .course_map import load_course_map
-from .errors import CalendarAccessDenied, MitsyncError
-from .logging import get_logger
+from mitsync.core.clock import parse_iso
+from mitsync.core.errors import CalendarAccessDenied, MitsyncError
+from mitsync.core.logging import get_logger
+from mitsync.filing.course_map import load_course_map
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 console = Console()

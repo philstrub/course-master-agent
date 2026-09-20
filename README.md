@@ -196,11 +196,24 @@ Secrets live in `_agent/.env` or `~/.openclaw/.env`, never in the repo.
     manifest.json  INDEX.md  due.json
     text/  courses/  briefings/  graph/
   _agent/                       <- this repo
-    mitsync/  config/  skills/  docs/  openclaw/  state/  tests/
+    config/  skills/  docs/  openclaw/  state/  tests/
+    mitsync/
+      cli.py                  <- the only place an error becomes an exit code
+      core/                   <- errors, logging, clock, paths, env, config
+      canvas/                 <- client, sync, manifest   (read-only, HTTP)
+      filing/                 <- course_map, organize
+      schedule/               <- calendar, deadlines      (read-only, EventKit)
+      knowledge/              <- extract, graph, kb
+      llm/                    <- the only package that may import a model SDK
 ```
 
 `_canvas/` is never emptied and files are only ever copied or hardlinked
 *out* of it, so a mis-file can always be undone.
+
+The package layering is one-directional: `core` imports nothing above it, the
+four capability packages import `core` and `llm`, and only `cli` imports all of
+them. Each `__init__.py` states the constraints its modules must keep — read
+those first.
 
 ---
 
@@ -231,4 +244,4 @@ and hand you a task file.
 | `docs/API_NOTES.md` | Canvas + EventKit findings, with unverified items marked as such |
 | `docs/RUNBOOK.md` | Setup, TCC grants, cron, failure modes, recovery |
 | `docs/ADR/` | Why: dual execution model, DuckDB-as-projection, read-only EventKit |
-| `mitsync/errors.py` | The error taxonomy — the source, not a copy of it |
+| `mitsync/core/errors.py` | The error taxonomy — the source, not a copy of it |

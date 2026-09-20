@@ -5,7 +5,7 @@ to `_agent/skills` created by the OpenClaw setup. Both are machinery, not course
 content, and a walk that follows either one pollutes the knowledge base.
 """
 
-from mitsync import extract
+from mitsync.knowledge import extract
 
 
 def test_symlink_into_agent_repo_is_not_a_course_root(settings):

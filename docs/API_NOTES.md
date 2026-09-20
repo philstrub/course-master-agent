@@ -1,6 +1,6 @@
 # API Notes
 
-Research backing `canvas_client.py`, `calendar_read.py`, and the optional
+Research backing `canvas/client.py`, `schedule/calendar.py`, and the optional
 OpenClaw integration. Everything here is either drawn from cited docs or
 explicitly marked UNVERIFIED — do not treat an unverified item as fact when
 implementing against it; validate empirically first (see
@@ -58,7 +58,7 @@ Canvas instance, so the general Canvas LMS REST API docs
       GET /api/v1/courses/38615/front_page  -> 404
 
   This is the 404-shaped analogue of the 403 on a hidden Files tab above: the
-  course simply has no Pages. Treat it as expected — `canvas_client` raises
+  course simply has no Pages. Treat it as expected — `canvas.client` raises
   `CanvasFeatureDisabled` and `sync` records a notice, never an error. A 404
   whose body does *not* say "disabled" is a genuine miss (`CanvasNotFound`).
 - Source: Canvas API `files` resource docs

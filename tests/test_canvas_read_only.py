@@ -11,8 +11,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mitsync.canvas_client import READ_ONLY_METHODS, CanvasClient
-from mitsync.errors import CanvasWriteRefused
+from mitsync.canvas.client import READ_ONLY_METHODS, CanvasClient
+from mitsync.core.errors import CanvasWriteRefused
 
 SRC = Path(__file__).resolve().parents[1] / "mitsync"
 WRITE_VERBS = {"post", "put", "patch", "delete"}

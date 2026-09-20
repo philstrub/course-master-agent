@@ -58,12 +58,12 @@ import json
 import re
 from typing import TYPE_CHECKING, Any
 
-from ..errors import JudgeUnavailable
-from ..logging import get_logger
-from .base import JudgeTask, ResultValidationError, validate_result
+from mitsync.core.errors import JudgeUnavailable
+from mitsync.core.logging import get_logger
+from mitsync.llm.base import JudgeTask, ResultValidationError, validate_result
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 

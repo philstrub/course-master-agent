@@ -58,14 +58,14 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.table import Table
 
-from .clock import now_iso, parse_iso
-from .config import read_json, read_meta
-from .course_map import load_course_map
-from .errors import CalendarAccessDenied, MitsyncError
-from .logging import get_logger
+from mitsync.core.clock import now_iso, parse_iso
+from mitsync.core.config import read_json, read_meta
+from mitsync.core.errors import CalendarAccessDenied, MitsyncError
+from mitsync.core.logging import get_logger
+from mitsync.filing.course_map import load_course_map
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 console = Console()
@@ -184,7 +184,7 @@ def _planner_items(settings: Settings, warnings: list[str]) -> list[dict[str, An
 
 
 def _calendar_items(settings: Settings, report: DueReport) -> list[dict[str, Any]]:
-    from . import calendar_read
+    from mitsync.schedule import calendar as calendar_read
 
     ok, detail = calendar_read.calendar_available(settings)
     if not ok:
@@ -244,7 +244,7 @@ def last_sync(settings: Settings) -> str | None:
     db = settings.paths.manifest_db
     if not db.exists():
         return None
-    from .manifest import Manifest
+    from mitsync.canvas.manifest import Manifest
 
     with Manifest(db) as man:
         run = man.last_run("sync")
@@ -326,7 +326,7 @@ def _recent_materials(settings: Settings, since: datetime | None) -> list[tuple[
     db = settings.paths.manifest_db
     if not db.exists():
         return []
-    from .manifest import Manifest
+    from mitsync.canvas.manifest import Manifest
 
     cutoff = since or datetime.now(UTC) - timedelta(days=BRIEFING_WINDOW_DAYS)
     out: list[tuple[str, str, str]] = []
@@ -340,7 +340,7 @@ def _recent_materials(settings: Settings, since: datetime | None) -> list[tuple[
 
 
 def _class_meetings(settings: Settings, report: DueReport) -> list[Any]:
-    from . import calendar_read
+    from mitsync.schedule import calendar as calendar_read
 
     ok, detail = calendar_read.calendar_available(settings)
     if not ok:

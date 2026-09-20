@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from mitsync.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
+from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
 
 
 def make_file(uuid: str = "uuid-1", **over) -> FileRecord:

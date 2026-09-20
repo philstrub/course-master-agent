@@ -65,13 +65,13 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..clock import now_iso
-from ..errors import PendingJudgment
-from ..logging import get_logger
-from .base import JudgeTask, validate_result
+from mitsync.core.clock import now_iso
+from mitsync.core.errors import PendingJudgment
+from mitsync.core.logging import get_logger
+from mitsync.llm.base import JudgeTask, validate_result
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 

@@ -70,9 +70,9 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
 
-from .env import load_dotenv
-from .errors import ConfigError, MitsyncError
-from .paths import Paths
+from mitsync.core.env import load_dotenv
+from mitsync.core.errors import ConfigError, MitsyncError
+from mitsync.core.paths import Paths
 
 Driver = Literal["api", "agent", "rules"]
 _DRIVERS: tuple[str, ...] = ("api", "agent", "rules")

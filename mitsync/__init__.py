@@ -26,12 +26,21 @@ folders are a curated view populated by hardlink or copy out of that mirror;
 `_kb/` is entirely generated. Canvas and Apple Calendar are both read-only, by
 enforcement rather than by convention.
 
-Layering, bottom up: `paths`, `clock`, `errors`, `logging` and `env` are
-leaves; `config` validates settings; `canvas_client`, `manifest` and `sync`
-mirror Canvas; `course_map` and `organize` file it; `extract`, `graph` and `kb`
-index it; `deadlines` and `calendar_read` report on it; `llm/` is the only
-package allowed to talk to a model; `cli` wires them together and is the only
-place an error becomes an exit code.
+Layering is one-directional and expressed as packages, bottom up:
+
+* `core/` -- `paths`, `clock`, `errors`, `logging`, `env`, `config`. Imports
+  nothing else in mitsync.
+* `canvas/` -- `client`, `sync`, `manifest`. The only package that speaks HTTP.
+* `filing/` -- `course_map`, `organize`. Mirror in, course folders out.
+* `schedule/` -- `calendar`, `deadlines`. Local state and EventKit only; imports
+  neither `canvas` nor `httpx`, and a test asserts it.
+* `knowledge/` -- `extract`, `graph`, `kb`. Everything under `_kb/`.
+* `llm/` -- the only package allowed to import a provider SDK.
+* `cli` -- wires them together, and is the only place an error becomes an exit
+  code.
+
+Each package's `__init__.py` carries the constraints its modules must keep;
+those docstrings, not this one, are where a future edit should look first.
 
 ## 4. Key Concepts
 

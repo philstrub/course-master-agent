@@ -94,9 +94,12 @@ from typing import TYPE_CHECKING, Any
 from rich.console import Console
 from rich.table import Table
 
-from .clock import now_iso
-from .config import read_json
-from .course_map import (
+from mitsync.core.clock import now_iso
+from mitsync.core.config import read_json
+from mitsync.core.errors import MitsyncError
+from mitsync.core.logging import get_logger
+from mitsync.core.paths import unique_path
+from mitsync.filing.course_map import (
     SEPARATORS_RX,
     existing_course_folders,
     folder_for_canvas_id,
@@ -104,13 +107,10 @@ from .course_map import (
     naming_rules,
     walk,
 )
-from .errors import MitsyncError
-from .llm.base import make_task, validate_result
-from .logging import get_logger
-from .paths import unique_path
+from mitsync.llm.base import make_task, validate_result
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 console = Console()
@@ -310,7 +310,7 @@ def _unfiled_canvas_files(settings: Settings) -> list[dict[str, Any]]:
     db = settings.paths.manifest_db
     if not db.exists():
         return []
-    from .manifest import Manifest
+    from mitsync.canvas.manifest import Manifest
 
     out: list[dict[str, Any]] = []
     with Manifest(db) as man:
@@ -636,7 +636,7 @@ def apply_plan(
 def _record_filed(settings: Settings, filed: list[tuple[str, str]]) -> None:
     if not filed:
         return
-    from .manifest import Manifest
+    from mitsync.canvas.manifest import Manifest
 
     with Manifest(settings.paths.manifest_db) as man:
         for uuid, dest in filed:
@@ -746,7 +746,7 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
             cleared.append(op["uuid"])
 
     if cleared:
-        from .manifest import Manifest
+        from mitsync.canvas.manifest import Manifest
 
         with Manifest(settings.paths.manifest_db) as man:
             for uuid in cleared:

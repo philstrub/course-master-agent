@@ -72,19 +72,21 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-from . import calendar_read, deadlines
-from . import course_map as course_map_mod
-from . import extract as extract_mod
-from . import graph as graph_mod
-from . import kb as kb_mod
-from . import organize as organize_mod
-from . import sync as sync_mod
-from .config import Settings, load_settings
-from .env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
-from .errors import EXIT_PENDING_JUDGMENT, MitsyncError, PendingJudgment
-from .llm.agent_driver import load_task, resolve_task
-from .llm.base import get_judge, load_task_spec
-from .logging import setup_logging
+from mitsync.canvas import sync as sync_mod
+from mitsync.core.config import Settings, load_settings
+from mitsync.core.env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
+from mitsync.core.errors import EXIT_PENDING_JUDGMENT, MitsyncError, PendingJudgment
+from mitsync.core.logging import setup_logging
+from mitsync.core.paths import PKG_DIR
+from mitsync.filing import course_map as course_map_mod
+from mitsync.filing import organize as organize_mod
+from mitsync.knowledge import extract as extract_mod
+from mitsync.knowledge import graph as graph_mod
+from mitsync.knowledge import kb as kb_mod
+from mitsync.llm.agent_driver import load_task, resolve_task
+from mitsync.llm.base import get_judge, load_task_spec
+from mitsync.schedule import calendar as calendar_read
+from mitsync.schedule import deadlines
 
 console = Console()
 
@@ -531,7 +533,7 @@ def doctor() -> None:
         add("FAIL", "duckdb", f"import failed ({exc}); run `uv sync`")
 
     try:
-        names = sorted(p.stem for p in (Path(__file__).parent / "llm" / "tasks").glob("*.json"))
+        names = sorted(p.stem for p in (PKG_DIR / "llm" / "tasks").glob("*.json"))
         for n in names:
             load_task_spec(n)
         add("PASS", "judge tasks", ", ".join(names) or "none registered")

@@ -21,9 +21,9 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
-from mitsync import calendar_read
-from mitsync.config import Settings
-from mitsync.errors import CalendarAccessDenied, ConfigError, MitsyncError
+from mitsync.core.config import Settings
+from mitsync.core.errors import CalendarAccessDenied, ConfigError, MitsyncError
+from mitsync.schedule import calendar as calendar_read
 
 FIXTURES = Path(__file__).parent / "fixtures" / "calendar"
 

@@ -90,7 +90,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from .errors import (
+from mitsync.core.errors import (
     CanvasAccessDenied,
     CanvasAuthError,
     CanvasFeatureDisabled,
@@ -101,7 +101,7 @@ from .errors import (
     MitsyncError,
     StalePresignedURL,
 )
-from .logging import get_logger
+from mitsync.core.logging import get_logger
 
 log = get_logger(__name__)
 

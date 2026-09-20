@@ -41,10 +41,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mitsync.canvas_client import CanvasClient
-from mitsync.errors import CanvasAuthError
-from mitsync.manifest import Manifest
-from mitsync.sync import course_folder_name, run_sync
+from mitsync.canvas.client import CanvasClient
+from mitsync.canvas.manifest import Manifest
+from mitsync.canvas.sync import course_folder_name, run_sync
+from mitsync.core.errors import CanvasAuthError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "canvas"
 BASE = "https://canvas.mit.edu/api/v1"
@@ -628,7 +628,7 @@ def test_a_sync_that_recorded_errors_exits_nonzero(monkeypatch, workspace):
     from typer.testing import CliRunner
 
     from mitsync import cli
-    from mitsync.sync import SyncReport
+    from mitsync.canvas.sync import SyncReport
 
     report = SyncReport(dry_run=True)
     report.add_error("-", "courses", "Canvas rejected the token (401)")

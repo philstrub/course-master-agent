@@ -116,10 +116,11 @@ import httpx
 from rich.console import Console
 from rich.table import Table
 
-from .canvas_client import CanvasClient
-from .clock import now_iso, parse_iso
-from .config import read_meta
-from .errors import (
+from mitsync.canvas.client import CanvasClient
+from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
+from mitsync.core.clock import now_iso, parse_iso
+from mitsync.core.config import read_meta
+from mitsync.core.errors import (
     CanvasAccessDenied,
     CanvasFeatureDisabled,
     CanvasHTTPError,
@@ -127,9 +128,8 @@ from .errors import (
     CanvasRateLimited,
     MitsyncError,
 )
-from .logging import get_logger
-from .manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
-from .paths import unique_path
+from mitsync.core.logging import get_logger
+from mitsync.core.paths import unique_path
 
 log = get_logger(__name__)
 console = Console()

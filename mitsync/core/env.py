@@ -45,8 +45,8 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from .logging import get_logger
-from .paths import Paths
+from mitsync.core.logging import get_logger
+from mitsync.core.paths import Paths
 
 log = get_logger(__name__)
 

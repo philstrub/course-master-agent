@@ -8,11 +8,11 @@ from typing import Any
 
 import pytest
 
-from mitsync import extract as extract_mod
-from mitsync import graph as graph_mod
-from mitsync import kb as kb_mod
-from mitsync.config import Settings
-from mitsync.errors import JudgeUnavailable, MitsyncError
+from mitsync.core.config import Settings
+from mitsync.core.errors import JudgeUnavailable, MitsyncError
+from mitsync.knowledge import extract as extract_mod
+from mitsync.knowledge import graph as graph_mod
+from mitsync.knowledge import kb as kb_mod
 from mitsync.llm.base import JudgeTask, validate_result
 from tests.test_extract import make_notebook, make_pdf
 from tests.test_graph import EmptyJudge, StubJudge, concept_judge

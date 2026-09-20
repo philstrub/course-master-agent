@@ -50,13 +50,13 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from .config import read_meta
-from .errors import ConfigError
-from .llm.base import make_task, validate_result
-from .logging import get_logger
+from mitsync.core.config import read_meta
+from mitsync.core.errors import ConfigError
+from mitsync.core.logging import get_logger
+from mitsync.llm.base import make_task, validate_result
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 console = Console()
@@ -216,7 +216,7 @@ def _canvas_courses(settings: Settings) -> list[dict[str, Any]]:
     courses: list[dict[str, Any]] = []
     db = settings.paths.manifest_db
     if db.exists():
-        from .manifest import Manifest
+        from mitsync.canvas.manifest import Manifest
 
         with Manifest(db) as man:
             for rec in man.list_courses():
@@ -251,7 +251,7 @@ def suggest_course_map(settings: Settings, judge: Any, *, apply: bool = False) -
     # point of this module is that `deadlines` and `calendar_read` can read the
     # course map without dragging the Canvas client in. Only this one function
     # -- which is already talking to Canvas -- needs it.
-    from .sync import filter_excluded_courses
+    from mitsync.canvas.sync import filter_excluded_courses
 
     courses, excluded = filter_excluded_courses(
         _canvas_courses(settings), settings.canvas.exclude_courses

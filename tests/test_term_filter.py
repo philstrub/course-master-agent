@@ -8,15 +8,15 @@ from pathlib import Path
 import pytest
 import yaml
 
-from mitsync.config import Settings, load_settings
-from mitsync.course_map import load_course_map
-from mitsync.paths import Paths
-from mitsync.sync import (
+from mitsync.canvas.sync import (
     SyncReport,
     course_exclusion_reason,
     filter_excluded_courses,
     select_current_term_courses,
 )
+from mitsync.core.config import Settings, load_settings
+from mitsync.core.paths import Paths
+from mitsync.filing.course_map import load_course_map
 
 _TODAY = datetime.now(UTC).date()
 CURRENT_TERM = {

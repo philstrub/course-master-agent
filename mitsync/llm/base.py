@@ -61,10 +61,10 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from ..errors import ConfigError, MitsyncError
+from mitsync.core.errors import ConfigError, MitsyncError
 
 if TYPE_CHECKING:  # pragma: no cover
-    from ..config import Settings
+    from mitsync.core.config import Settings
 
 TASKS_DIR = Path(__file__).resolve().parent / "tasks"
 
@@ -150,13 +150,13 @@ def get_judge(settings: Settings, driver: str | None = None) -> Judge:
     """Return the Judge for the resolved driver (explicit flag > settings > auto)."""
     resolved = settings.resolve_driver(driver)
     if resolved == "api":
-        from .api_driver import ApiJudge
+        from mitsync.llm.api_driver import ApiJudge
 
         return ApiJudge(settings)
     if resolved == "agent":
-        from .agent_driver import AgentJudge
+        from mitsync.llm.agent_driver import AgentJudge
 
         return AgentJudge(settings)
-    from .rules_driver import RulesJudge
+    from mitsync.llm.rules_driver import RulesJudge
 
     return RulesJudge(settings)

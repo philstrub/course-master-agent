@@ -58,8 +58,12 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
-_PKG_DIR = Path(__file__).resolve().parent
-_REPO_ROOT = _PKG_DIR.parent
+# Anchored on this file rather than on the cwd: `mitsync` must resolve its own
+# repo identically whether it was launched from the workspace, from `_agent`, or
+# by a LaunchAgent with no meaningful working directory. `parents[2]` is the repo
+# root because this module sits at `<repo>/mitsync/core/paths.py`.
+PKG_DIR = Path(__file__).resolve().parents[1]
+REPO_ROOT = PKG_DIR.parent
 
 
 def unique_path(base: Path) -> Path:
@@ -81,7 +85,7 @@ def _default_workspace() -> Path:
     env = os.environ.get("MITSYNC_WORKSPACE")
     if env:
         return Path(env).expanduser().resolve()
-    return _REPO_ROOT.parent
+    return REPO_ROOT.parent
 
 
 @dataclass(frozen=True)
@@ -89,7 +93,7 @@ class Paths:
     """Resolved locations. Construct with no arguments in normal use."""
 
     workspace: Path = None  # type: ignore[assignment]
-    repo: Path = _REPO_ROOT
+    repo: Path = REPO_ROOT
 
     def __post_init__(self) -> None:
         if self.workspace is None:

@@ -10,11 +10,11 @@ from typing import Any
 
 import pytest
 
-from mitsync import organize
-from mitsync.config import Settings
+from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest
+from mitsync.core.config import Settings
+from mitsync.filing import organize
 from mitsync.llm.base import JudgeTask
 from mitsync.llm.rules_driver import RulesJudge
-from mitsync.manifest import CourseRecord, FileRecord, Manifest
 
 NAMING_MD = textwrap.dedent(
     """
@@ -514,7 +514,7 @@ def test_already_bucketed_files_are_left_alone(prepared: Settings) -> None:
 # --------------------------------------------------------------------------
 def test_agent_driver_task_carries_the_rules_and_replays(prepared: Settings) -> None:
     from mitsync.cli import _PreJudged
-    from mitsync.errors import PendingJudgment
+    from mitsync.core.errors import PendingJudgment
     from mitsync.llm.agent_driver import AgentJudge, resolve_task
 
     add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")

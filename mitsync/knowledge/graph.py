@@ -94,12 +94,13 @@ import yaml
 from rich.console import Console
 from rich.table import Table
 
-from .clock import now_iso
-from .errors import MitsyncError, OntologyError, PendingJudgment
-from .logging import get_logger
+from mitsync.core.clock import now_iso
+from mitsync.core.errors import MitsyncError, OntologyError, PendingJudgment
+from mitsync.core.logging import get_logger
+from mitsync.core.paths import REPO_ROOT
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .config import Settings
+    from mitsync.core.config import Settings
 
 log = get_logger(__name__)
 
@@ -201,7 +202,7 @@ def load_ontology(settings: Settings) -> Ontology:
     """
     path = settings.paths.config_dir / "ontology.yml"
     if not path.exists():
-        path = Path(__file__).resolve().parent.parent / "config" / "ontology.yml"
+        path = REPO_ROOT / "config" / "ontology.yml"
     if not path.exists():
         raise OntologyError(f"ontology file not found: {path}")
     try:
@@ -857,7 +858,7 @@ def course_id(course: str) -> str:
 def _documents(settings: Settings, since: str | None) -> list[dict[str, Any]]:
     import frontmatter
 
-    from .extract import course_of
+    from mitsync.knowledge.extract import course_of
 
     docs: list[dict[str, Any]] = []
     text_dir = settings.paths.kb_text
@@ -944,7 +945,7 @@ def _judge_documents(
     docs: list[dict[str, Any]],
     report: GraphReport,
 ) -> None:
-    from .llm.base import ResultValidationError, make_task, validate_result
+    from mitsync.llm.base import ResultValidationError, make_task, validate_result
 
     known = [
         {"id": n["id"], "type": n["type"], "label": n["label"]}

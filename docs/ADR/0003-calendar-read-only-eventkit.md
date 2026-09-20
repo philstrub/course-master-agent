@@ -20,7 +20,7 @@ synced" marker or a due-date event).
 
 `mitsync` reads Apple Calendar strictly read-only, via EventKit, using a
 maintained EventKit CLI with JSON output (`ical-guy`, with `ekctl` as a
-documented alternative). `calendar_read.py` contains no EventKit write
+documented alternative). `schedule/calendar.py` contains no EventKit write
 call of any kind — not to add events, not to modify them — by design, and
 a guardrail test checks this module for the absence of any write API
 usage. No command, driver, or configuration flag in `mitsync` can cause a

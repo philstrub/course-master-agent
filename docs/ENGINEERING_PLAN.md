@@ -37,8 +37,8 @@
 
 ### Layering rule
 
-The deterministic Python layer (`canvas_client`, `sync`, `organize`'s file
-operations, `calendar_read`, `extract`, `graph`'s JSONL/DuckDB I/O) does
+The deterministic Python layer (`canvas/`, `filing/`'s file operations,
+`schedule/calendar`, `knowledge/extract`, `knowledge/graph`'s JSONL/DuckDB I/O) does
 every fetch, hash, move, parse, and disk write. It never guesses. The LLM
 layer (`mitsync/llm/`) is the *only* place that produces judgment —
 classification (which folder), naming (what filename), per-course note
@@ -64,7 +64,7 @@ class Judge(Protocol):
 
 `JudgeTask` carries `name`, `version`, `schema`, `payload`, `rules`,
 `instructions`, `origin_command`, and `origin_args`. The agent driver raises
-`PendingJudgment` (from `mitsync/errors.py`, not from `llm/base.py`), which
+`PendingJudgment` (from `mitsync/core/errors.py`, not from `llm/base.py`), which
 `cli.py` turns into exit code `EXIT_PENDING_JUDGMENT` (20).
 
 Exactly four commands take `--driver` / `--resolve`: `map`, `organize plan`,
@@ -76,10 +76,12 @@ Exactly four commands take `--driver` / `--resolve`: `map`, `organize plan`,
 Deliberately not restated here — a second copy drifts from the code and then
 misleads. Read instead:
 
-- `mitsync/errors.py` — the whole error hierarchy, one docstring per class.
-- The module docstring at the top of each `mitsync/*.py` — what that module
-  is for and where it fits.
-- The `CREATE TABLE` statements in `mitsync/manifest.py` and `mitsync/graph.py`
+- `mitsync/core/errors.py` — the whole error hierarchy, one docstring per class.
+- The `__init__.py` docstring of each subpackage (`core`, `canvas`, `filing`,
+  `schedule`, `knowledge`, `llm`) — the architectural direction and the
+  constraints its modules must keep — then the module docstring inside it.
+- The `CREATE TABLE` statements in `mitsync/canvas/manifest.py` and
+  `mitsync/knowledge/graph.py`
   — the manifest and graph-projection schemas.
 - `docs/ADR/0002-graph-storage-duckdb.md` — why the JSONL is canonical and
   `state/graph.duckdb` is a disposable projection.

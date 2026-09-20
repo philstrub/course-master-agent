@@ -28,8 +28,8 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mitsync.canvas_client import CanvasClient, _next_link
-from mitsync.errors import (
+from mitsync.canvas.client import CanvasClient, _next_link
+from mitsync.core.errors import (
     CanvasAccessDenied,
     CanvasAuthError,
     CanvasFeatureDisabled,

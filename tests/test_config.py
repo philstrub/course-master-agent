@@ -23,9 +23,9 @@ from pathlib import Path
 
 import pytest
 
-from mitsync.config import Settings, load_settings
-from mitsync.errors import ConfigError
-from mitsync.paths import Paths
+from mitsync.core.config import Settings, load_settings
+from mitsync.core.errors import ConfigError
+from mitsync.core.paths import Paths
 
 
 def test_loads_yaml(settings: Settings) -> None:
