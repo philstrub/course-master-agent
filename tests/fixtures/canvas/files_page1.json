@@ -1,0 +1,15 @@
+[
+  {
+    "id": 5001,
+    "uuid": "uuid-5001",
+    "folder_id": 901,
+    "display_name": "Lecture 1.pdf",
+    "filename": "lecture1.pdf",
+    "content-type": "application/pdf",
+    "content_type": "application/pdf",
+    "size": 21,
+    "updated_at": "2026-09-01T10:00:00Z",
+    "created_at": "2026-09-01T10:00:00Z",
+    "url": "https://canvas-files.s3.amazonaws.com/5001?token=short-lived-1"
+  }
+]

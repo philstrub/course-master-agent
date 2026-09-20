@@ -1,0 +1,9 @@
+[
+  {
+    "context_type": "Course",
+    "course_id": 28451,
+    "plannable_type": "assignment",
+    "plannable_date": "2026-09-25T03:59:00Z",
+    "plannable": {"id": 88, "title": "Problem Set 1", "due_at": "2026-09-25T03:59:00Z"}
+  }
+]

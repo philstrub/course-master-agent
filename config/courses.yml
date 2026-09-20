@@ -1,0 +1,19 @@
+# Canvas course -> workspace folder mapping.
+#
+# Bootstrap this file with:   mitsync map        (preview)
+#                             mitsync map --apply (write)
+#
+# `mitsync map` proposes mappings by matching Canvas course names against the
+# folders that already exist in the workspace; edit freely afterwards -- this
+# file is the source of truth and is never overwritten without --apply.
+
+courses: []
+
+# Example:
+# courses:
+#   - canvas_id: 28451
+#     folder: Machine Learning        # workspace-relative folder name
+#     course_number: "6.7900"         # null if the course has no number
+#     aliases:                        # other names seen in filenames / Canvas
+#       - ML
+#       - "6.790"

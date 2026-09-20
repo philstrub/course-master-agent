@@ -1,0 +1,32 @@
+{
+  "name": "organize_plan",
+  "version": 1,
+  "instructions": "You are filing newly mirrored Canvas files into a student's existing course folders.\n\nYou are given:\n- `files`: the Canvas files to place. Each has file_id, display_name, canvas_folder (the folder path inside Canvas), module_name and module_position (the Canvas module it belongs to, or null), content_type, size (bytes), and course (the workspace course folder it belongs to).\n- `existing_folders`: for each course folder, the subfolders that already exist there.\n- The prose filing rules, supplied separately as `rules`. Follow them exactly; they override any convention you would otherwise assume.\n\nProduce one placement per input file — never fewer, never more, and never invent a file_id.\n\n`destination` is a workspace-relative POSIX path INCLUDING the filename, e.g. `Machine Learning/lectures/03-trees.pdf`. It must start with the file's `course` folder. Do not use absolute paths, `..`, or a leading slash.\n\n`reason` is one short sentence naming the signal you used (module name, Canvas folder, filename, content type).\n\n`confidence` is 0..1. Use below 0.5 when the subfolder is genuinely ambiguous or the file may not belong to the course at all; those placements are held back for human review rather than applied.\n\nReturn JSON only, matching the schema exactly. No prose, no markdown fence.",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "additionalProperties": false,
+    "required": ["placements"],
+    "properties": {
+      "placements": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["file_id", "destination", "reason", "confidence"],
+          "properties": {
+            "file_id": {"type": "string", "minLength": 1},
+            "destination": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^/][^\\u0000]*$",
+              "description": "workspace-relative POSIX path including filename"
+            },
+            "reason": {"type": "string", "minLength": 1},
+            "confidence": {"type": "number", "minimum": 0, "maximum": 1}
+          }
+        }
+      }
+    }
+  }
+}

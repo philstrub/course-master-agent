@@ -1,0 +1,28 @@
+[
+  {
+    "id": 28451,
+    "name": "Machine Learning",
+    "course_code": "6.7900",
+    "enrollment_term_id": 42,
+    "workflow_state": "available",
+    "term": {
+      "id": 42,
+      "name": "2026 Fall",
+      "start_at": "__TERM_START__",
+      "end_at": "__TERM_END__"
+    }
+  },
+  {
+    "id": 11111,
+    "name": "Ancient History",
+    "course_code": "21H.001",
+    "enrollment_term_id": 7,
+    "workflow_state": "available",
+    "term": {
+      "id": 7,
+      "name": "2024 Spring",
+      "start_at": "2024-02-05T05:00:00Z",
+      "end_at": "2024-05-20T05:00:00Z"
+    }
+  }
+]

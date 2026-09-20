@@ -1,0 +1,27 @@
+[
+  {
+    "id": 700,
+    "name": "Week 1 - Foundations",
+    "position": 1,
+    "published": true,
+    "items": [
+      {"id": 1, "type": "SubHeader", "title": "Readings", "position": 1},
+      {"id": 2, "type": "File", "content_id": 5001, "title": "Lecture 1", "position": 2},
+      {"id": 3, "type": "Page", "page_url": "course-intro", "title": "Course Intro", "position": 3},
+      {"id": 4, "type": "ExternalUrl", "external_url": "https://example.edu/reading", "title": "Reading", "position": 4}
+    ]
+  },
+  {
+    "id": 701,
+    "name": "Week 2 - Linear Models",
+    "position": 2,
+    "published": true,
+    "items": [
+      {"id": 5, "type": "File", "content_id": 5003, "title": "Week 2 Notes", "position": 1},
+      {"id": 6, "type": "Assignment", "content_id": 88, "title": "Pset 1", "position": 2},
+      {"id": 7, "type": "Quiz", "content_id": 99, "title": "Quiz 1", "position": 3},
+      {"id": 8, "type": "Discussion", "content_id": 77, "title": "Week 2 thread", "position": 4},
+      {"id": 9, "type": "ExternalTool", "external_url": "https://tool.example/launch", "title": "Gradescope", "position": 5}
+    ]
+  }
+]

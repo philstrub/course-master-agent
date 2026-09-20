@@ -1,0 +1,13 @@
+# Course data lives OUTSIDE this repo, one level up in the workspace
+# (~/Desktop/MIT/courses/_canvas, _kb/text, and the course folders themselves).
+# Nothing here should ever track it.
+
+state/
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.env
+*.duckdb
+.DS_Store

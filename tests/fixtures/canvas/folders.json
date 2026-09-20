@@ -1,0 +1,18 @@
+[
+  {
+    "id": 900,
+    "name": "course files",
+    "full_name": "course files",
+    "parent_folder_id": null,
+    "context_id": 28451,
+    "context_type": "Course"
+  },
+  {
+    "id": 901,
+    "name": "Lectures",
+    "full_name": "course files/Lectures",
+    "parent_folder_id": 900,
+    "context_id": 28451,
+    "context_type": "Course"
+  }
+]

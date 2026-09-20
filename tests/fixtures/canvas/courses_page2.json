@@ -1,0 +1,15 @@
+[
+  {
+    "id": 28452,
+    "name": "Intro to Algorithms / Recitation",
+    "course_code": "6.1210",
+    "enrollment_term_id": 42,
+    "workflow_state": "available",
+    "term": {
+      "id": 42,
+      "name": "2026 Fall",
+      "start_at": "__TERM_START__",
+      "end_at": "__TERM_END__"
+    }
+  }
+]
