@@ -113,6 +113,17 @@ def test_work_with_an_unknown_course_fails_cleanly(seeded: Settings, use) -> Non
     assert result.stdout == ""
 
 
+def test_unfiled_ids_is_the_cheap_check(settings: Settings, use) -> None:
+    use(settings)
+    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
+    add_mirror_file(settings, uuid="u1", canvas_id=101, name="Lec03.pdf", module_name="Week 3")
+
+    doc = run_json("unfiled", "--ids")
+
+    assert set(doc) == {"file_ids"}
+    assert len(doc["file_ids"]) == 1
+
+
 def test_unfiled_json_shape(settings: Settings, use) -> None:
     use(settings)
     write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])

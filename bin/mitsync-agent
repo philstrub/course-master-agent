@@ -6,8 +6,14 @@
 #
 # OpenClaw's exec allowlist matches on the binary's path, so allowlisting this
 # file (instead of `uv`, which runs anything) scopes the agent to mitsync. It
-# also refuses the commands that change the student's files or config: those
-# need a human at a terminal, however persuasive a Canvas page is.
+# also refuses what only a human may do, however persuasive a Canvas page is:
+#
+#   organize undo                         reverses a filing; a human decides that
+#   organize apply --include-existing     would MOVE the student's own files
+#
+# Plain `organize apply --plan P --yes` is allowed: it only hardlinks or
+# copies newly mirrored Canvas files into the course folders, rejects any
+# placement that touches a pre-existing file, and writes an undo log.
 #
 # A LaunchAgent has no shell profile, so uv is looked up by absolute path.
 
@@ -16,9 +22,14 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case " $* " in
-  *" organize "*"apply "* | *" organize "*"undo "*)
-    echo "mitsync-agent: organize apply/undo changes the student's folders; a human" >&2
-    echo "runs it from a terminal after reviewing the plan. Present the plan instead." >&2
+  *" organize "*"undo "*)
+    echo "mitsync-agent: organize undo changes the student's folders; a human" >&2
+    echo "runs it from a terminal. Say which undo log you would reverse instead." >&2
+    exit 2
+    ;;
+  *" organize "*"apply "*"--include-existing"* | *" organize "*"--include-existing"*)
+    echo "mitsync-agent: --include-existing moves the student's own files; a human" >&2
+    echo "runs that from a terminal after reviewing the plan. Present the plan instead." >&2
     exit 2
     ;;
 esac

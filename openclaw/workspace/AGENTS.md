@@ -51,10 +51,11 @@ don't retry it or rephrase it.
   output, or from the naming rule `_kb/briefings/<YYYY-MM-DD>-morning.json`.
 - **`write` replaces the whole file.** There is no `apply_patch` or `edit` in a
   scheduled run. To fix the brief, write the full JSON again.
-- **"still running" + a session id** means `exec` put the command in the
-  background (usually `sync`). Wait with `process` (poll that session), not
-  by sleeping or re-running it. Until `sync` ends, `due`/`work` fail with
-  "Could not set lock on file".
+- **Scheduled runs don't sync.** A job runs `sync` before you (06:45, and
+  every 2 h from 08:00). If `due`/`work` fail with "Could not set lock on
+  file", that sync is still running: say so in `gaps` rather than retrying
+  in a loop. In a chat, "still running" + a session id means `exec` put a
+  command in the background; wait with `process`, not by sleeping.
 - **No human in a scheduled run.** Don't ask questions or wait for approvals.
   Decide, and record what you couldn't do in the brief's `gaps`.
 - **`email` sends once per day.** After it succeeds, stop. "already sent"
@@ -68,7 +69,7 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 
 - `mit-briefing` — the morning brief: deadlines, homework progress, what to review. The main job.
 - `mit-canvas-sync` — "anything new on Canvas?"
-- `mit-organize` — propose where new material goes; the student applies it.
+- `mit-organize` — file newly mirrored Canvas material into the course folders (every 2 h, 08–22).
 
 ## Rules that are never negotiable
 
@@ -78,8 +79,11 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 2. **Nothing leaves read-only sources.** Never write to Canvas or Apple
    Calendar; there is no command for it and you must not look for one. The
    only outbound message is `email`, and its recipient is fixed in config.
-3. **Never move, rename or delete the student's files.** `organize apply` is a
-   human's command, and the wrapper refuses it. Write the plan; don't apply it.
+3. **Never move, rename or delete the student's files.** `organize apply
+   --plan P --yes` only copies Canvas files out of the mirror and rejects any
+   placement that touches a file already there; that is yours to run.
+   `--include-existing` and `organize undo` are a human's, and the wrapper
+   refuses them.
 4. **Don't invent facts.** If the calendar or a file could not be read, say
    so. "I couldn't open your notebook" beats a guessed progress estimate.
 5. **Never touch `AI_Studio/nandatown`, `.venv`, `node_modules`.** Never print
@@ -87,6 +91,7 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 
 ## Memory
 
-Keep it light: after a morning brief, append one line per open homework to
-`memory/<YYYY-MM-DD>.md` (`course · homework · progress estimate`), so the next
-brief can say what moved. Do not store assignment text or secrets there.
+Yesterday's `_kb/briefings/<date>-morning.json` is the memory: it holds each
+homework's status, progress and evidence (`summary`), so the next brief can
+reuse a judgment and say what moved. Don't write a separate memory file. Never
+store assignment text or secrets anywhere.

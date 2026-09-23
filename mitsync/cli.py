@@ -272,10 +272,22 @@ def calendar_cmd(
 # filing
 # --------------------------------------------------------------------------
 @app.command()
-def unfiled(as_json: JsonOpt = False) -> None:
+def unfiled(
+    as_json: JsonOpt = False,
+    ids: Annotated[
+        bool,
+        typer.Option(
+            "--ids",
+            help='Only {"file_ids": [...]}, mapped courses only: a cheap "anything new?".',
+        ),
+    ] = False,
+) -> None:
     """Mirrored files not filed yet, plus the buckets and rules a plan must follow."""
     settings = _settings()
     doc = organize_mod.unfiled(settings)
+    if ids:
+        _emit_json({"file_ids": sorted(f["file_id"] for f in doc["files"] if f["course"])})
+        return
     if as_json:
         _emit_json(doc)
         return
