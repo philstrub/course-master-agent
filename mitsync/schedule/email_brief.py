@@ -102,7 +102,13 @@ def validate_brief(settings: Settings, brief: Any) -> dict[str, Any]:
 
 
 def _classes_today(settings: Settings, day: datetime) -> tuple[list[dict[str, Any]], str | None]:
-    """Course-tagged, timed events for `day` (local). Personal events stay out."""
+    """Course-tagged, timed events for `day` (local). Personal events stay out.
+
+    The CLI's `--from`/`--to` are *inclusive* days, so the query asks for
+    `day` to `day`; asking for `day` to `day + 1` once put Thursday's classes
+    in Wednesday's timetable. Events are also filtered to `day` here, so a
+    CLI with exclusive ends, or a multi-day event, cannot leak into it.
+    """
     from mitsync.schedule import calendar as calendar_read
 
     ok, detail = calendar_read.calendar_available(settings)
@@ -110,7 +116,7 @@ def _classes_today(settings: Settings, day: datetime) -> tuple[list[dict[str, An
         return [], f"calendar unavailable: {detail}"
     start = day.replace(hour=0, minute=0, second=0, microsecond=0)
     try:
-        events = calendar_read.read_events(settings, start, start + timedelta(days=1))
+        events = calendar_read.read_events(settings, start, start)
     except CalendarAccessDenied as exc:
         return [], f"calendar access denied: {str(exc).splitlines()[0]}"
     except MitsyncError as exc:
@@ -120,10 +126,21 @@ def _classes_today(settings: Settings, day: datetime) -> tuple[list[dict[str, An
         if not event.course or event.all_day:
             continue
         try:
-            moment = datetime.fromisoformat(event.start.replace("Z", "+00:00")).astimezone()
+            begins = datetime.fromisoformat(event.start.replace("Z", "+00:00")).astimezone()
+            ends = datetime.fromisoformat(event.end.replace("Z", "+00:00")).astimezone()
         except ValueError:
             continue
-        out.append({"time": moment.strftime("%H:%M"), "title": event.title, "course": event.course})
+        if begins.date() != start.date():
+            continue
+        out.append(
+            {
+                "time": begins.strftime("%H:%M"),
+                "end": ends.strftime("%H:%M"),
+                "title": event.title,
+                "course": event.course,
+                "location": event.location,
+            }
+        )
     return sorted(out, key=lambda c: c["time"]), None
 
 

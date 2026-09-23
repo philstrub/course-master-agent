@@ -104,6 +104,33 @@ def test_enrich_flags_a_stale_sync_and_an_unavailable_calendar(ready: Settings) 
     assert any("calendar unavailable" in g for g in doc["gaps"])
 
 
+def test_classes_are_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Regression: the inclusive `--to` once merged Thursday into Wednesday."""
+    from mitsync.schedule import calendar as calendar_read
+
+    asked: list[tuple[datetime, datetime]] = []
+
+    def events(settings, start, end):
+        asked.append((start, end))
+        wed, thu = "2026-09-23T12:30:00", "2026-09-24T12:30:00"
+        return [
+            calendar_read.Event(start=wed, end="2026-09-23T14:00:00", title="Wed", calendar="c",
+                                course="Optimization", location="E51"),
+            calendar_read.Event(start=thu, end="2026-09-24T14:00:00", title="Thu", calendar="c",
+                                course="Optimization"),
+        ]
+
+    monkeypatch.setattr(calendar_read, "calendar_available", lambda s: (True, "fake"))
+    monkeypatch.setattr(calendar_read, "read_events", events)
+    classes, gap = email_brief._classes_today(ready, datetime(2026, 9, 23, 7, 0))
+
+    assert gap is None
+    assert [c["title"] for c in classes] == ["Wed"]
+    assert classes[0] == {"time": "12:30", "end": "14:00", "title": "Wed",
+                          "course": "Optimization", "location": "E51"}
+    assert asked[0][0].date() == asked[0][1].date()
+
+
 def test_dry_run_renders_without_sending(ready: Settings, smtp) -> None:
     result = email_brief.send_brief(ready, DATE, dry_run=True)
     assert result["html"].read_text() == "<html>Submit Analytics Edge A1 first.</html>"
