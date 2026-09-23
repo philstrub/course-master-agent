@@ -16,7 +16,7 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 case " $* " in
-  *" organize "*" apply "* | *" organize "*" undo "*)
+  *" organize "*"apply "* | *" organize "*"undo "*)
     echo "mitsync-agent: organize apply/undo changes the student's folders; a human" >&2
     echo "runs it from a terminal after reviewing the plan. Present the plan instead." >&2
     exit 2
