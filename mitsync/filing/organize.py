@@ -344,7 +344,13 @@ def _preexisting_files(settings: Settings) -> list[dict[str, Any]]:
         for path in walk(settings, root):
             rel = settings.paths.safe_relative(path).as_posix()
             inner = PurePosixPath(rel).relative_to(folder).parts
-            if len(inner) == 2 and inner[0] in BUCKETS:
+            # Anything already under a bucket is filed. The depth is deliberately
+            # not pinned: naming.md may give a bucket per-item subfolders
+            # (`assignments/hw-01/profit.csv`) and did, at which point a
+            # `len(inner) == 2` test silently re-proposed every filed file as
+            # unfiled -- and `--include-existing` moves, so that would have
+            # churned the whole tree.
+            if len(inner) >= 2 and inner[0] in BUCKETS:
                 continue  # already filed the way naming.md wants
             out.append(
                 {

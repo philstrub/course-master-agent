@@ -177,6 +177,14 @@ def existing_course_folders(settings: Settings) -> list[str]:
             continue
         if is_ignored(settings, child.name):
             continue
+        # `<workspace>/skills` is a symlink to `_agent/skills` created by the
+        # OpenClaw setup, and the same shape can appear for any convenience
+        # link. Resolving one leaves the course tree, so every path under it
+        # comes back rooted at `_agent/` and `PurePosixPath.relative_to(folder)`
+        # raises. Machinery is not a course: keep only directories that really
+        # live directly in the workspace.
+        if child.resolve().parent != ws.resolve():
+            continue
         out.append(child.name)
     return out
 

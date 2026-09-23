@@ -547,3 +547,29 @@ def test_agent_driver_task_carries_the_rules_and_replays(prepared: Settings) -> 
     replayed = organize.plan(prepared, _PreJudged(validated))
 
     assert [e.destination for e in replayed.entries] == ["Machine Learning/lectures/03-trees.pdf"]
+
+
+def test_a_file_in_a_nested_bucket_counts_as_already_filed(settings):
+    """`assignments/hw-01/x.csv` is filed, exactly like `assignments/x.csv`.
+
+    naming.md decides whether a bucket has per-item subfolders, so the depth of
+    a filed path is prose, not code. Pinning it to two parts made every file
+    under a per-item folder look unfiled -- and since `--include-existing`
+    moves rather than copies, re-applying would have churned the whole tree.
+    """
+    from mitsync.filing.organize import _preexisting_files
+
+    course = settings.paths.workspace / "Machine Learning"
+    flat = course / "lectures"
+    nested = course / "assignments" / "hw-01"
+    loose = course / "HW1" / "build"
+    for d in (flat, nested, loose):
+        d.mkdir(parents=True, exist_ok=True)
+    (flat / "lec01.pdf").write_text("x")
+    (nested / "profit.csv").write_text("x")
+    (loose / "paper.aux").write_text("x")
+
+    sources = {f["file_id"] for f in _preexisting_files(settings)}
+    assert "existing:Machine Learning/lectures/lec01.pdf" not in sources
+    assert "existing:Machine Learning/assignments/hw-01/profit.csv" not in sources
+    assert "existing:Machine Learning/HW1/build/paper.aux" in sources

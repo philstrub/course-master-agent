@@ -27,15 +27,42 @@ Inside a course folder, every filed item goes in exactly one of:
 
 | subfolder | contents |
 |---|---|
-| `lectures/` | lecture slides, lecture notes, lecture recordings/transcripts |
-| `recitations/` | recitation and section materials, TA walkthroughs |
-| `assignments/` | problem sets, homework, deliverables, projects, exams, solutions |
-| `data/` | datasets and code fixtures: `.csv`, `.xlsx`, `.json`, `.parquet`, `.zip` of data |
+| `lectures/` | lecture slides and notes, plus any data or code belonging to a lecture |
+| `recitations/<item>/` | one folder per recitation — see "per-item folders" below |
+| `assignments/<item>/` | one folder per assignment — see "per-item folders" below |
 | `syllabus/` | syllabus, schedule, grading policy, course logistics |
 | `notes/` | my own notes and anything I authored |
 | `other/` | anything that clearly belongs to the course but fits none of the above |
 
-Do not invent further subfolders. Do not nest below these.
+### Material and its data live together
+
+**There is no course-wide `data/` folder.** A dataset, starter notebook, code
+bundle or fixture goes in the *same folder as the document it belongs to*:
+
+- HW1's PDF, its starter notebook and its CSVs all land in `assignments/hw-01/`.
+- Recitation 2's slides, its solutions and its code zip all land in
+  `recitations/recitation-02/`.
+- A dataset belonging to a lecture goes straight into `lectures/`, beside the
+  slides — lectures do not get per-item folders.
+
+Only a dataset that belongs to the course as a whole rather than to one lecture,
+recitation or assignment goes to `other/`.
+
+### Per-item folders
+
+`recitations/` and `assignments/` contain **only folders**, never loose files.
+Name each folder lowercase, hyphen-separated, with the number zero-padded to two
+digits:
+
+- Recitations: `recitation-01`, `recitation-02`.
+- Anything graded or submitted: `hw-01`, `hw-02` — use `hw-` whatever the course
+  calls it (Homework, Assignment, Problem Set, Deliverable), so filing does not
+  depend on one instructor's vocabulary.
+- Items with no number get a short lowercase slug instead: `midterm`, `final`,
+  `final-project`, `pre-assignment`.
+- Solutions stay in the folder of the item they solve. `Recitation2_Soln.pdf`
+  goes in `recitations/recitation-02/`, not anywhere else.
+- Never nest below the per-item folder.
 
 ## 3. Filenames
 
@@ -61,12 +88,17 @@ then the original name is kept.)
 ## 5. When signals conflict
 
 - **Canvas module grouping wins over the filename.** A file in the module
-  "Recitation 4" goes to `recitations/` even if it is named `lecture_notes.pdf`.
+  "Recitation 4" goes to `recitations/recitation-04/` even if it is named
+  `lecture_notes.pdf`.
 - Canvas folder path is the next strongest signal, then the filename, then the
   content type.
-- Solutions follow their assignment: a solution to pset 3 goes to
-  `assignments/`, not `notes/`.
-- Data files referenced by an assignment still go to `data/`.
+- **A data file never travels alone.** Work out which lecture, recitation or
+  assignment it belongs to and put it in that item's folder. Canvas usually says
+  so in the folder path — `Homeworks/HW1/HW1_data/profit.csv` is HW1's data, so
+  it goes to `assignments/hw-01/profit.csv`. Only when no item owns it does it go
+  to `other/`.
+- A code bundle or notebook belongs to its item too: `julia-rec1.zip` under
+  `Recitations/Recitation 1` goes to `recitations/recitation-01/`.
 
 ## 6. Confidence
 

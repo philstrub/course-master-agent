@@ -30,3 +30,23 @@ def test_machinery_paths_are_not_attributed_to_a_course():
     assert extract.course_of("_kb/INDEX.md") == ""
     assert extract.course_of("Machine Learning/Lec1.pdf") == "Machine Learning"
     assert extract.course_of("_canvas/Optimization/HW1.pdf") == "Optimization"
+
+
+def test_a_symlink_into_the_repo_is_not_an_existing_course_folder(settings):
+    """`<workspace>/skills` -> `_agent/skills` must never look like a course.
+
+    It did, and it was not cosmetic: `organize plan --include-existing` crashed
+    with `'_agent/skills/README.md' is not in the subpath of 'skills'`, because
+    resolving a path under the symlink leaves the course tree entirely.
+    """
+    from mitsync.filing.course_map import existing_course_folders
+
+    ws = settings.paths.workspace
+    (ws / "Real Course").mkdir()
+    (ws / "_agent" / "skills").mkdir(parents=True, exist_ok=True)
+    (ws / "_agent" / "skills" / "README.md").write_text("machinery")
+    (ws / "skills").symlink_to(ws / "_agent" / "skills", target_is_directory=True)
+
+    folders = existing_course_folders(settings)
+    assert "skills" not in folders
+    assert "Real Course" in folders
