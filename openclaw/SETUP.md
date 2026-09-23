@@ -1,6 +1,6 @@
 # OpenClaw for mitsync: what it is, and how to set it up
 
-Facts below are from docs.openclaw.ai and ai.google.dev as of 2026-09.
+Facts below are from docs.openclaw.ai as of 2026-09.
 OpenClaw moves fast, so when this file and `openclaw <cmd> --help` disagree,
 trust `--help`.
 
@@ -15,7 +15,7 @@ trust `--help`.
         │                                                                    │
         │  agent loop:  system prompt = AGENTS.md + SOUL.md + USER.md        │
         │               + skill list (name + description of each SKILL.md)   │
-        │     model (Gemini) ──► picks a tool ──► exec / read / write ──┐    │
+        │  model (claude CLI) ─► picks a tool ─► exec / read / write ───┐    │
         │         ▲                                                     │    │
         │         └──────────── tool result ◄───────────────────────────┘    │
         └────────────────────────────────────────────────────────────────────┘
@@ -35,6 +35,10 @@ trust `--help`.
   file and follows it. Every skill is also a slash command, e.g. `/mit-briefing`.
 - **Cron**: scheduled prompts. Each run is an isolated session started with
   your message.
+- **Model**: the `claude-cli` backend runs your local `claude` binary (Claude
+  Code), so turns use your Claude subscription instead of API tokens. It
+  switches off Claude Code's own tools: the model only gets OpenClaw's
+  tools, and `exec` still goes through the allowlist.
 - **Channels** (Telegram, WhatsApp, …): not used. The brief arrives by email,
   sent by the `mitsync email` tool.
 - **Memory**: Markdown in the workspace (`memory/<date>.md`). Used lightly;
@@ -45,7 +49,7 @@ trust `--help`.
 ```
 ~/.openclaw/                   OpenClaw's own state (never in git)
   openclaw.json                config (JSON5); merge _agent/openclaw/openclaw.json5 into it
-  .env                         GOOGLE_API_KEY, read by the gateway daemon
+  .env                         optional: GOOGLE_API_KEY, only for the Gemini fallback
   agents/main/…                sessions, transcripts, model auth
 
 ~/Desktop/MIT/courses/         the agent WORKSPACE (agents.defaults.workspace)
@@ -58,9 +62,9 @@ trust `--help`.
 ~/Desktop/MIT/courses/_agent/.env    CANVAS_TOKEN, GMAIL_APP_PASSWORD (read by mitsync)
 ```
 
-There are two `.env` files because two programs need secrets. **OpenClaw**
-needs the model key. **mitsync** needs the Canvas token and the Gmail
-password. Neither one reads the other's file.
+No model key is needed. The `claude` binary holds your subscription login in
+the macOS Keychain. mitsync's secrets (the Canvas token and the Gmail
+password) stay in `_agent/.env`, which OpenClaw never reads.
 
 ## Setup
 
@@ -85,39 +89,45 @@ for f in AGENTS SOUL USER; do ln -sf _agent/openclaw/workspace/$f.md $f.md; done
 ls -l AGENTS.md SOUL.md USER.md skills     # all four are symlinks into _agent/
 ```
 
-**3. Onboard with the Gemini key.** The key already in `_agent/.env` is loaded
-into this shell only, and handed to onboarding:
+**3. Onboard with your Claude subscription.** Claude Code must be logged in
+on this Mac, with your Pro/Max plan and not an API key:
 
 ```
-set -a; source ~/Desktop/MIT/courses/_agent/.env; set +a
-openclaw onboard --install-daemon --workspace ~/Desktop/MIT/courses \
-  --auth-choice gemini-api-key --gemini-api-key "$GOOGLE_API_KEY"
+claude auth status          # "loggedIn": true, "authMethod": "claude.ai"
+claude auth login           # only if it isn't
+openclaw onboard --install-daemon --workspace ~/Desktop/MIT/courses
+#   at the model/auth step choose: Claude CLI
 ```
 
-Also give the key to the daemon itself (the LaunchAgent has no shell profile).
-The line is copied without being printed:
+The gateway runs as a LaunchAgent, which has no shell profile. Your
+`claude` binary is at `~/.local/bin/claude`, and that directory may not be on
+the daemon's PATH. Link it next to the gateway's own `node`, which is on that
+PATH:
 
 ```
-grep '^GOOGLE_API_KEY=' ~/Desktop/MIT/courses/_agent/.env >> ~/.openclaw/.env
-chmod 600 ~/.openclaw/.env
+ln -sf ~/.local/bin/claude ~/.nvm/versions/node/v26.10.0/bin/claude
 ```
 
-**Why Gemini Flash.** Pro previews have no free tier, and Flash does.
-`google/gemini-3.8-flash` is set in `openclaw.json5`. Things to know about
-the free tier:
-- **Rate limits.** A brief takes about 10 model calls. If a run fails with
-  429, re-run it; it's usually fine within a minute.
-- **Your prompts may train Google's models.** Your assignment text and file
-  names reach Google.
-- **Weaker judgment.** Flash may produce a vaguer brief. It can't produce a
-  broken one: `mitsync email` rejects an invalid brief, and the model retries.
+Before relying on the subscription:
+- **Usage limits.** Each turn uses your plan's limits, the same pool as your
+  interactive Claude Code sessions. A morning brief is roughly 10 turns of
+  Sonnet: a small share of a day's allowance. If a brief ever fails on a
+  limit, the run is simply retried the next morning, or by hand.
+- **Terms.** Using a subscription from a third-party tool is Anthropic's call,
+  and it can change. OpenClaw's docs say so too. Check Anthropic's current
+  usage policy before relying on this for anything beyond coursework.
+- **Optional fallback.** `openclaw.json5` has a commented-out fallback to
+  Gemini Flash's free tier. To enable it, copy the key line without printing
+  it (`grep '^GOOGLE_API_KEY=' _agent/.env >> ~/.openclaw/.env`) and uncomment
+  `fallbacks`. Free-tier prompts may be used to train Google's models.
 
 **4. Config.** Merge `_agent/openclaw/openclaw.json5` into
-`~/.openclaw/openclaw.json`: the workspace, `model.primary`, heartbeat off,
-and exec in allowlist mode. Then restart the gateway and check:
+`~/.openclaw/openclaw.json`: the workspace, `model.primary` set to
+`claude-cli/claude-sonnet-5`, heartbeat off, and exec in allowlist mode. Then
+restart the gateway and check:
 
 ```
-openclaw models list --provider google        # confirm the model id exists; fix it in the config if not
+openclaw models list | grep claude-cli        # the model id exists
 openclaw approvals allowlist add ~/Desktop/MIT/courses/_agent/bin/mitsync-agent
 openclaw gateway restart
 openclaw doctor && openclaw skills list       # mit-briefing should be "eligible"
@@ -186,9 +196,10 @@ sudo pmset repeat wakeorpoweron MTWRF 07:29:00
 | symptom | fix |
 |---|---|
 | `openclaw: command not found` | nvm isn't on Node 26 in this shell: `nvm use 26` |
-| model auth error / 401 | `GOOGLE_API_KEY` missing from `~/.openclaw/.env`; step 3, then `openclaw gateway restart` |
-| 429 / quota exceeded | free-tier rate limit; wait a minute and re-run, or `openclaw cron run <id>` |
-| "unknown model" | `openclaw models list --provider google`, and set that id in `model.primary` |
+| `claude: command not found` / CLI backend unavailable | the daemon can't see `claude`: redo the `ln -sf` in step 3, then `openclaw gateway restart` |
+| "not logged in" / auth error | `claude auth login` in a terminal (the same Mac user), then restart the gateway |
+| usage limit reached | your plan's limit is spent: re-run later with `openclaw cron run <id>`, or enable the Gemini fallback (step 3) |
+| "unknown model" | `openclaw models list | grep claude-cli`, and set that id in `model.primary` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
 | sync finds nothing / files missing | Full Disk Access for the gateway's `node` (step 6) |
 | "calendar unavailable" in the brief | Calendar permission (step 6); everything else still works |

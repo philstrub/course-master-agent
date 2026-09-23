@@ -9,11 +9,18 @@
       // (AGENTS.md, SOUL.md, USER.md) and skills/ are symlinks into _agent/.
       workspace: "/Users/filippostrub/Desktop/MIT/courses",
 
-      // provider/model. Gemini Flash is on Google's free tier (the Pro
-      // previews are paid-only). The key is GOOGLE_API_KEY (or GEMINI_API_KEY)
-      // in ~/.openclaw/.env, where the gateway daemon can read it. Check the
-      // id with `openclaw models list --provider google`.
-      model: { primary: "google/gemini-3.8-flash" },
+      // The model runs through the local `claude` binary (Claude Code), so
+      // turns draw on the Claude subscription it is logged in to, not API
+      // tokens. Needs `claude auth login` once, and `claude` on the gateway's
+      // PATH. The bundled claude-cli backend disables Claude Code's own tools,
+      // so the agent only has OpenClaw's, and exec still obeys the allowlist.
+      model: {
+        primary: "claude-cli/claude-sonnet-5",
+        // If the plan's usage limit is hit, fall back to Gemini's free tier
+        // (needs GOOGLE_API_KEY in ~/.openclaw/.env; Google may train on it):
+        // fallbacks: ["google/gemini-3.8-flash"],
+      },
+      models: { "claude-cli/claude-sonnet-5": {} },
 
       // Cron drives this agent. A background heartbeat would spend tokens
       // every 30 minutes with nothing to do.
