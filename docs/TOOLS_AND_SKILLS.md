@@ -46,7 +46,7 @@ It says which tools to run and what to judge.
 | | **OpenClaw** (autonomous) | **Claude Code** (interactive) |
 |---|---|---|
 | starts a turn | cron at 07:30, or a dashboard chat message | you, in the terminal |
-| instructions | workspace `AGENTS.md` + `SOUL.md` + `USER.md` (symlinked from `_agent/openclaw/workspace/`) | `_agent/CLAUDE.md` |
+| instructions | workspace `AGENTS.md` + `SOUL.md` + `USER.md` (copied from `_agent/openclaw/workspace/` by `make openclaw-workspace`) | `_agent/CLAUDE.md` |
 | skills | discovered from `<workspace>/skills`, also slash commands | the same files, read on request |
 | shell | allowlisted to **one binary**, `mitsync-agent`, which refuses `organize apply/undo` | any command, behind Claude Code's permission prompts |
 | output | the emailed dashboard, plus `_kb/briefings/<date>-morning.{json,html}` | terminal, and the same files |

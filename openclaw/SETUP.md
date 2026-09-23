@@ -35,10 +35,10 @@ trust `--help`.
   file and follows it. Every skill is also a slash command, e.g. `/mit-briefing`.
 - **Cron**: scheduled prompts. Each run is an isolated session started with
   your message.
-- **Model**: the `claude-cli` backend runs your local `claude` binary (Claude
-  Code), so turns use your Claude subscription instead of API tokens. It
-  switches off Claude Code's own tools: the model only gets OpenClaw's
-  tools, and `exec` still goes through the allowlist.
+- **Model**: `anthropic/claude-sonnet-5` on the `claude-cli` runtime, which
+  runs your local `claude` binary (Claude Code). Turns use your Claude
+  subscription instead of API tokens. Every shell call Claude Code makes is
+  checked against OpenClaw's exec allowlist first.
 - **Channels** (Telegram, WhatsApp, …): not used. The brief arrives by email,
   sent by the `mitsync email` tool.
 - **Memory**: Markdown in the workspace (`memory/<date>.md`). Used lightly;
@@ -53,10 +53,11 @@ trust `--help`.
   agents/main/…                sessions, transcripts, model auth
 
 ~/Desktop/MIT/courses/         the agent WORKSPACE (agents.defaults.workspace)
-  AGENTS.md  -> _agent/openclaw/workspace/AGENTS.md   operating rules, loaded every turn
-  SOUL.md    -> _agent/openclaw/workspace/SOUL.md     tone
-  USER.md    -> _agent/openclaw/workspace/USER.md     who you are
-  skills     -> _agent/skills                         mit-briefing, mit-canvas-sync, …
+  AGENTS.md    copy of _agent/openclaw/workspace/AGENTS.md   operating rules, loaded every turn
+  SOUL.md      copy of _agent/openclaw/workspace/SOUL.md     tone
+  USER.md      copy of _agent/openclaw/workspace/USER.md     who you are
+  IDENTITY.md  written by onboarding (the agent's name)
+  skills  ->   _agent/skills (symlink)                       mit-briefing, mit-canvas-sync, …
   Machine Learning/ …  _canvas/  _kb/  _agent/        what the agent works on
 
 ~/Desktop/MIT/courses/_agent/.env    CANVAS_TOKEN, GMAIL_APP_PASSWORD (read by mitsync)
@@ -80,14 +81,19 @@ nvm install 26 && nvm alias default 26 && node --version
 npm install -g openclaw@latest && openclaw --version
 ```
 
-**2. Link the agent's files into the workspace.** Do this before onboarding,
-so OpenClaw finds these files instead of writing its own templates:
+**2. Put the agent's files into the workspace.** OpenClaw refuses symlinked
+bootstrap files: the model gets `[UNREADABLE: symlink path component not
+allowed]` instead of your rules. So they are **copied**, and the originals
+stay in git under `_agent/openclaw/workspace/`:
 
 ```
-cd ~/Desktop/MIT/courses
-for f in AGENTS SOUL USER; do ln -sf _agent/openclaw/workspace/$f.md $f.md; done
-ls -l AGENTS.md SOUL.md USER.md skills     # all four are symlinks into _agent/
+cd ~/Desktop/MIT/courses/_agent
+make openclaw-workspace     # copies AGENTS.md, SOUL.md, USER.md to the workspace root
+make openclaw-check         # after you edit one: says whether the copies are stale
+ls -l ../skills             # skills -> …/_agent/skills (a symlink is fine for skills)
 ```
+
+Edit the originals, never the copies, and re-run `make openclaw-workspace`.
 
 **3. Onboard with your Claude subscription.** Claude Code must be logged in
 on this Mac, with your Pro/Max plan and not an API key:
@@ -96,8 +102,13 @@ on this Mac, with your Pro/Max plan and not an API key:
 claude auth status          # "loggedIn": true, "authMethod": "claude.ai"
 claude auth login           # only if it isn't
 openclaw onboard --install-daemon --workspace ~/Desktop/MIT/courses
-#   at the model/auth step choose: Claude CLI
+#   at the model/auth step choose: Anthropic → Claude CLI
 ```
+
+If onboarding already set up another model (it may have picked Gemini),
+step 4's config switches it over; no new login is needed. In an interactive
+terminal you can also run
+`openclaw models auth login --agent mitsync --provider anthropic --method cli --set-default`.
 
 The gateway runs as a LaunchAgent, which has no shell profile. Your
 `claude` binary is at `~/.local/bin/claude`, and that directory may not be on
@@ -121,17 +132,45 @@ Before relying on the subscription:
   it (`grep '^GOOGLE_API_KEY=' _agent/.env >> ~/.openclaw/.env`) and uncomment
   `fallbacks`. Free-tier prompts may be used to train Google's models.
 
-**4. Config.** Merge `_agent/openclaw/openclaw.json5` into
-`~/.openclaw/openclaw.json`: the workspace, `model.primary` set to
-`claude-cli/claude-sonnet-5`, heartbeat off, and exec in allowlist mode. Then
-restart the gateway and check:
+**4. Config.** Apply the keys from `_agent/openclaw/openclaw.json5` (back up
+first). `--replace` is needed because onboarding's model list gets replaced:
 
 ```
-openclaw models list | grep claude-cli        # the model id exists
-openclaw approvals allowlist add ~/Desktop/MIT/courses/_agent/bin/mitsync-agent
-openclaw gateway restart
-openclaw doctor && openclaw skills list       # mit-briefing should be "eligible"
+cp ~/.openclaw/openclaw.json ~/.openclaw/openclaw.json.bak
+openclaw config set agents.defaults.model '{"primary": "anthropic/claude-sonnet-5"}'
+openclaw config set agents.defaults.models \
+  '{"anthropic/claude-sonnet-5": {"agentRuntime": {"id": "claude-cli"}}}' --replace
+openclaw config set agents.defaults.heartbeat.every 0m
+openclaw config set tools.exec.mode ask
+openclaw config validate
 ```
+
+Exec mode is `ask`, not `allowlist`, on purpose. With the Claude CLI runtime,
+`allowlist` (ask off) denies *every* shell call, the wrapper included. `ask`
+runs allowlisted commands and holds anything else for your approval in the
+dashboard. When nobody can answer, as in a cron run, the default
+`askFallback` is `deny`.
+
+Then allowlist the one command, for the agent onboarding created (`openclaw
+agents list` shows it; here it is `mitsync`), and check:
+
+```
+openclaw approvals allowlist add --agent mitsync ~/Desktop/MIT/courses/_agent/bin/mitsync-agent
+openclaw models list | head -3               # anthropic/claude-sonnet-5 … default,configured
+openclaw models status --agent mitsync       # "anthropic via claude-cli"; "indeterminate" is normal
+openclaw skills list | grep mit-             # mit-briefing "ready"
+```
+
+**Smoke test** (three short turns on your subscription):
+
+```
+openclaw agent --agent mitsync --session-id "$(uuidgen)" --message \
+  "Run (a) ls ~ and (b) ~/Desktop/MIT/courses/_agent/bin/mitsync-agent doctor; say which ran."
+```
+
+Expected: (a) denied ("approval was not granted"), (b) runs. If both are
+denied, exec mode is still `allowlist`. If both run, the allowlist is not
+being enforced: stop and fix that before step 9.
 
 **5. Gmail app password (the delivery).** The brief is sent from your Gmail
 to your Gmail (`email.sender` and `email.to` in `config/settings.yml`). Gmail
@@ -199,7 +238,10 @@ sudo pmset repeat wakeorpoweron MTWRF 07:29:00
 | `claude: command not found` / CLI backend unavailable | the daemon can't see `claude`: redo the `ln -sf` in step 3, then `openclaw gateway restart` |
 | "not logged in" / auth error | `claude auth login` in a terminal (the same Mac user), then restart the gateway |
 | usage limit reached | your plan's limit is spent: re-run later with `openclaw cron run <id>`, or enable the Gemini fallback (step 3) |
-| "unknown model" | `openclaw models list | grep claude-cli`, and set that id in `model.primary` |
+| "unknown model" | `openclaw models list`; `model.primary` must be `anthropic/claude-sonnet-5` with `agentRuntime: claude-cli` (step 4) |
+| agent says AGENTS.md is "UNREADABLE: symlink…" | the bootstrap files are symlinks: `make openclaw-workspace` (step 2), then start a new session |
+| every command denied, "security=allowlist, ask=off" | `openclaw config set tools.exec.mode ask` (step 4) |
+| agent still behaves as before a fix | the chat reuses its session; start a new chat in the dashboard, or pass `--session-id "$(uuidgen)"` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
 | sync finds nothing / files missing | Full Disk Access for the gateway's `node` (step 6) |
 | "calendar unavailable" in the brief | Calendar permission (step 6); everything else still works |

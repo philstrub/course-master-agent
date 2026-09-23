@@ -1,28 +1,30 @@
 // The OpenClaw settings mitsync needs. Merge these keys into
-// ~/.openclaw/openclaw.json (which `openclaw onboard` creates), or set each
-// one with `openclaw config set <path> <value>`. Keys verified against
-// docs.openclaw.ai (2026-09); trust `openclaw doctor` over this file.
+// ~/.openclaw/openclaw.json (which `openclaw onboard` creates), or set them
+// with `openclaw config set` (SETUP.md step 4). Verified against OpenClaw
+// 2026.9.5 and its bundled docs; trust `openclaw config validate` over this.
 {
   agents: {
     defaults: {
-      // The MIT courses folder is the agent's home: its bootstrap files
-      // (AGENTS.md, SOUL.md, USER.md) and skills/ are symlinks into _agent/.
+      // The MIT courses folder is the agent's home. Its bootstrap files
+      // (AGENTS.md, SOUL.md, USER.md) are copies of _agent/openclaw/workspace/
+      // made by `make openclaw-workspace`: OpenClaw refuses symlinked ones.
       workspace: "/Users/filippostrub/Desktop/MIT/courses",
 
-      // The model runs through the local `claude` binary (Claude Code), so
-      // turns draw on the Claude subscription it is logged in to, not API
-      // tokens. Needs `claude auth login` once, and `claude` on the gateway's
-      // PATH. The bundled claude-cli backend disables Claude Code's own tools,
-      // so the agent only has OpenClaw's, and exec still obeys the allowlist.
+      // Claude Sonnet, executed by the local `claude` binary (Claude Code), so
+      // turns draw on the subscription it is logged in to, not API tokens.
+      // Needs `claude auth login` once and `claude` on the gateway's PATH.
+      // (`claude-cli/claude-sonnet-5` is the legacy spelling of the same.)
       model: {
-        primary: "claude-cli/claude-sonnet-5",
+        primary: "anthropic/claude-sonnet-5",
         // If the plan's usage limit is hit, fall back to Gemini's free tier
         // (needs GOOGLE_API_KEY in ~/.openclaw/.env; Google may train on it):
         // fallbacks: ["google/gemini-3.8-flash"],
       },
-      models: { "claude-cli/claude-sonnet-5": {} },
+      models: {
+        "anthropic/claude-sonnet-5": { agentRuntime: { id: "claude-cli" } },
+      },
 
-      // Cron drives this agent. A background heartbeat would spend tokens
+      // Cron drives this agent. A background heartbeat would spend usage
       // every 30 minutes with nothing to do.
       heartbeat: { every: "0m" },
     },
@@ -30,12 +32,18 @@
 
   tools: {
     exec: {
-      // Only allowlisted binaries run. The allowlist holds one entry, added
-      // with the CLI (it lives in OpenClaw's state database, not here):
-      //   openclaw approvals allowlist add \
+      // "ask" = allowlist + ask on a miss. Allowlisted commands run; anything
+      // else waits for approval in the dashboard, and is denied when nobody
+      // can answer (askFallback defaults to "deny"), as in a cron run.
+      // Not "allowlist": with the claude-cli runtime, ask=off denies every
+      // shell call, the allowlisted wrapper included.
+      //
+      // The allowlist holds one entry, added per agent with the CLI (it lives
+      // in OpenClaw's state database, not here):
+      //   openclaw approvals allowlist add --agent mitsync \
       //     /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent
       // That wrapper refuses `organize apply` / `organize undo`.
-      mode: "allowlist",
+      mode: "ask",
     },
   },
 }
