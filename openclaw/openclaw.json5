@@ -1,0 +1,32 @@
+// The OpenClaw settings mitsync needs. Merge these keys into
+// ~/.openclaw/openclaw.json (which `openclaw onboard` creates), or set each
+// one with `openclaw config set <path> <value>`. Keys verified against
+// docs.openclaw.ai (2026-09); trust `openclaw doctor` over this file.
+{
+  agents: {
+    defaults: {
+      // The MIT courses folder is the agent's home: its bootstrap files
+      // (AGENTS.md, SOUL.md, USER.md) and skills/ are symlinks into _agent/.
+      workspace: "/Users/filippostrub/Desktop/MIT/courses",
+
+      // provider/model. Sonnet is plenty for a daily brief; switch with
+      // `openclaw models set anthropic/claude-opus-5-5` for harder turns.
+      model: { primary: "anthropic/claude-sonnet-5" },
+
+      // Cron drives this agent. A background heartbeat would spend tokens
+      // every 30 minutes with nothing to do.
+      heartbeat: { every: "0m" },
+    },
+  },
+
+  tools: {
+    exec: {
+      // Only allowlisted binaries run. The allowlist holds one entry, added
+      // with the CLI (it lives in OpenClaw's state database, not here):
+      //   openclaw approvals allowlist add \
+      //     /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent
+      // That wrapper refuses `organize apply` / `organize undo`.
+      mode: "allowlist",
+    },
+  },
+}

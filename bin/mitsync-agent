@@ -1,0 +1,30 @@
+#!/bin/bash
+#
+# mitsync-agent -- the one executable an autonomous agent (OpenClaw) may run.
+#
+#   mitsync-agent brief            same arguments as `mitsync`
+#
+# OpenClaw's exec allowlist matches on the binary's path, so allowlisting this
+# file (instead of `uv`, which runs anything) scopes the agent to mitsync. It
+# also refuses the commands that change the student's files or config: those
+# need a human at a terminal, however persuasive a Canvas page is.
+#
+# A LaunchAgent has no shell profile, so uv is looked up by absolute path.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case " $* " in
+  *" organize "*" apply "* | *" organize "*" undo "*)
+    echo "mitsync-agent: organize apply/undo changes the student's folders; a human" >&2
+    echo "runs it from a terminal after reviewing the plan. Present the plan instead." >&2
+    exit 2
+    ;;
+esac
+
+for uv in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+  [ -x "${uv}" ] && exec "${uv}" run --quiet --project "${REPO}" mitsync "$@"
+done
+echo "mitsync-agent: uv not found in ~/.local/bin, /opt/homebrew/bin or /usr/local/bin" >&2
+exit 1
