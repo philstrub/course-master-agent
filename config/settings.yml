@@ -33,7 +33,7 @@ email:                           # the morning brief; the recipient is fixed her
   sender: filippostrub@gmail.com
   to: filippostrub@gmail.com
   password_env: GMAIL_APP_PASSWORD   # a Gmail app password, kept in _agent/.env
-  # node: /Users/<you>/.nvm/versions/node/v26.1.0/bin/node   # if node is not on the agent's PATH
+  node: /Users/filippostrub/.nvm/versions/node/v26.10.0/bin/node   # the LaunchAgent has no nvm, so the absolute path
 
 # Paths (workspace-relative) never scanned, mirrored, or organized.
 ignore_globs:
