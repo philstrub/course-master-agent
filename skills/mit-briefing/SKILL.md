@@ -1,6 +1,6 @@
 ---
 name: mit-briefing
-description: The morning brief. Covers what is due, how far along each homework really is, and which lecture or recitation material to review to finish it. Delivered as an email dashboard. Reads deadlines and file evidence through mitsync's data tools, judges progress by reading the handouts and the student's drafts, writes the brief as JSON, and runs `mitsync email`. Use for "morning brief", "what's due", "what should I work on", "am I behind", or the scheduled 07:30 run.
+description: The morning brief. Covers what is due, how far along each homework really is, and which lecture or recitation material to review to finish it. Delivered as an email dashboard. Reads deadlines and file evidence through mitsync's data tools, judges progress by reading the handouts and the student's drafts, writes the brief as JSON, and runs `mitsync email`. Use for "morning brief", "what's due", "what should I work on", "am I behind", or the scheduled 07:00 run.
 user-invocable: true
 metadata:
   { "openclaw": { "requires": { "bins": ["uv", "node"] }, "os": ["darwin"] } }
@@ -15,48 +15,55 @@ along each homework is, what to read next. The tools then deliver it.
 (in Claude Code: `uv run mitsync` from `_agent/`). Paths are relative to the
 workspace `/Users/filippostrub/Desktop/MIT/courses`.
 
+**Budget: about 8 tool calls on an ordinary day.** Every call re-sends the
+whole conversation, so don't open a file whose answer you already have.
+
 ## 1. Gather the facts
 
 ```
-M sync                          # ~30 s, read-only on Canvas. If it fails, continue and say so in gaps.
-M due --days 14 --json          # deadlines, YOUR Canvas status, assignment text
+M due --days 7 --json           # deadlines, YOUR Canvas status, assignment text
 M work --json                   # your files per course: canvas_copy / edited / yours, with mtimes
 ```
 
-Run them in this order, one at a time. `sync` holds a database lock until it
-finishes. If your shell reports it "still running", wait for it with the
-`process` tool (poll that session) before `due`. Otherwise `due` and `work`
-fail with "Could not set lock on file".
+Don't run `sync`: a job ran it at 06:45, and `email` flags a stale mirror by
+itself. (In a chat, run `M sync` first only if the student asks for fresh data.)
 
-If yesterday's `_kb/briefings/<date>-morning.json` exists, read it too, so you
-can say what moved.
+Then read yesterday's `_kb/briefings/<yesterday>-morning.json` if it exists
+(on Monday, Friday's). It is your memory.
 
 ## 2. Judge each homework due in the next 7 days (and anything overdue)
 
 Soonest first. Skip items that Canvas says are `submitted` or `graded`; list
 them only if something is off (e.g. `late`).
 
-1. **Read the handout.** Find its extracted text through
-   `_kb/courses/<Course>/INDEX.md` (usually the `canvas_copy` PDF in the work
-   folder) and list its parts (Q1, Q2a, …).
+**Reuse before you read.** If yesterday's brief has this homework, and `work`
+shows no `edited`/`yours` file in that course newer than 07:00 yesterday, and
+the Canvas status is unchanged, copy yesterday's entry: keep `status`,
+`progress`, `summary` and `review`, and update only `urgency` and `next_step`.
+Open nothing for it.
+
+Otherwise (new homework, or new work on disk):
+
+1. **Read the handout** once. Find its extracted text through
+   `_kb/courses/<Course>/INDEX.md` and list its parts (Q1, Q2a, …).
 2. **Judge progress from the evidence** in `work`:
    - only `canvas_copy` files → `not_started`, progress 0;
-   - `edited` / `yours` files → open them (`.ipynb`, `.tex`, `.py`, `.md` are
-     text) and map them to the handout's parts; progress = share of parts with
-     real work;
+   - `edited` / `yours` files → open the newest one or two (`.ipynb`, `.tex`,
+     `.py`, `.md` are text) and map them to the handout's parts; progress =
+     share of parts with real work;
    - a `yours` PDF newer than its source, and Canvas still `unsubmitted` →
      `ready_to_submit`;
    - can't open or can't tell → `unknown`, progress `null`, and say why in `gaps`.
-3. **Pick 1–3 things to review, for the remaining parts only.** Open the
-   extracted text of candidate lectures and recitations in INDEX.md; cite file,
-   slides or pages, and the question it serves. Prefer a recitation that worked
-   a similar problem.
+3. **Pick 1–3 things to review**, for the remaining parts only, from the
+   lecture and recitation titles in the same INDEX.md. Open a candidate's text
+   only to find the slides or pages. Skip this for `ready_to_submit`.
 4. **Estimate hours left**, honestly.
 
-## 3. Write the brief, then deliver it
+## 3. Write the brief, then send it
 
 Write `_kb/briefings/<YYYY-MM-DD>-morning.json`, matching
-`_agent/email/brief.schema.json` exactly:
+`_agent/email/brief.schema.json` exactly. The email is a dashboard, so keep
+every string short: the limits in the schema are ceilings, not targets.
 
 ```json
 {
@@ -68,24 +75,24 @@ Write `_kb/briefings/<YYYY-MM-DD>-morning.json`, matching
     "urgency": "now | soon | later",          // <48 h | 2–4 days | 5+ days
     "status": "ready_to_submit | in_progress | not_started | submitted | unknown",
     "progress": 40, "effort_hours": 5,
-    "summary": "the evidence: Q1–Q2 done in hw1.ipynb, Q3–Q4 untouched",
+    "summary": "evidence for tomorrow's run (not shown): Q1–Q2 done in hw1.ipynb, Q3–Q4 untouched",
     "next_step": "one concrete action",
     "review": [{"file": "Optimization/Fall_2026_15_C57-L3.pdf", "where": "slides 4–24", "why": "ratio test, Q3"}]
   }],
-  "gaps": ["what you could not see or verify"]
+  "gaps": ["at most 3, one short sentence each"]
 }
 ```
 
 Then:
 
 ```
-M email --dry-run    # validates and renders _kb/briefings/<date>-morning.html; fix any error it names
-M email              # sends it to the student (address fixed in config, not yours to choose)
+M email
 ```
 
-Classes and sync freshness are added by `email` itself; don't write them.
-Reply in chat with the headline and "brief emailed". Then append one line per
-homework to `memory/<today>.md`: `<Course> · <Homework> · <status> · <progress>%`.
+It validates, renders `_kb/briefings/<date>-morning.html` and sends it, and a
+validation error stops it before anything is sent: fix the field it names
+and run it again. Classes and sync freshness are added by `email` itself;
+don't write them. Reply with one line: the headline and "brief emailed".
 
 ## Rules
 
@@ -95,5 +102,4 @@ homework to `memory/<today>.md`: `<Course> · <Homework> · <status> · <progres
 - **Never guess.** Unknown progress is `unknown`; an unread calendar is a gap.
 - **One email per day.** If `email` says it was already sent, stop. Use
   `--resend` only if the student asks.
-- Write only the brief JSON and the memory line. Never submit anything, never
-  move files.
+- Write only the brief JSON. Never submit anything, never move files.

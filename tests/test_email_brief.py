@@ -114,10 +114,21 @@ def test_classes_are_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch
         asked.append((start, end))
         wed, thu = "2026-09-23T12:30:00", "2026-09-24T12:30:00"
         return [
-            calendar_read.Event(start=wed, end="2026-09-23T14:00:00", title="Wed", calendar="c",
-                                course="Optimization", location="E51"),
-            calendar_read.Event(start=thu, end="2026-09-24T14:00:00", title="Thu", calendar="c",
-                                course="Optimization"),
+            calendar_read.Event(
+                start=wed,
+                end="2026-09-23T14:00:00",
+                title="Wed",
+                calendar="c",
+                course="Optimization",
+                location="E51",
+            ),
+            calendar_read.Event(
+                start=thu,
+                end="2026-09-24T14:00:00",
+                title="Thu",
+                calendar="c",
+                course="Optimization",
+            ),
         ]
 
     monkeypatch.setattr(calendar_read, "calendar_available", lambda s: (True, "fake"))
@@ -126,8 +137,13 @@ def test_classes_are_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch
 
     assert gap is None
     assert [c["title"] for c in classes] == ["Wed"]
-    assert classes[0] == {"time": "12:30", "end": "14:00", "title": "Wed",
-                          "course": "Optimization", "location": "E51"}
+    assert classes[0] == {
+        "time": "12:30",
+        "end": "14:00",
+        "title": "Wed",
+        "course": "Optimization",
+        "location": "E51",
+    }
     assert asked[0][0].date() == asked[0][1].date()
 
 

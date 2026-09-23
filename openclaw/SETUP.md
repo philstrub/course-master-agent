@@ -7,7 +7,7 @@ trust `--help`.
 ## What OpenClaw is, in one picture
 
 ```
- you (web dashboard at :18789)                       cron: "30 7 * * 1-5"
+ you (web dashboard at :18789)         cron: brief 07:00 · sync + file every 2 h
                  │                                        │
                  ▼                                        ▼
         ┌──────────────── Gateway (always-on daemon, port 18789) ────────────┐
@@ -25,7 +25,7 @@ trust `--help`.
 ```
 
 - **Gateway**: a macOS LaunchAgent (`ai.openclaw.gateway`) that stays up, so
-  the agent can act at 07:30 with no terminal open. It serves the web
+  the agent can act at 07:00 with no terminal open. It serves the web
   dashboard at http://127.0.0.1:18789.
 - **Agent loop**: on each turn the model sees the bootstrap files, the skill
   list and the conversation. It calls tools (shell `exec`, file read and
@@ -216,32 +216,62 @@ unavailable".
 cd ~/Desktop/MIT/courses/_agent
 uv run mitsync doctor                    # every row ok (calendar may warn)
 bin/mitsync-agent due --days 7 --json | head -40
-bin/mitsync-agent organize apply --plan x   # must be REFUSED by the wrapper
+bin/mitsync-agent organize undo             # must be REFUSED by the wrapper
 ```
 
-**8. Schedule it, and run it once now.** The job carries a tool allow-list
-(`--tools`). That matters with the Claude CLI runtime: it switches off Claude
-Code's own tools (Skill, Read, Write, Bash). Each of those asks a human, waits
-120 s, and is denied in an unattended run. The agent gets OpenClaw's `read`
-and `write` instead, which are free inside the workspace, plus `exec` (the
-allowlist) and `process` (to wait on a command `exec` put in the background):
+**8. Schedule it.** Four jobs; only two ever wake a model, and one of those
+only when there is something new:
+
+| job | when (New York) | what | model |
+|---|---|---|---|
+| `canvas-sync-morning` | 06:45 Mon–Fri | `mitsync-agent sync` (command job) | none |
+| `morning-brief` | 07:00 Mon–Fri | `mit-briefing`: judge, write, email | Sonnet 5, low thinking |
+| `canvas-sync` | every 2 h, 08:00–22:00 | `mitsync-agent sync` (command job) | none |
+| `canvas-file` | 10 min after each sync | `mit-organize`: file new Canvas material | Haiku 4.5, low thinking, **only if** `openclaw/triggers/new-to-file.js` sees a file the last check hadn't |
+
+Every agent job carries a tool allow-list (`--tools exec,read,write`). With
+the Claude CLI runtime that switches off Claude Code's own tools (Skill, Read,
+Write, Bash), each of which asks a human, waits 120 s and is denied in an
+unattended run. Leaving `process` out also makes `exec` wait for each command
+instead of backgrounding it after 10 s.
 
 ```
-openclaw cron add "30 7 * * 1-5" \
-  "Read skills/mit-briefing/SKILL.md and follow it: write today's morning brief and send it." \
-  --name morning-brief --agent mitsync --tz America/New_York --session isolated \
-  --tools exec,read,write,process --timeout-seconds 900 \
-  --no-deliver          # the skill emails the brief itself
-openclaw cron list                                   # note the job id
-openclaw cron run <id> --wait --timeout 900000       # run it now (about 4 minutes)
-openclaw cron runs <id>                              # history
+W=~/Desktop/MIT/courses/_agent/bin/mitsync-agent
+openclaw config set agents.defaults.models \
+  '{"anthropic/claude-haiku-4-5":{"agentRuntime":{"id":"claude-cli"},"alias":"haiku"}}' --strict-json --merge
+
+openclaw cron add --name canvas-sync-morning --agent mitsync --cron "45 6 * * 1-5" \
+  --tz America/New_York --exact --command-argv "[\"$W\",\"sync\"]" --timeout-seconds 600 --no-deliver
+openclaw cron add --name canvas-sync --agent mitsync --cron "0 8-22/2 * * *" \
+  --tz America/New_York --exact --command-argv "[\"$W\",\"sync\"]" --timeout-seconds 600 --no-deliver
+
+openclaw cron add --name morning-brief --agent mitsync --cron "0 7 * * 1-5" \
+  --tz America/New_York --exact --session isolated \
+  --message "Scheduled run, nobody is watching. Read skills/mit-briefing/SKILL.md and follow it: write today's morning brief and send it. Stay within its tool budget." \
+  --thinking low --tools exec,read,write --timeout-seconds 900 --no-deliver
+
+openclaw cron add --name canvas-file --agent mitsync --cron "10 8-22/2 * * *" \
+  --tz America/New_York --exact --session isolated \
+  --trigger-script ./openclaw/triggers/new-to-file.js \
+  --message "Scheduled filing run, nobody is watching. Read skills/mit-organize/SKILL.md and follow it: file the new Canvas material with organize apply --yes." \
+  --model anthropic/claude-haiku-4-5 --thinking low --tools exec,read,write --timeout-seconds 600 --no-deliver
+
+openclaw cron list                                   # note the ids
+openclaw cron run <id> --wait --wait-timeout 15m     # run one now
+openclaw cron runs <id>                              # history and tool trace
 ```
 
-The first run on 2026-09-23 went: `read SKILL.md` → `sync` → `due` → `work` →
-reads of `INDEX.md`, extracted handouts and `report.tex` → `write` the brief
-JSON → `email --dry-run` (rejected: a summary over its length limit, fixed
-and retried) → `email` (sent) → a second `email`, refused by the once-per-day
-guard. Along the way `ps`, `find` and `sleep` were denied by the allowlist.
+`--no-deliver` everywhere: the brief emails itself, and the others have
+nothing to say. `canvas-file` runs `organize apply --yes`, which only links
+Canvas files out of the mirror and rejects anything that touches a file of
+yours. Each apply writes an undo log. **Undo is yours**:
+`uv run mitsync organize undo` from `_agent/`.
+
+The brief is cheap because the skill doesn't sync (06:45 did), reads 7 days
+not 14, reuses yesterday's judgment for any homework with no new files, and
+lets `email` validate instead of a separate dry run. That is about 8 tool
+calls on an ordinary day.
+
 **Screenshot the email next to the run's tool trace** (`openclaw cron runs
 <id>`, or the dashboard's session view) for the report.
 
@@ -250,11 +280,11 @@ http://127.0.0.1:18789. A chat turn has no `--tools` list, so Claude Code's
 own tools each ask you: click **Allow** on each Skill, Read or Write card.
 Shell commands still go only through the allowlist.
 
-The Mac must be awake at 07:30, because a sleeping laptop skips the run. To
+The Mac must be awake at 06:45, because a sleeping laptop skips the run. To
 wake it a minute early:
 
 ```
-sudo pmset repeat wakeorpoweron MTWRF 07:29:00
+sudo pmset repeat wakeorpoweron MTWRF 06:44:00
 ```
 
 ## When something breaks
@@ -268,8 +298,10 @@ sudo pmset repeat wakeorpoweron MTWRF 07:29:00
 | "unknown model" | `openclaw models list`; `model.primary` must be `anthropic/claude-sonnet-5` with `agentRuntime: claude-cli` (step 4) |
 | agent says AGENTS.md is "UNREADABLE: symlink…" | the bootstrap files are symlinks: `make openclaw-workspace` (step 2), then start a new session |
 | every command denied, "security=allowlist, ask=off" | `openclaw config set tools.exec.mode ask` (step 4) |
-| cron run takes many minutes, log shows `plugin.approval.waitDecision 120000ms` | the job has no `--tools` list, so native tools wait on approvals: `openclaw cron edit <id> --tools exec,read,write,process` |
-| `due`/`work` fail with "Could not set lock on file" | `sync` was still running in the background; the skill waits for it with `process` (needs `process` in `--tools`) |
+| cron run takes many minutes, log shows `plugin.approval.waitDecision 120000ms` | the job has no `--tools` list, so native tools wait on approvals: `openclaw cron edit <id> --tools exec,read,write` |
+| `due`/`work` fail with "Could not set lock on file" | `sync` is still running (a `canvas-sync` job, or one `exec` backgrounded): leave `process` out of `--tools` so `exec` waits, and keep the brief off the sync slots |
+| `canvas-sync` run shows `error` with `StalePresignedURL` | Canvas gave no download link for a just-published file; the next sync retries it |
+| `canvas-file` never runs | expected when nothing new arrived: its trigger stays quiet. `openclaw cron runs <id>` shows fired runs only |
 | agent still behaves as before a fix | the chat reuses its session; start a new chat in the dashboard, or pass `--session-id "$(uuidgen)"` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
 | sync finds nothing / files missing | Full Disk Access for the gateway's `node` (step 6) |
