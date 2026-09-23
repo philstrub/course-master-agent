@@ -1,4 +1,4 @@
-"""The knowledge graph: ontology validation, JSONL truth, projection, queries."""
+"""The knowledge graph: ontology validation, JSONL truth, `graph add`, projection, queries."""
 
 from __future__ import annotations
 
@@ -12,31 +12,7 @@ from mitsync.core.config import Settings
 from mitsync.core.errors import MitsyncError, OntologyError
 from mitsync.knowledge import extract as extract_mod
 from mitsync.knowledge import graph as graph_mod
-from mitsync.llm.base import JudgeTask, validate_result
 from tests.test_extract import make_notebook, make_pdf
-
-
-class StubJudge:
-    """A Judge test double: returns a fixed (or computed) result, no model."""
-
-    def __init__(self, result: Any) -> None:
-        self._result = result
-        self.tasks: list[JudgeTask] = []
-
-    def judge(self, task: JudgeTask) -> dict[str, Any]:
-        self.tasks.append(task)
-        return self._result(task) if callable(self._result) else self._result
-
-
-class EmptyJudge:
-    """What the rules driver does for a task it has no handler for."""
-
-    def __init__(self) -> None:
-        self.calls = 0
-
-    def judge(self, task: JudgeTask) -> dict[str, Any]:  # noqa: ARG002 -- interface
-        self.calls += 1
-        return {}
 
 
 # --------------------------------------------------------------------------
@@ -49,6 +25,10 @@ def seeded(workspace: Path, settings: Settings) -> Settings:
     make_notebook(ml / "assignments" / "hw1.ipynb")
     (workspace / "Analytics Edge" / "lectures").mkdir(parents=True)
     (workspace / "Analytics Edge" / "lectures" / "trees.md").write_text("# CART\n\nTrees.\n")
+    (settings.paths.config_dir / "courses.yml").write_text(
+        "courses:\n  - folder: Machine Learning\n  - folder: Analytics Edge\n"
+        "  - folder: AI_Studio\n"
+    )
 
     junk = workspace / "AI_Studio" / "nandatown" / ".venv" / "lib" / "site-packages"
     junk.mkdir(parents=True, exist_ok=True)
@@ -59,34 +39,43 @@ def seeded(workspace: Path, settings: Settings) -> Settings:
     return settings
 
 
-def concept_judge(task: JudgeTask) -> dict[str, Any]:
-    """A plausible model answer, derived from the chunk's own source path."""
-    rid = graph_mod.resource_id(task.payload["source"])
-    return {
-        "nodes": [
+def write_jsonl(path: Path, records: list[Any]) -> Path:
+    path.write_text("".join((r if isinstance(r, str) else json.dumps(r)) + "\n" for r in records))
+    return path
+
+
+LEC = "Machine Learning/lectures/lec01.pdf"
+
+
+def agent_facts(tmp_path: Path) -> Path:
+    """What an agent writes after reading lec01: two concepts and how they relate."""
+    rid = graph_mod.resource_id(LEC)
+    return write_jsonl(
+        tmp_path / "facts.jsonl",
+        [
             {
                 "id": "concept:regularization",
                 "type": "Concept",
                 "label": "Regularization",
                 "attrs": {"name": "Regularization"},
+                "src": [LEC],
             },
             {
                 "id": "concept:linear-regression",
                 "type": "Concept",
                 "label": "Linear Regression",
-                "attrs": {"name": "Linear Regression"},
+                "src": LEC,
             },
-        ],
-        "edges": [
-            {"s": rid, "p": "covers", "o": "concept:regularization", "conf": 0.9},
+            {"s": rid, "p": "covers", "o": "concept:regularization", "src": LEC, "conf": 0.9},
             {
                 "s": "concept:linear-regression",
                 "p": "prerequisite_of",
                 "o": "concept:regularization",
+                "src": LEC,
                 "conf": 0.8,
             },
         ],
-    }
+    )
 
 
 def seed_graph(settings: Settings) -> None:
@@ -146,7 +135,7 @@ def test_load_ontology_parses_the_shipped_file(settings: Settings) -> None:
     onto = graph_mod.load_ontology(settings)
     assert "Concept" in onto.node_types
     assert onto.edge_types["covers"].target == ("Concept",)
-    assert "Resource" in onto.allowed_edge_types()["covers"]["source"]
+    assert "Resource" in onto.edge_types["covers"].source
 
 
 def test_ontology_rejects_an_unknown_node_type(settings: Settings) -> None:
@@ -358,101 +347,181 @@ def test_query_rebuilds_a_missing_database(settings: Settings) -> None:
 
 
 # --------------------------------------------------------------------------
-# extraction
+# the deterministic backbone
 # --------------------------------------------------------------------------
-def test_extract_graph_without_a_judge_builds_the_deterministic_backbone(
-    seeded: Settings,
-) -> None:
-    report = graph_mod.extract_graph(seeded, None)
+def test_backbone_writes_courses_resources_and_part_of(seeded: Settings) -> None:
+    report = graph_mod.build_backbone(seeded)
     assert report.documents == 3
     nodes = graph_mod.load_nodes(seeded)
     assert nodes[graph_mod.course_id("Machine Learning")]["type"] == "Course"
-    assert nodes[graph_mod.resource_id("Machine Learning/lectures/lec01.pdf")]["attrs"]["path"] == (
-        "Machine Learning/lectures/lec01.pdf"
-    )
+    assert nodes[graph_mod.resource_id(LEC)]["attrs"]["path"] == LEC
     assert all(e["p"] == "part_of" for e in graph_mod.load_edges(seeded))
-    assert "no judge" in report.judge_note
+    assert {n["type"] for n in nodes.values()} == {"Course", "Resource"}
 
 
-def test_extract_graph_is_idempotent(seeded: Settings) -> None:
-    first = graph_mod.extract_graph(seeded, StubJudge(concept_judge))
-    second = graph_mod.extract_graph(seeded, StubJudge(concept_judge))
+def test_backbone_is_idempotent(seeded: Settings) -> None:
+    first = graph_mod.build_backbone(seeded)
+    second = graph_mod.build_backbone(seeded)
     assert (second.appended_nodes, second.appended_edges) == (0, 0)
     assert (first.nodes, first.edges) == (second.nodes, second.edges)
     assert graph_mod.query(seeded, sql="SELECT count(*) AS n FROM edges")[0]["n"] == first.edges
 
 
-def test_extract_graph_uses_the_judge_and_stores_valid_triples(seeded: Settings) -> None:
-    judge = StubJudge(concept_judge)
-    report = graph_mod.extract_graph(seeded, judge)
-    assert report.judge_used
-    assert report.rejected == []
-    assert judge.tasks, "the judge was never called"
+def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    blob = json.dumps([graph_mod.load_nodes(seeded), graph_mod.load_edges(seeded)], default=str)
+    assert "nandatown" not in blob
+    assert "site-packages" not in blob
+    entities = seeded.paths.kb_graph / "entities"
+    assert entities.is_dir()
+    assert not [p for p in entities.glob("*.md") if "nandatown" in p.read_text()]
 
-    task = judge.tasks[0]
-    assert task.name == "graph_extract"
-    assert "Concept" in task.payload["allowed_node_types"]
-    assert task.payload["allowed_edge_types"]["covers"]["target"] == ["Concept"]
-    assert task.payload["text"]
-    assert "untrusted" in (task.instructions + task.rules).lower()
-    # the stub's answer is exactly what the schema demands
-    validate_result(task, concept_judge(task))
 
+def test_backbone_since_filters_documents(seeded: Settings) -> None:
+    report = graph_mod.build_backbone(seeded, since="2999-01-01T00:00:00+00:00")
+    assert report.documents == 0
+
+
+# --------------------------------------------------------------------------
+# graph add: facts the agent wrote
+# --------------------------------------------------------------------------
+def test_graph_add_appends_valid_agent_facts(seeded: Settings, tmp_path: Path) -> None:
+    graph_mod.build_backbone(seeded)
+    report = graph_mod.add_records(seeded, agent_facts(tmp_path))
+
+    assert (report.appended_nodes, report.appended_edges) == (2, 2)
     nodes = graph_mod.load_nodes(seeded)
     assert nodes["concept:regularization"]["type"] == "Concept"
+    assert nodes["concept:linear-regression"]["src"] == [LEC]
     covers = [e for e in graph_mod.load_edges(seeded) if e["p"] == "covers"]
-    assert covers and all(e["o"] == "concept:regularization" for e in covers)
+    assert [(e["s"], e["o"]) for e in covers] == [
+        (graph_mod.resource_id(LEC), "concept:regularization")
+    ]
     rows = graph_mod.query(
         seeded, canned="prerequisites_of", params={"node": "concept:regularization"}
     )
     assert [r["prerequisite"] for r in rows] == ["Linear Regression"]
+    assert (seeded.paths.kb_graph / "entities" / "concept-regularization.md").exists()
 
 
-def test_extract_graph_rejects_judged_records_that_violate_the_ontology(
-    seeded: Settings,
+def test_graph_add_is_idempotent(seeded: Settings, tmp_path: Path) -> None:
+    graph_mod.build_backbone(seeded)
+    facts = agent_facts(tmp_path)
+    graph_mod.add_records(seeded, facts)
+    again = graph_mod.add_records(seeded, facts)
+    assert (again.appended_nodes, again.appended_edges) == (0, 0)
+
+
+@pytest.mark.parametrize(
+    ("line", "message"),
+    [
+        ("{not json", "not valid JSON"),
+        ('["a", "list"]', "JSON object"),
+        ({"id": "widget:1", "type": "Widget", "label": "W", "src": [LEC]}, "unknown node type"),
+        (
+            {"id": "concept:x", "type": "Concept", "src": [LEC]},
+            "missing required field(s) ['label']",
+        ),
+        ({"id": "concept:x", "type": "Concept", "label": "X"}, "['src']"),
+        (
+            {"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC], "kind": "node"},
+            "unknown key(s) ['kind']",
+        ),
+        (
+            {"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC], "attrs": {"z": 1}},
+            "no attribute(s) ['z']",
+        ),
+        (
+            {"id": "concept:x", "type": "Concept", "label": "X", "src": ["/etc/passwd"]},
+            "workspace-relative",
+        ),
+        (
+            {"id": "concept:x", "type": "Concept", "label": "X", "src": ["_agent/README.md"]},
+            "machinery",
+        ),
+        (
+            {"s": "concept:ghost", "p": "covers", "o": "concept:cart", "src": LEC},
+            "not a known node",
+        ),
+        ({"s": "concept:cart", "p": "teleports", "o": "concept:cart", "src": LEC}, "unknown edge"),
+        ({"s": "concept:cart", "p": "part_of", "o": "course:ae", "src": LEC}, "cannot start at"),
+        ({"s": "resource:slides", "p": "covers", "o": "concept:cart"}, "['src']"),
+        (
+            {"s": "resource:slides", "p": "covers", "o": "concept:cart", "src": LEC, "conf": 3},
+            "between 0 and 1",
+        ),
+        (
+            {
+                "s": "resource:slides",
+                "p": "covers",
+                "o": "concept:cart",
+                "src": LEC,
+                "attrs": {"colour": "red"},
+            },
+            "no attribute(s) ['colour']",
+        ),
+        (
+            {"id": "concept:cart", "type": "Session", "label": "CART", "src": [LEC]},
+            "already exists",
+        ),
+        ({"label": "neither"}, "a line is a node"),
+    ],
+)
+def test_graph_add_rejects_the_whole_file_on_any_bad_line(
+    settings: Settings, tmp_path: Path, line: Any, message: str
 ) -> None:
-    bad = {
-        "nodes": [{"id": "widget:1", "type": "Widget", "label": "W", "attrs": {}}],
-        "edges": [{"s": "widget:1", "p": "covers", "o": "widget:1", "conf": 0.9}],
-    }
-    report = graph_mod.extract_graph(seeded, StubJudge(bad))
-    assert report.rejected, "a bad node type should be rejected, not stored"
-    assert "widget:1" not in graph_mod.load_nodes(seeded)
-    assert not [e for e in graph_mod.load_edges(seeded) if e["p"] == "covers"]
+    seed_graph(settings)
+    before = (
+        graph_mod.nodes_jsonl(settings).read_text(),
+        graph_mod.triples_jsonl(settings).read_text(),
+    )
+    good = {"id": "concept:fine", "type": "Concept", "label": "Fine", "src": [LEC]}
+    path = write_jsonl(tmp_path / "facts.jsonl", [good, line])
+
+    with pytest.raises(MitsyncError) as excinfo:
+        graph_mod.add_records(settings, path)
+
+    text = str(excinfo.value)
+    assert "nothing was added" in text
+    assert "line 2:" in text and message in text
+    assert "line 1:" not in text
+    after = (
+        graph_mod.nodes_jsonl(settings).read_text(),
+        graph_mod.triples_jsonl(settings).read_text(),
+    )
+    assert after == before, "a rejected file must not append anything"
 
 
-def test_extract_graph_rejects_results_that_fail_the_json_schema(seeded: Settings) -> None:
-    report = graph_mod.extract_graph(seeded, StubJudge({"nodes": "not-a-list", "edges": []}))
-    assert report.rejected
-    assert not report.judge_used
+def test_graph_add_lists_every_bad_line(settings: Settings, tmp_path: Path) -> None:
+    seed_graph(settings)
+    path = write_jsonl(
+        tmp_path / "facts.jsonl",
+        ["{broken", "", {"id": "x:1", "type": "Widget", "label": "W", "src": [LEC]}],
+    )
+    with pytest.raises(MitsyncError) as excinfo:
+        graph_mod.add_records(settings, path)
+    assert "line 1:" in str(excinfo.value) and "line 3:" in str(excinfo.value)
+    assert "2 error(s)" in str(excinfo.value)
 
 
-def test_extract_graph_degrades_when_the_judge_returns_nothing(seeded: Settings) -> None:
-    """The rules driver has no `graph_extract` handler; it returns {}."""
-    judge = EmptyJudge()
-    report = graph_mod.extract_graph(seeded, judge)
-    assert judge.calls > 0
-    assert report.judge_empty == judge.calls
-    assert not report.judge_used
-    assert "empty result" in report.judge_note
-    # the deterministic backbone still landed
-    assert graph_mod.load_edges(seeded)
-    assert all(e["p"] == "part_of" for e in graph_mod.load_edges(seeded))
+def test_graph_add_accepts_edges_to_nodes_defined_later_in_the_file(
+    settings: Settings, tmp_path: Path
+) -> None:
+    seed_graph(settings)
+    path = write_jsonl(
+        tmp_path / "facts.jsonl",
+        [
+            {"s": "resource:slides", "p": "covers", "o": "concept:gini", "src": LEC},
+            {"id": "concept:gini", "type": "Concept", "label": "Gini impurity", "src": [LEC]},
+        ],
+    )
+    report = graph_mod.add_records(settings, path)
+    assert (report.appended_nodes, report.appended_edges) == (1, 1)
 
 
-def test_extract_graph_never_touches_nandatown(seeded: Settings) -> None:
-    graph_mod.extract_graph(seeded, StubJudge(concept_judge))
-    blob = json.dumps([graph_mod.load_nodes(seeded), graph_mod.load_edges(seeded)], default=str)
-    assert "nandatown" not in blob
-    assert "site-packages" not in blob
-    entities = (settings_dir := seeded.paths.kb_graph / "entities")
-    assert entities.is_dir()
-    assert not [p for p in settings_dir.glob("*.md") if "nandatown" in p.read_text()]
-
-
-def test_extract_graph_since_filters_documents(seeded: Settings) -> None:
-    report = graph_mod.extract_graph(seeded, None, since="2999-01-01T00:00:00+00:00")
-    assert report.documents == 0
+def test_graph_add_needs_the_file(settings: Settings, tmp_path: Path) -> None:
+    with pytest.raises(MitsyncError, match="not found"):
+        graph_mod.add_records(settings, tmp_path / "missing.jsonl")
 
 
 # --------------------------------------------------------------------------
@@ -494,7 +563,7 @@ def test_backend_upserts_are_replacements_not_duplicates(settings: Settings) -> 
 # --------------------------------------------------------------------------
 def test_a_malformed_jsonl_line_raises_naming_the_file_and_line(seeded: Settings) -> None:
     """mitsync wrote nodes.jsonl. Garbage in it means mitsync wrote garbage."""
-    graph_mod.extract_graph(seeded, None)
+    graph_mod.build_backbone(seeded)
     path = graph_mod.nodes_jsonl(seeded)
     path.write_text(path.read_text() + "{not json\n")
     with pytest.raises(MitsyncError, match="not valid JSON"):
@@ -502,7 +571,7 @@ def test_a_malformed_jsonl_line_raises_naming_the_file_and_line(seeded: Settings
 
 
 def test_a_node_record_with_no_id_raises(seeded: Settings) -> None:
-    graph_mod.extract_graph(seeded, None)
+    graph_mod.build_backbone(seeded)
     path = graph_mod.nodes_jsonl(seeded)
     path.write_text(path.read_text() + json.dumps({"type": "Concept", "label": "x"}) + "\n")
     with pytest.raises(MitsyncError, match="no id"):

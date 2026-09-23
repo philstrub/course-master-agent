@@ -5,9 +5,7 @@ The typed failures mitsync is allowed to raise, and what each one means.
 
 ## 1. What This Module Does
 
-Defines `MitsyncError` and one subclass per *expected* failure mode, plus
-`EXIT_PENDING_JUDGMENT` -- the exit code (20) that means a task file is waiting
-for a driving agent to judge it.
+Defines `MitsyncError` and one subclass per *expected* failure mode.
 
 ## 2. Why This Module Exists
 
@@ -29,8 +27,7 @@ in Canvas > Account > Settings" rather than "401".
 A leaf: it imports nothing from mitsync and nearly everything imports it.
 `canvas_client` translates HTTP into the `Canvas*` family, `calendar_read`
 raises `CalendarAccessDenied`, `config` raises `ConfigError`, `graph` raises
-`OntologyError`, and the judgment drivers raise `JudgeUnavailable` and
-`PendingJudgment`.
+`OntologyError`.
 
 ## 4. Key Concepts
 
@@ -43,19 +40,9 @@ worth reporting -- one noisy class would drown the real errors.
 **`CanvasWriteRefused` is a guardrail, not a diagnosis.** It is raised before
 the request leaves the process. Canvas holds graded work, so read-only is
 enforced at the client chokepoint rather than trusted to caller discipline.
-
-**`PendingJudgment` is control flow, not an error.** It carries the task file
-path and the instructions for resolving it, and the CLI turns it into exit
-code 20. Code that catches `MitsyncError` broadly must re-raise this one first;
-swallowing it turns the agent driver into a silent no-op.
 """
 
 from __future__ import annotations
-
-from pathlib import Path
-
-# Exit code meaning "I wrote a task file; a driving agent must judge it".
-EXIT_PENDING_JUDGMENT = 20
 
 
 class MitsyncError(Exception):
@@ -146,22 +133,8 @@ class CalendarAccessDenied(MitsyncError):
     """macOS TCC denied calendar access. Grant it in System Settings > Privacy."""
 
 
-class JudgeUnavailable(MitsyncError):
-    """The requested judgment driver cannot run (missing SDK, key, or model)."""
-
-
 class OntologyError(MitsyncError):
     """A graph record violates config/ontology.yml."""
-
-
-class PendingJudgment(MitsyncError):
-    """The agent driver wrote a task file and needs an agent to resolve it."""
-
-    def __init__(self, task_path: Path, task_name: str, instructions: str) -> None:
-        self.task_path = Path(task_path)
-        self.task_name = task_name
-        self.instructions = instructions
-        super().__init__(f"Judgment '{task_name}' pending: {self.task_path}")
 
 
 class CanvasWriteRefused(MitsyncError):

@@ -12,9 +12,9 @@ value ever being logged.
 
 ## 2. Why This Module Exists
 
-The two secrets mitsync uses (a Canvas token and an LLM API key) are read
-lazily off `os.environ` by `Settings`, which is what keeps them out of every
-dump, task file and log line. Something still has to put them there for a user
+The secret mitsync uses (the Canvas token) is read lazily off `os.environ`
+by `Settings`, which is what keeps it out of every dump, plan and log
+line. Something still has to put it there for a user
 who does not want to export variables by hand, and that something must run for
 *every* consumer: each subcommand, `doctor`, tests using the library directly,
 and OpenClaw skills that import `mitsync` without ever touching the Typer app.

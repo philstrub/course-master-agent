@@ -15,7 +15,7 @@ import pytest
 
 from mitsync.cli import _secret_source
 from mitsync.core import env as env_mod
-from mitsync.core.config import Settings, load_settings
+from mitsync.core.config import load_settings
 from mitsync.core.env import (
     ENVIRONMENT,
     NOT_SET,
@@ -37,7 +37,7 @@ def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    for name in ("CANVAS_TOKEN", "TEST_LLM_KEY", "ANTHROPIC_API_KEY", "MITSYNC_DOTENV"):
+    for name in ("CANVAS_TOKEN", "ANTHROPIC_API_KEY", "MITSYNC_DOTENV"):
         monkeypatch.delenv(name, raising=False)
 
 
@@ -206,13 +206,6 @@ def test_a_second_load_never_overwrites_an_already_injected_value(tmp_path: Path
 # --------------------------------------------------------------------------
 # the bug this fixes
 # --------------------------------------------------------------------------
-def test_resolve_driver_is_api_when_key_only_in_dotenv(tmp_path: Path):
-    settings = Settings()  # llm.api_key_env defaults to ANTHROPIC_API_KEY
-    assert settings.resolve_driver(None) == "agent"  # before loading: no key
-    load_dotenv(_repo(tmp_path, f"ANTHROPIC_API_KEY={SECRET}\n"))
-    assert settings.resolve_driver(None) == "api"
-
-
 def test_load_settings_triggers_dotenv_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repo = tmp_path / "_agent"
     (repo / "config").mkdir(parents=True)

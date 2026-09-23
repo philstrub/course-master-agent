@@ -14,7 +14,7 @@ course folder it belongs to using `config/courses.yml`.
 ## 2. Why This Module Exists
 
 Canvas knows what is due; only the calendar knows when class actually meets.
-The briefing needs both. Reading the calendar out of process, through a CLI,
+`mitsync due` needs both. Reading the calendar out of process, through a CLI,
 also keeps EventKit -- and the macOS-only dependency it brings -- out of the
 rest of the tool.
 
@@ -27,8 +27,10 @@ oversight.
 
 ## 3. How It Fits in the Architecture
 
-`deadlines` is the only consumer, and it treats this module as best-effort:
-an unavailable calendar is a reported gap in the briefing, never a failed run.
+`deadlines` and `mitsync calendar` are the consumers. `deadlines` treats this
+module as best-effort: an unavailable calendar is a reported gap in its
+warnings, never a failed run. Its console is stderr, so a `--json` caller's
+stdout never carries a calendar warning.
 Course tagging is read from `course_map`, so this module never imports the
 filing or Canvas machinery.
 
@@ -116,7 +118,7 @@ if TYPE_CHECKING:  # pragma: no cover
     from mitsync.core.config import Settings
 
 log = get_logger(__name__)
-console = Console()
+console = Console(stderr=True)  # stdout stays clean for `--json`
 
 __all__ = ["Event", "calendar_available", "read_events", "tag_course"]
 

@@ -7,9 +7,10 @@ opening a single PDF.
 ## 1. What This Module Does
 
 `extract` renders PDFs, notebooks and spreadsheets to text under `_kb/text/`.
-`graph` extracts ontology-typed nodes and edges into the append-only
-`_kb/graph/*.jsonl` and projects them into DuckDB. `kb` assembles the indexes,
-per-course notes, `_kb/manifest.json` and `_kb/AGENTS.md`.
+`graph` keeps ontology-typed nodes and edges in the append-only
+`_kb/graph/*.jsonl` -- a deterministic backbone plus whatever the agent adds
+with `graph add` -- and projects them into DuckDB. `kb` assembles the indexes,
+`_kb/manifest.json` and `_kb/AGENTS.md`.
 
 ## 2. Why This Module Exists
 
@@ -21,17 +22,16 @@ one entry file (`_kb/AGENTS.md`), one machine-readable inventory
 ## 3. How It Fits in the Architecture
 
 Reads the mirror and the filed folders; writes only inside `_kb/` and
-`state/`. Two of the three commands here take a judgment driver -- `graph
-extract` and `kb build` -- and both degrade to a deterministic skeleton when
-no judge is available, which is a documented contract rather than a silent
-failure.
+`state/`. Nothing here judges: every command is deterministic, and the facts
+that need reading comprehension -- concepts, topic notes -- are written by the
+driving agent, validated here, never generated here. `kb build` never touches
+an agent-written `NOTES.md`.
 
 ## 4. Key Concepts
 
 **The JSONL is the source of truth; DuckDB is a projection.** `state/graph.duckdb`
 can be deleted and rebuilt from `_kb/graph/*.jsonl` with identical query
-results. A backend swap is therefore a rebuild, never a data migration. See
-`docs/ADR/0002`.
+results. A backend swap is therefore a rebuild, never a data migration.
 
 **Extraction is idempotent.** Every node and edge records its source document
 and extractor version, so a re-run replaces rather than duplicates.

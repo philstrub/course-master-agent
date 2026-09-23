@@ -7,15 +7,15 @@ The `mitsync` command line: the only place an error becomes an exit code.
 
 Defines the Typer app and wires each command to the sibling module that does
 the work. Business logic lives in those modules; this file contains argument
-parsing, output, the `resolve` replay table, and `doctor`.
+parsing, output (a compact table, or JSON on stdout with `--json`), and
+`doctor`.
 
 ## 2. Why This Module Exists
 
 It is one of the two exception boundaries the codebase allows. `run()` turns
 any escaped `MitsyncError` into a one-line message and exit 1 instead of a
-stack trace, and `_pending` turns a `PendingJudgment` into exit code 20 plus
-the instructions for resolving it. Everything below raises; only here does a
-failure become a process outcome.
+stack trace. Everything below raises; only here does a failure become a
+process outcome.
 
 ## 3. How It Fits in the Architecture
 
@@ -26,23 +26,20 @@ this file is where that discipline is paid for.
 
 ## 4. Key Concepts
 
-**Four commands can need judgment.** `map`, `organize plan`, `graph extract`
-and `kb build`. Everything else (`sync`, `calendar`, `due`, `brief`,
-`extract`, `graph rebuild`, `graph query`, `doctor`, `resolve`) is pure I/O and
-can never produce a pending task.
+**Data tools only.** Every command reads, writes or validates,
+deterministically; none asks for judgment. The driving agent reads `due`,
+`work`, `calendar` and `unfiled` output (all `--json`-capable), decides, and
+hands its decisions back as data: a plan file for `organize apply --plan`, a
+JSONL of graph facts for `graph add`, and `NOTES.md` files it writes itself.
 
-**The resolve loop.** Under `--driver agent`, a command writes a task file and
-exits 20 without calling any model. `mitsync resolve <task> --result <json>`
-validates the agent's answer against the task's schema and then *replays the
-originating command* with it, so the effect is exactly what `--driver api`
-would have produced. `REPLAY` is that table, keyed by the `origin_command`
-stored in the task file; `_PreJudged` and `_PerCourseJudged` are the
-`Judge` implementations that feed the stored answer back in. `kb build` uses
-the per-course variant because it judges one course per round trip.
+**`--json` owns stdout.** With `--json` the only thing on stdout is one JSON
+document; notices and logs go to stderr, so an agent can pipe the output
+straight into a parser.
 
-**Planning and applying are separate commands.** `organize plan` writes a plan
-and moves nothing; `organize apply` is the only thing that touches the
-student's files, and it records an undo log.
+**Validating and applying are one command, confirming is not optional.**
+`organize apply` validates every placement in the agent's plan, reports each
+rejection with its reason, and applies the rest only after confirmation
+(interactive, or `--yes`). It records an undo log; `organize undo` reverses it.
 
 **`doctor` is the cold-start surface.** It reports what is configured, what is
 missing, where each secret came from (never its value), and whether the
@@ -50,12 +47,11 @@ workspace directories are writable.
 
 **Why exceptions are caught here.** This is the boundary, so the handlers are
 the point rather than an exception to the rule. `run()` catches `MitsyncError`
-and `PendingJudgment` as the backstop; individual commands catch only the
-failure they specifically expect -- a pending judgment to print the task file,
-a denied calendar grant, a rejected agent result -- so that a new failure mode
-can never be silently absorbed by a command and still reaches `run()`.
-`doctor` additionally catches `ImportError` and `MitsyncError` per check,
-because reporting a broken component is its entire job.
+as the backstop; individual commands catch only the failure they specifically
+expect -- a denied calendar grant -- so that a new failure mode can never be
+silently absorbed by a command and still reaches `run()`. `doctor`
+additionally catches `ImportError` and `MitsyncError` per check, because
+reporting a broken component is its entire job.
 """
 
 from __future__ import annotations
@@ -75,16 +71,13 @@ from rich.table import Table
 from mitsync.canvas import sync as sync_mod
 from mitsync.core.config import Settings, load_settings
 from mitsync.core.env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
-from mitsync.core.errors import EXIT_PENDING_JUDGMENT, MitsyncError, PendingJudgment
+from mitsync.core.errors import MitsyncError
 from mitsync.core.logging import setup_logging
-from mitsync.core.paths import PKG_DIR
-from mitsync.filing import course_map as course_map_mod
 from mitsync.filing import organize as organize_mod
+from mitsync.filing.course_map import naming_rules_path
 from mitsync.knowledge import extract as extract_mod
 from mitsync.knowledge import graph as graph_mod
 from mitsync.knowledge import kb as kb_mod
-from mitsync.llm.agent_driver import load_task, resolve_task
-from mitsync.llm.base import get_judge, load_task_spec
 from mitsync.schedule import calendar as calendar_read
 from mitsync.schedule import deadlines
 
@@ -92,21 +85,21 @@ console = Console()
 
 app = typer.Typer(
     name="mitsync",
-    help="Mirror Canvas, file course materials, and maintain a knowledge base.",
+    help=(
+        "Data tools for MIT coursework: mirror Canvas, report deadlines and work, "
+        "apply agent-written filing plans, and maintain a knowledge base."
+    ),
     no_args_is_help=True,
     add_completion=False,
 )
-organize_app = typer.Typer(help="Plan, apply, and undo the filing of course materials.")
-graph_app = typer.Typer(help="Build and query the knowledge graph.")
-kb_app = typer.Typer(help="Build the markdown knowledge base.")
+organize_app = typer.Typer(help="Apply and undo agent-written filing plans.")
+graph_app = typer.Typer(help="Add to, rebuild and query the knowledge graph.")
+kb_app = typer.Typer(help="Build the deterministic parts of the markdown knowledge base.")
 app.add_typer(organize_app, name="organize")
 app.add_typer(graph_app, name="graph")
 app.add_typer(kb_app, name="kb")
 
-DriverOpt = Annotated[
-    str | None,
-    typer.Option("--driver", help="Judgment driver: api, agent, or rules."),
-]
+JsonOpt = Annotated[bool, typer.Option("--json", help="Print one JSON document to stdout.")]
 
 
 def _settings() -> Settings:
@@ -115,13 +108,15 @@ def _settings() -> Settings:
     return s
 
 
-def _pending(exc: PendingJudgment) -> None:
-    console.print()
-    console.print(f"[bold yellow]Judgment needed:[/bold yellow] {exc.task_name}")
-    console.print(f"[bold]Task file:[/bold] {exc.task_path}")
-    console.print()
-    console.print(exc.instructions)
-    raise typer.Exit(EXIT_PENDING_JUDGMENT)
+def _emit_json(doc: Any) -> None:
+    """The only thing a `--json` command writes to stdout."""
+    sys.stdout.write(json.dumps(doc, indent=2, ensure_ascii=False, default=str) + "\n")
+
+
+def _notes(warnings: list[str]) -> None:
+    err = Console(stderr=True)
+    for warning in warnings:
+        err.print(f"[yellow]note:[/yellow] {warning}")
 
 
 @app.callback()
@@ -132,7 +127,7 @@ def main(
 
 
 # --------------------------------------------------------------------------
-# phase 2: sync
+# sync / extract
 # --------------------------------------------------------------------------
 @app.command()
 def sync(
@@ -142,7 +137,7 @@ def sync(
         bool, typer.Option("--full", help="Ignore the manifest; re-check everything.")
     ] = False,
 ) -> None:
-    """Mirror Canvas files into the workspace `_canvas/` tree."""
+    """Mirror Canvas files into the workspace `_canvas/` tree (read-only on Canvas)."""
     settings = _settings()
     report = sync_mod.run_sync(settings, course=course, dry_run=dry_run, full=full)
     # A sync that recorded errors must not look like success. scripts/mitsync-cron.sh
@@ -152,59 +147,159 @@ def sync(
         raise SystemExit(1)
 
 
-# --------------------------------------------------------------------------
-# phase 3: map / organize
-# --------------------------------------------------------------------------
-@app.command("map")
-def map_courses(
-    apply: Annotated[bool, typer.Option("--apply", help="Write config/courses.yml.")] = False,
-    driver: DriverOpt = None,
-    resolve: Annotated[
-        Path | None, typer.Option("--resolve", help="Apply an agent result JSON.")
-    ] = None,
+@app.command()
+def extract(
+    force: Annotated[bool, typer.Option("--force", help="Re-extract unchanged files.")] = False,
 ) -> None:
-    """Match Canvas courses to the workspace course folders."""
+    """Extract text from mirrored and filed documents into `_kb/text/`."""
     settings = _settings()
-    try:
-        judge = _resolved_judge(settings, driver, resolve)
-        course_map_mod.suggest_course_map(settings, judge, apply=apply)
-    except PendingJudgment as exc:
-        _pending(exc)
+    extract_mod.extract_all(settings, force=force)
 
 
-@organize_app.command("plan")
-def organize_plan(
-    include_existing: Annotated[
-        bool, typer.Option("--include-existing", help="Also file pre-existing files.")
-    ] = False,
-    driver: DriverOpt = None,
-    resolve: Annotated[
-        Path | None, typer.Option("--resolve", help="Apply an agent result JSON.")
-    ] = None,
+# --------------------------------------------------------------------------
+# deadlines, work, calendar
+# --------------------------------------------------------------------------
+@app.command()
+def due(
+    days: Annotated[
+        int, typer.Option("--days", help="Show items due from 12h ago to N days ahead.")
+    ] = deadlines.DEFAULT_WINDOW_DAYS,
+    as_json: JsonOpt = False,
 ) -> None:
-    """Propose destinations for newly mirrored files (writes a plan, changes nothing)."""
+    """Upcoming deadlines with the student's own submission status; writes `_kb/due.json`.
+
+    `_kb/due.json` always holds every known item; `--days` only narrows what
+    is printed.
+    """
     settings = _settings()
+    report = deadlines.build_due(settings)
+    now = datetime.now(UTC)
+    doc = report.as_dict() | {
+        "window_days": days,
+        "due_json": str(report.path),
+        "items": [i for i in report.items if deadlines.in_window(i, now, days)],
+    }
+    if as_json:
+        _emit_json(doc)
+        return
+    graph_mod.print_rows(
+        f"due in the next {days} days",
+        [
+            {
+                "due": i["due_at"],
+                "course": i["course"],
+                "title": i["title"],
+                "type": i["type"],
+                "status": i["status"] or ("submitted" if i["submitted"] else ""),
+            }
+            for i in doc["items"]
+        ],
+    )
+    _notes(report.warnings)
+    console.print(f"[dim]wrote {report.path}[/dim]")
+
+
+@app.command()
+def work(
+    course: Annotated[
+        str | None, typer.Option("--course", help="One course folder; default is every course.")
+    ] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Files on disk per course, tagged canvas_copy, edited or yours."""
+    settings = _settings()
+    doc = deadlines.work_report(settings, course)
+    if as_json:
+        _emit_json(doc)
+        return
+    rows = [
+        {"course": c["course"], "file": f["path"], "tag": f["tag"], "modified": f["modified"]}
+        for c in doc["courses"]
+        for folder in c["folders"]
+        for f in folder["files"]
+    ]
+    graph_mod.print_rows("work on disk", rows)
+
+
+@app.command("calendar")
+def calendar_cmd(
+    days: Annotated[int | None, typer.Option("--days", help="Lookahead window.")] = None,
+    as_json: JsonOpt = False,
+) -> None:
+    """Read Apple Calendar events (read-only)."""
+    settings = _settings()
+    start = datetime.now(UTC)
+    end = start + timedelta(days=days or settings.calendar.lookahead_days)
     try:
-        judge = _resolved_judge(settings, driver, resolve)
-        organize_mod.plan(settings, judge, include_existing=include_existing)
-    except PendingJudgment as exc:
-        _pending(exc)
+        events = calendar_read.read_events(settings, start, end)
+    except MitsyncError as exc:
+        # A missing binary or a denied TCC grant is expected, not exceptional:
+        # print the remediation the module supplied rather than a traceback.
+        Console(stderr=True).print(f"[red]{exc}[/red]")
+        raise typer.Exit(1) from exc
+    if as_json:
+        _emit_json([e.to_dict() for e in events])
+    else:
+        graph_mod.print_rows(
+            "Events",
+            [{"when": e.when, "title": e.title, "calendar": e.calendar} for e in events],
+        )
+
+
+# --------------------------------------------------------------------------
+# filing
+# --------------------------------------------------------------------------
+@app.command()
+def unfiled(as_json: JsonOpt = False) -> None:
+    """Mirrored files not filed yet, plus the buckets and rules a plan must follow."""
+    settings = _settings()
+    doc = organize_mod.unfiled(settings)
+    if as_json:
+        _emit_json(doc)
+        return
+    graph_mod.print_rows(
+        f"unfiled ({len(doc['files'])})",
+        [
+            {
+                "file_id": f["file_id"],
+                "course": f["course"] or "(unmapped)",
+                "name": f["display_name"],
+                "module": f["module_name"] or "",
+            }
+            for f in doc["files"]
+        ],
+    )
+    console.print(f"[dim]filing rules: {doc['naming_rules']}[/dim]")
 
 
 @organize_app.command("apply")
 def organize_apply(
     plan_path: Annotated[
-        Path | None, typer.Option("--plan", help="Plan file; default is the newest.")
-    ] = None,
+        Path,
+        typer.Option(
+            "--plan",
+            help='Agent-written plan: {"placements": [{"file_id", "destination", "reason"}]}.',
+        ),
+    ],
     yes: Annotated[bool, typer.Option("--yes", "-y", help="Skip confirmation.")] = False,
+    include_existing: Annotated[
+        bool,
+        typer.Option(
+            "--include-existing", help="Allow placements that MOVE pre-existing student files."
+        ),
+    ] = False,
 ) -> None:
-    """Apply a plan, recording an undo log.
+    """Validate a plan, report every rejected placement, and apply the rest (undoable).
 
-    The only confirmation prompt lives in ``organize.apply_plan``, which knows
-    how many pre-existing files would actually move; ``--yes`` suppresses it.
+    Exits 1 if any placement was rejected or failed, or if nothing was confirmed,
+    so a caller can never mistake a partial apply for a clean one.
     """
     settings = _settings()
-    organize_mod.apply_plan(settings, plan_path, yes=yes)
+    report = organize_mod.apply_plan(
+        settings, plan_path, yes=yes, include_existing=include_existing
+    )
+    if report.errors or report.rejected or not report.confirmed:
+        raise typer.Exit(1)
 
 
 @organize_app.command("undo")
@@ -219,57 +314,16 @@ def organize_undo(
 
 
 # --------------------------------------------------------------------------
-# phase 4: calendar / deadlines
+# graph / kb
 # --------------------------------------------------------------------------
-@app.command("calendar")
-def calendar_cmd(
-    days: Annotated[int | None, typer.Option("--days", help="Lookahead window.")] = None,
-    as_json: Annotated[bool, typer.Option("--json", help="Emit raw JSON.")] = False,
+@graph_app.command("add")
+def graph_add(
+    records: Annotated[Path, typer.Argument(help="JSONL of nodes and edges the agent wrote.")],
 ) -> None:
-    """Read Apple Calendar events (read-only)."""
+    """Validate agent-written nodes/edges against the ontology and append them (all or nothing)."""
     settings = _settings()
-    start = datetime.now(UTC)
-    end = start + timedelta(days=days or settings.calendar.lookahead_days)
-    try:
-        events = calendar_read.read_events(settings, start, end)
-    except MitsyncError as exc:
-        # A missing binary or a denied TCC grant is expected, not exceptional:
-        # print the remediation the module supplied rather than a traceback.
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
-    if as_json:
-        console.print_json(json.dumps([e.to_dict() for e in events], indent=2, default=str))
-    else:
-        graph_mod.print_rows(
-            "Events",
-            [{"when": e.when, "title": e.title, "calendar": e.calendar} for e in events],
-        )
-
-
-@app.command()
-def due() -> None:
-    """Collect upcoming assignment deadlines."""
-    settings = _settings()
-    deadlines.build_due(settings)
-
-
-@app.command()
-def brief() -> None:
-    """Write a daily briefing combining deadlines and calendar."""
-    settings = _settings()
-    deadlines.write_briefing(settings)
-
-
-# --------------------------------------------------------------------------
-# phase 5-7: extract / graph / kb
-# --------------------------------------------------------------------------
-@app.command()
-def extract(
-    force: Annotated[bool, typer.Option("--force", help="Re-extract unchanged files.")] = False,
-) -> None:
-    """Extract text from mirrored documents into `_kb/text/`."""
-    settings = _settings()
-    extract_mod.extract_all(settings, force=force)
+    report = graph_mod.add_records(settings, records)
+    print(f"graph add: {report.summary()}")
 
 
 @graph_app.command("rebuild")
@@ -277,26 +331,6 @@ def graph_rebuild() -> None:
     """Re-derive the whole graph from `_kb/graph/*.jsonl`."""
     settings = _settings()
     graph_mod.rebuild(settings)
-
-
-@graph_app.command("extract")
-def graph_extract(
-    since: Annotated[
-        str | None,
-        typer.Option("--since", help="Only re-judge text extracted after this ISO date."),
-    ] = None,
-    driver: DriverOpt = None,
-    resolve: Annotated[
-        Path | None, typer.Option("--resolve", help="Apply an agent result JSON.")
-    ] = None,
-) -> None:
-    """Turn extracted text into graph nodes and edges (deterministic backbone + judgment)."""
-    settings = _settings()
-    try:
-        judge = _resolved_judge(settings, driver, resolve)
-        graph_mod.extract_graph(settings, judge, since=since)
-    except PendingJudgment as exc:
-        _pending(exc)
 
 
 @graph_app.command("query")
@@ -310,107 +344,10 @@ def graph_query(
 
 
 @kb_app.command("build")
-def kb_build(
-    driver: DriverOpt = None,
-    resolve: Annotated[
-        Path | None, typer.Option("--resolve", help="Apply an agent result JSON.")
-    ] = None,
-) -> None:
-    """Rebuild the markdown knowledge base under `_kb/`.
-
-    Without --driver the build is fully deterministic and cannot fail: course
-    notes are written as inventory skeletons. Pass --driver to have the notes
-    judged, one course per round trip.
-    """
+def kb_build() -> None:
+    """Rebuild `_kb/` indexes, manifest and AGENTS.md. Never touches an agent's NOTES.md."""
     settings = _settings()
-    try:
-        judge = _resolved_judge(settings, driver, resolve) if (driver or resolve) else None
-        kb_mod.build(settings, judge)
-    except PendingJudgment as exc:
-        _pending(exc)
-
-
-# --------------------------------------------------------------------------
-# resolve: hand an agent's judgment back to the command that asked for it
-# --------------------------------------------------------------------------
-class _PerCourseJudged:
-    """Return a resolved result for one course; defer every other course again.
-
-    `kb build` judges one course's notes at a time and writes each course before
-    moving on, so resolving a task replays the build, keeps the finished courses,
-    and stops at the next unresolved one with a fresh task file.
-    """
-
-    def __init__(self, result: dict[str, Any], course: str | None, fallback: Any) -> None:
-        self._result = result
-        self._course = course
-        self._fallback = fallback
-
-    def judge(self, task: Any) -> dict[str, Any]:
-        args = getattr(task, "origin_args", None) or {}
-        if self._course is not None and args.get("course") == self._course:
-            return self._result
-        return self._fallback.judge(task)
-
-
-# Originating command name (stored in the task file) -> how to replay it with
-# the agent's answer. Each takes (settings, validated result, origin_args).
-REPLAY: dict[str, Any] = {
-    "map": lambda s, result, args: course_map_mod.suggest_course_map(
-        s, _PreJudged(result), apply=bool(args.get("apply", False))
-    ),
-    "organize plan": lambda s, result, args: organize_mod.plan(
-        s, _PreJudged(result), include_existing=bool(args.get("include_existing", False))
-    ),
-    "graph extract": lambda s, result, args: graph_mod.extract_graph(
-        s, _PreJudged(result), since=args.get("since")
-    ),
-    "kb build": lambda s, result, args: kb_mod.build(
-        s, _PerCourseJudged(result, args.get("course"), get_judge(s, "agent"))
-    ),
-}
-
-
-class _PreJudged:
-    """A Judge that returns an already-validated result, for replay."""
-
-    def __init__(self, result: dict[str, Any]) -> None:
-        self._result = result
-
-    def judge(self, task: Any) -> dict[str, Any]:  # noqa: ARG002 -- interface
-        return self._result
-
-
-def _resolved_judge(settings: Settings, driver: str | None, resolve: Path | None):
-    """Use a stored agent result if --resolve was passed, else a real driver."""
-    if resolve is None:
-        return get_judge(settings, driver)
-    return _PreJudged(json.loads(Path(resolve).read_text()))
-
-
-@app.command()
-def resolve(
-    task_path: Annotated[Path, typer.Argument(help="The task file written by the agent driver.")],
-    result: Annotated[Path, typer.Option("--result", help="Your JSON answer.")],
-) -> None:
-    """Validate an agent's judgment and replay the command that needed it."""
-    settings = _settings()
-    try:
-        validated = resolve_task(task_path, result)
-    except MitsyncError as exc:
-        console.print(f"[red]{exc}[/red]")
-        raise typer.Exit(1) from exc
-
-    task = load_task(task_path)
-    console.print(f"[green]Result validated[/green] for task '{task.name}'.")
-    replay = REPLAY.get(task.origin_command or "")
-    if replay is None:
-        console.print(
-            "[yellow]No originating command recorded; the result is stored next to the "
-            "task file for the caller to pick up.[/yellow]"
-        )
-        return
-    replay(settings, validated, task.origin_args)
+    kb_mod.build(settings)
 
 
 # --------------------------------------------------------------------------
@@ -485,23 +422,6 @@ def doctor() -> None:
         f"will fail. Create a token in Canvas > Account > Settings.",
     )
 
-    key_env = settings.llm.api_key_env
-    has_key = bool(settings.llm.api_key)
-    driver = settings.resolve_driver(None)
-    add(
-        "PASS" if has_key else "WARN",
-        "llm api key",
-        f"${key_env} is set (source: {_secret_source(dotenv_sources, key_env)})"
-        if has_key
-        else f"${key_env} is not set{hint} (fine: the agent driver needs no key)",
-    )
-    add(
-        "PASS",
-        "llm driver",
-        f"settings say '{settings.llm.driver}' -> resolves to '{driver}' "
-        f"(provider {settings.llm.provider}, model {settings.llm.model})",
-    )
-
     cal = settings.calendar.cli
     cal_path = shutil.which(cal)
     add(
@@ -533,12 +453,23 @@ def doctor() -> None:
         add("FAIL", "duckdb", f"import failed ({exc}); run `uv sync`")
 
     try:
-        names = sorted(p.stem for p in (PKG_DIR / "llm" / "tasks").glob("*.json"))
-        for n in names:
-            load_task_spec(n)
-        add("PASS", "judge tasks", ", ".join(names) or "none registered")
+        from mitsync.knowledge.graph import load_ontology
+
+        onto = load_ontology(settings)
+        add(
+            "PASS",
+            "ontology",
+            f"{onto.path}: {len(onto.node_types)} node types, {len(onto.edge_types)} edge types",
+        )
     except MitsyncError as exc:
-        add("FAIL", "judge tasks", str(exc))
+        add("FAIL", "ontology", str(exc).splitlines()[0])
+
+    rules = naming_rules_path(settings)
+    add(
+        "PASS" if rules.is_file() else "WARN",
+        "naming rules",
+        str(rules) if rules.is_file() else f"{rules} is missing; the agent has no filing policy",
+    )
 
     _render_doctor(checks)
     if any(status == "FAIL" for status, _, _ in checks):
@@ -568,8 +499,6 @@ def run() -> None:
     """
     try:
         app()
-    except PendingJudgment as exc:  # pragma: no cover - commands normally catch this
-        _pending(exc)
     except MitsyncError as exc:
         console.print(f"[red]error:[/red] {exc}")
         raise SystemExit(1) from exc

@@ -50,8 +50,8 @@ present; upserts are `INSERT OR REPLACE`.
 reset when a file was first seen, and `sync` (which knows nothing about
 filing) must not blank a `filed_path` that `organize` owns.
 
-**Runs are append-only.** `last_run` answers sync-freshness questions for the
-briefing and for `_kb/AGENTS.md`, so both read the same authority and can
+**Runs are append-only.** `last_run` answers sync-freshness questions for
+`mitsync due` and for `_kb/AGENTS.md`, so both read the same authority and can
 never disagree.
 """
 

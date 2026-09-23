@@ -1,11 +1,9 @@
 # Canvas course -> workspace folder mapping.
 #
-# Bootstrap this file with:   mitsync map        (preview)
-#                             mitsync map --apply (write)
-#
-# `mitsync map` proposes mappings by matching Canvas course names against the
-# folders that already exist in the workspace; edit freely afterwards -- this
-# file is the source of truth and is never overwritten without --apply.
+# Maintained by hand; mitsync never writes it. It is also the list of folders
+# that count as courses: extraction, the knowledge base and `organize
+# --include-existing` only look inside folders named here (plus `_canvas/`),
+# so other top-level directories (e.g. OpenClaw's `memory/`) are never indexed.
 #
 # `folder` must match the workspace folder name on disk byte-for-byte.
 # `aliases` are the course-number spellings actually seen in filenames and

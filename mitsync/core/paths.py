@@ -19,8 +19,8 @@ and the *repo* (`<workspace>/_agent`, which holds config, state and the tool
 itself). Spelling `workspace / "_kb" / "text"` in a dozen modules made that
 distinction implicit and the layout impossible to change.
 
-The guardrail half exists because filing destinations are proposed by a
-language model and are therefore untrusted input. `safe_relative` is where an
+The guardrail half exists because filing destinations are written by the
+driving agent -- a language model -- and are therefore untrusted input. `safe_relative` is where an
 absolute path, a `..` traversal, or a symlink pointing out of the workspace is
 refused, before anything is written.
 
@@ -140,10 +140,6 @@ class Paths:
         return self.repo / "state"
 
     @property
-    def tasks_dir(self) -> Path:
-        return self.state_dir / "tasks"
-
-    @property
     def undo_dir(self) -> Path:
         return self.state_dir / "undo"
 
@@ -168,7 +164,6 @@ class Paths:
             self.kb_courses,
             self.kb_briefings,
             self.state_dir,
-            self.tasks_dir,
             self.undo_dir,
             self.plans_dir,
         ]

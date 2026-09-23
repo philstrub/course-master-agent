@@ -8,7 +8,7 @@ index the result for an agent to read.
 
 Names the package and pins `__version__`. It deliberately holds no logic:
 importing `mitsync` must stay free of side effects and of heavy dependencies,
-so `import mitsync.paths` never drags in httpx, duckdb, or a provider SDK.
+so `import mitsync.paths` never drags in httpx or duckdb.
 
 ## 2. Why This Module Exists
 
@@ -35,7 +35,6 @@ Layering is one-directional and expressed as packages, bottom up:
 * `schedule/` -- `calendar`, `deadlines`. Local state and EventKit only; imports
   neither `canvas` nor `httpx`, and a test asserts it.
 * `knowledge/` -- `extract`, `graph`, `kb`. Everything under `_kb/`.
-* `llm/` -- the only package allowed to import a provider SDK.
 * `cli` -- wires them together, and is the only place an error becomes an exit
   code.
 
@@ -44,14 +43,17 @@ those docstrings, not this one, are where a future edit should look first.
 
 ## 4. Key Concepts
 
-**Judgment is a driver, not a dependency.** Exactly four commands need a model
--- `map`, `organize plan`, `graph extract`, `kb build` -- and each runs three
-ways (`api`, `agent`, `rules`), so the tool is fully usable with no
-credentials at all.
+**Data tools only; the agent judges.** Every command reads, writes or
+validates, deterministically. None of them asks for judgment: the driving
+agent (OpenClaw, Claude Code) reads their JSON output and the files directly,
+decides, and hands decisions back as data -- a filing plan for `organize
+apply`, a JSONL of graph facts for `graph add`, a `NOTES.md` it writes itself.
+mitsync never calls a model, so it needs no model credentials at all.
 
-**Prose is configuration.** `config/naming.md` is the filing policy. It is
-injected verbatim into judgment payloads, so editing that prose changes the
-next plan with no code change, and filing rules are never hardcoded in Python.
+**Prose is configuration.** `config/naming.md` is the filing policy, and the
+agent reads it itself. The code enforces only the structure that prose
+promises (which buckets exist, which hold per-item folders); where a file
+belongs is never decided in Python.
 
 **Catch-up safety.** Work is always derived from state (what the manifest
 holds versus what Canvas holds), never from time since the last run, so a

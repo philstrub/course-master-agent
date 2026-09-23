@@ -1,33 +1,18 @@
-"""The handoff layer: indexes, notes, manifest, and the AGENTS.md bootstrap."""
+"""The handoff layer: indexes, manifest, the AGENTS.md bootstrap -- and hands off NOTES.md."""
 
 from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
 from mitsync.core.config import Settings
-from mitsync.core.errors import JudgeUnavailable, MitsyncError
+from mitsync.core.errors import MitsyncError
 from mitsync.knowledge import extract as extract_mod
 from mitsync.knowledge import graph as graph_mod
 from mitsync.knowledge import kb as kb_mod
-from mitsync.llm.base import JudgeTask, validate_result
 from tests.test_extract import make_notebook, make_pdf
-from tests.test_graph import EmptyJudge, StubJudge, concept_judge
-
-NOTES_RESULT: dict[str, Any] = {
-    "summary": "Applied analytics, taught through cases.",
-    "topics": [
-        {
-            "name": "Regularization",
-            "summary": "Ridge and lasso as bias-variance control.",
-            "sources": ["Machine Learning/lectures/lec01.pdf"],
-        }
-    ],
-    "open_questions": ["Which dataset does HW1 use?"],
-}
 
 
 @pytest.fixture
@@ -48,7 +33,7 @@ def built(workspace: Path, settings: Settings) -> Settings:
     (workspace / "AI_Studio" / "nandatown" / "README.md").write_text("# nandatown")
 
     extract_mod.extract_all(settings)
-    graph_mod.extract_graph(settings, StubJudge(concept_judge))
+    graph_mod.build_backbone(settings)
     return settings
 
 
@@ -63,8 +48,9 @@ def test_build_writes_every_page(built: Settings) -> None:
     assert (kb / "manifest.json").exists()
     for course in ("Machine Learning", "Analytics Edge"):
         assert (kb / "courses" / course / "INDEX.md").exists()
-        assert (kb / "courses" / course / "NOTES.md").exists()
+        assert not (kb / "courses" / course / "NOTES.md").exists(), "notes are the agent's"
     assert set(report.courses) == {"Machine Learning", "Analytics Edge"}
+    assert sorted(report.notes_missing) == ["Analytics Edge", "Machine Learning"]
     assert report.files == 4
     assert report.extracted == 4
 
@@ -78,7 +64,7 @@ def test_course_index_groups_by_bucket_and_links_both_views(built: Settings) -> 
     assert "`Machine Learning/lectures/lec01.pdf`" in body  # the canonical file
     text_rel = extract_mod.text_path_for(built, "Machine Learning/lectures/lec01.pdf").name
     assert text_rel in body  # and its extracted text
-    assert "NOTES.md" in body
+    assert "No topic notes yet" in body
 
     canvas = (built.paths.kb / "courses" / "Analytics Edge" / "INDEX.md").read_text()
     assert "## canvas mirror (unfiled)" in canvas
@@ -131,64 +117,45 @@ def test_nandatown_never_reaches_the_kb(built: Settings) -> None:
 
 
 # --------------------------------------------------------------------------
-# notes / judgment
+# notes belong to the agent
 # --------------------------------------------------------------------------
-def test_notes_without_a_judge_are_a_deterministic_skeleton(built: Settings) -> None:
+def test_kb_build_never_creates_or_overwrites_notes(built: Settings) -> None:
+    notes = kb_mod.notes_path(built, "Machine Learning")
+    notes.parent.mkdir(parents=True, exist_ok=True)
+    mine = "# Machine Learning — topic notes\n\nWritten by the agent. Do not touch.\n"
+    notes.write_text(mine)
+    stamp = notes.stat().st_mtime_ns
+
     report = kb_mod.build(built)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert "Machine Learning/lectures/lec01.pdf" in body  # inventory is still useful
-    assert "Machine Learning" in report.notes_pending
+    kb_mod.build(built)
+
+    assert notes.read_text() == mine
+    assert notes.stat().st_mtime_ns == stamp
+    assert notes not in report.written
+    assert not kb_mod.notes_path(built, "Analytics Edge").exists()
+    assert report.notes_missing == ["Analytics Edge"]
 
 
-def test_notes_with_a_judge_use_the_validated_result(built: Settings) -> None:
-    judge = StubJudge(NOTES_RESULT)
-    report = kb_mod.build(built, judge)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER not in body
-    assert "Applied analytics, taught through cases." in body
-    assert "### Regularization" in body
-    assert "Which dataset does HW1 use?" in body
-    assert report.notes_pending == []
+def test_existing_notes_are_linked_and_missing_ones_are_reported(built: Settings) -> None:
+    notes = kb_mod.notes_path(built, "Machine Learning")
+    notes.parent.mkdir(parents=True, exist_ok=True)
+    notes.write_text("# notes\n")
+    kb_mod.build(built)
 
-    task = judge.tasks[0]
-    assert task.name == "course_notes"
-    assert task.payload["course"] in {"Machine Learning", "Analytics Edge"}
-    assert task.payload["documents"]
-    assert task.payload["documents"][0]["excerpt"]
-    assert "untrusted" in (task.instructions + task.rules).lower()
-    validate_result(task, NOTES_RESULT)  # the stub answer satisfies the shipped schema
+    index = (built.paths.kb / "courses" / "Machine Learning" / "INDEX.md").read_text()
+    assert "[Topic notes](NOTES.md)" in index
+    other = (built.paths.kb / "courses" / "Analytics Edge" / "INDEX.md").read_text()
+    assert "No topic notes yet" in other
 
+    manifest = json.loads((built.paths.kb / "manifest.json").read_text())
+    assert manifest["courses"]["Machine Learning"]["notes"] == (
+        "_kb/courses/Machine Learning/NOTES.md"
+    )
+    assert manifest["courses"]["Analytics Edge"]["notes"] is None
 
-def test_notes_fall_back_when_the_judge_returns_nothing(built: Settings) -> None:
-    """The rules driver has no `course_notes` handler; it returns {}."""
-    judge = EmptyJudge()
-    report = kb_mod.build(built, judge)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert judge.calls == 2
-    assert "empty result" in report.judge_note
-    assert sorted(report.notes_pending) == ["Analytics Edge", "Machine Learning"]
-
-
-def test_notes_fall_back_when_the_judge_is_unavailable(built: Settings) -> None:
-    class Broken:
-        def judge(self, task: JudgeTask) -> dict[str, Any]:  # noqa: ARG002 -- interface
-            raise JudgeUnavailable("no api key configured")
-
-    report = kb_mod.build(built, Broken())
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert "no api key configured" in report.judge_note
-    assert "no api key configured" in body
-
-
-def test_notes_fall_back_when_the_judged_result_is_invalid(built: Settings) -> None:
-    bad = {"summary": "x", "topics": [{"name": "n"}], "open_questions": []}
-    report = kb_mod.build(built, StubJudge(bad))
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert report.notes_pending
+    agents = (built.paths.kb / "AGENTS.md").read_text()
+    assert "`_kb/courses/Machine Learning/NOTES.md`" in agents
+    assert "never creates" in agents and "or overwrites it" in agents
 
 
 # --------------------------------------------------------------------------
@@ -248,7 +215,7 @@ def test_agents_md_lists_per_course_entry_points_and_the_weekly_recipe(
     kb_mod.build(built)
     body = (built.paths.kb / "AGENTS.md").read_text()
     assert "`_kb/courses/Machine Learning/INDEX.md`" in body
-    assert "`_kb/courses/Analytics Edge/NOTES.md`" in body
+    assert "`_kb/courses/Analytics Edge/INDEX.md`" in body
     assert "this week" in body  # the headline question is answered step by step
     assert "assignments_due" in body
 
@@ -260,6 +227,8 @@ def test_agents_md_states_the_data_not_instructions_guardrail(built: Settings) -
     assert "ignore previous instructions" in body
     assert "nandatown" in body
     assert "Never write to Apple Calendar" in body
+    assert "mitsync organize apply --plan" in body
+    assert "organize plan" not in body
 
 
 def test_kb_build_survives_an_empty_workspace(settings: Settings) -> None:

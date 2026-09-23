@@ -6,23 +6,25 @@ shares.
 
 ## 1. What This Module Does
 
-Loads and validates the settings file into a pydantic tree (Canvas, LLM,
-calendar, graph, organize, ignore globs), decides which judgment driver a run
-will use, and answers "is this path excluded?" for every walk in the tool. It
+Loads and validates the settings file into a pydantic tree (Canvas,
+calendar, graph, organize, ignore globs) and answers "is this path excluded?"
+for every walk in the tool. It
 also holds the two readers for JSON that mitsync itself wrote -- `read_json`
 and `read_meta`.
 
 ## 2. Why This Module Exists
 
 Validation happens at the boundary so business logic can trust its inputs: a
-typo'd key or an unsupported provider fails at load with the file named, not
+typo'd key or an unknown value fails at load with the file named, not
 three modules later as an `AttributeError`. The file is entirely optional --
 every field has a default -- because mitsync must work on a fresh checkout with
 no configuration at all.
 
-Secrets deliberately are not part of the model. `CanvasSettings.token` and
-`LLMSettings.api_key` read `os.environ` lazily, so a token can never be
-serialized into a settings dump, a task file, or a log line.
+Secrets deliberately are not part of the model. `CanvasSettings.token` reads
+`os.environ` lazily, so a token can never be serialized into a settings dump, a
+plan, or a log line. There is no model API key at all: the CLI is data tools
+only, and the host running it (OpenClaw, Claude Code) does every judgment with
+its own model.
 
 ## 3. How It Fits in the Architecture
 
@@ -38,10 +40,10 @@ JSON file without importing the Canvas sync machinery, and therefore `httpx`.
 
 ## 4. Key Concepts
 
-**Driver resolution is the whole policy.** `resolve_driver()`: an explicit
-`--driver` flag beats `settings.llm.driver`, and `auto` means `api` when an API
-key is present and `agent` otherwise. Zero credentials is a supported default,
-not a degraded mode.
+**Removed sections fail loudly.** The `llm:` section configured a judgment
+driver that no longer exists. A settings file that still carries it is
+rejected with a message saying so and what to do, rather than a bare
+"extra inputs are not permitted" -- or, worse, silently ignored.
 
 **Ignore globs are a guardrail, not a preference.** `DEFAULT_IGNORE_GLOBS`
 lives in Python and not only in the YAML because the YAML is optional: a
@@ -74,8 +76,15 @@ from mitsync.core.env import load_dotenv
 from mitsync.core.errors import ConfigError, MitsyncError
 from mitsync.core.paths import Paths
 
-Driver = Literal["api", "agent", "rules"]
-_DRIVERS: tuple[str, ...] = ("api", "agent", "rules")
+#: Top-level settings sections that existed once, with what to tell a user
+#: whose file still has them.
+REMOVED_SECTIONS = {
+    "llm": (
+        "the `llm:` section was removed: mitsync no longer asks for judgment, so there "
+        "is no driver to configure. The driving agent (OpenClaw, Claude Code) reads the "
+        "tools' JSON output and decides itself. Delete the `llm:` block."
+    ),
+}
 
 
 def _glob_to_regex(pattern: str) -> re.Pattern[str]:
@@ -128,22 +137,6 @@ class CanvasSettings(BaseModel):
         return os.environ.get(self.token_env) or None
 
 
-class LLMSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    driver: Literal["auto", "api", "agent", "rules"] = "auto"
-    provider: Literal["anthropic", "openai", "google", "openai_compatible"] = "anthropic"
-    model: str = "claude-opus-5"
-    api_key_env: str = "ANTHROPIC_API_KEY"
-    base_url: str | None = None
-    max_output_tokens: int = 8000
-    temperature: float = 0.0
-
-    @property
-    def api_key(self) -> str | None:
-        return os.environ.get(self.api_key_env) or None
-
-
 class CalendarSettings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -163,6 +156,7 @@ class OrganizeSettings(BaseModel):
     link_mode: Literal["hardlink", "copy", "symlink"] = "hardlink"
 
 
+
 DEFAULT_IGNORE_GLOBS = [
     "**/.DS_Store",
     "**/.venv/**",
@@ -180,7 +174,6 @@ class Settings(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     canvas: CanvasSettings = Field(default_factory=CanvasSettings)
-    llm: LLMSettings = Field(default_factory=LLMSettings)
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
@@ -199,15 +192,6 @@ class Settings(BaseModel):
         if self._paths is None:
             self._paths = Paths()
         return self._paths
-
-    def resolve_driver(self, cli_override: str | None = None) -> Driver:
-        """Explicit flag wins; else settings; `auto` -> api if a key is set, else agent."""
-        chosen = cli_override or self.llm.driver
-        if chosen not in (*_DRIVERS, "auto"):
-            raise ConfigError(f"unknown llm driver {chosen!r}; expected one of {_DRIVERS} or auto")
-        if chosen == "auto":
-            return "api" if self.llm.api_key else "agent"
-        return chosen  # type: ignore[return-value]
 
     def should_ignore(self, relpath: str | Path) -> bool:
         """True if a workspace-relative path matches any ignore glob."""
@@ -256,6 +240,9 @@ def _load_cached(path_str: str | None) -> Settings:
     paths = Paths()
     path = Path(path_str) if path_str else paths.settings_file
     data = _read_yaml(path) if path.exists() else {}
+    for section, message in REMOVED_SECTIONS.items():
+        if section in data:
+            raise ConfigError(f"{path}: {message}")
     try:
         settings = Settings(**data)
     except ValidationError as exc:
@@ -269,8 +256,8 @@ def load_settings(path: Path | None = None) -> Settings:
     """Load settings (cached per path). Missing file -> all defaults.
 
     Loads `.env` first (idempotent, see `mitsync.env`) so that secrets read
-    lazily off `os.environ` -- the Canvas token, the LLM key, and therefore
-    `resolve_driver()` -- see values placed in a `.env` file. The settings
+    lazily off `os.environ` -- the Canvas token -- see values placed in a
+    `.env` file. The settings
     object is cached; this call is not, so it also covers a cache hit.
     """
     load_dotenv()

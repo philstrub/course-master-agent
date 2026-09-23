@@ -12,17 +12,16 @@ YAML frontmatter recording where it came from, and writes it under
 
 ## 2. Why This Module Exists
 
-Everything downstream that reasons about course content -- graph extraction,
-course notes, search -- needs the text, not the container. Doing that
-conversion once, deterministically, into a stable location means the expensive
-and non-deterministic parts of the tool never have to open a PDF, and a
-re-run costs nothing.
+Everything downstream that reasons about course content -- the agent writing
+graph facts and course notes, search -- needs the text, not the container.
+Doing that conversion once, deterministically, into a stable location means
+the agent never has to open a PDF, and a re-run costs nothing.
 
 ## 3. How It Fits in the Architecture
 
 Between filing and knowledge: `sync` and `organize` put documents on disk,
 `extract` turns them into text, `graph` and `kb` read that text. It is pure
-I/O, so `mitsync extract` can never produce a pending judgment.
+I/O: no judgment, no model.
 
 ## 4. Key Concepts
 
@@ -35,11 +34,14 @@ frontmatter's `source_sha256` (or size and mtime for files too large to hash)
 decides. `EXTRACTOR_VERSION` forces a re-extraction when the output shape
 changes. `force=True` re-extracts regardless.
 
-**The tool must never index itself.** `source_roots` judges each candidate
-root by its *resolved* target, not its name, because the OpenClaw setup
-symlinks `<workspace>/skills` at `_agent/skills`. `_agent/`, `_kb/` and every
-ignored subtree are pruned, and `tests/test_workspace_boundaries.py` enforces
-it. Repo files appearing in `_kb/` is a bug to report, not content to process.
+**Only courses are indexed.** `source_roots` is the Canvas mirror plus the
+folders `config/courses.yml` maps, never "every top-level directory": the
+workspace root is shared with OpenClaw (`memory/`, `AGENTS.md`, `SOUL.md`),
+and the OpenClaw setup symlinks `<workspace>/skills` at `_agent/skills`, so a
+mapped folder is also judged by its *resolved* target. `_agent/`, `_kb/` and
+every ignored subtree are pruned, and `tests/test_workspace_boundaries.py`
+enforces it. Repo files appearing in `_kb/` is a bug to report, not content to
+process.
 
 **Large documents are truncated, large datasets are sampled.** Text is capped
 at `MAX_TEXT_CHARS` with the truncation recorded in frontmatter and in the
@@ -53,8 +55,8 @@ not write; all of them are translated into `ExtractionFailed`, naming the file
 and, for a PDF, the page. `extract_all` records that in the report and keeps
 going -- one corrupt file must not end the run. A document that cannot be read
 is *failed*, never partially emitted: a placeholder page would otherwise reach
-the knowledge base and the judgment payloads as if it were the document's real
-content.
+the knowledge base, and the agent reading it, as if it were the document's
+real content.
 """
 
 from __future__ import annotations
@@ -130,30 +132,20 @@ class ExtractReport:
 # walking
 # --------------------------------------------------------------------------
 def source_roots(settings: Settings) -> list[Path]:
-    """The Canvas mirror plus the student's own top-level course folders."""
-    ws = settings.paths.workspace
+    """The Canvas mirror plus the course folders `config/courses.yml` names.
+
+    Not every top-level directory: the workspace root is shared with OpenClaw,
+    whose `memory/` and friends are not courses. `existing_course_folders`
+    drops mapped folders that are missing, ignored, or symlinks out of the
+    workspace root.
+    """
+    from mitsync.filing.course_map import existing_course_folders
+
     roots: list[Path] = []
     mirror = settings.paths.canvas_mirror
     if mirror.is_dir():
         roots.append(mirror)
-    if not ws.is_dir():
-        return roots
-    for child in sorted(ws.iterdir()):
-        if not child.is_dir() or child.name.startswith((".", "_")):
-            continue
-        if settings.should_ignore(child.name):
-            continue
-        # A symlink can point back into workspace machinery -- the OpenClaw setup
-        # links `<workspace>/skills` -> `_agent/skills`. Judge the target, not the name,
-        # so the tool never indexes its own repo as a course.
-        resolved = child.resolve()
-        try:
-            parts = resolved.relative_to(ws).parts
-        except ValueError:
-            continue  # points outside the workspace entirely
-        if not parts or parts[0].startswith((".", "_")):
-            continue
-        roots.append(child)
+    roots += [settings.paths.workspace / f for f in existing_course_folders(settings)]
     return roots
 
 
@@ -221,7 +213,7 @@ def _pdf_to_text(path: Path) -> tuple[str, dict[str, int]]:
                 body = page.get_text("text")
             except Exception as exc:  # noqa: BLE001 -- mupdf raises many types
                 # Fail the whole document. A placeholder here would land in the
-                # KB and in judgment payloads as if it were the page's content.
+                # KB, and in front of the agent, as if it were the page's content.
                 raise ExtractionFailed(f"page {i} is unreadable: {exc}") from exc
             chunks.append(f"## page {i}\n\n{body.strip()}")
         pages = doc.page_count

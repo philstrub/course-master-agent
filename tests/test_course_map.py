@@ -1,86 +1,54 @@
-"""course_map.py: config/courses.yml, and the evidence `mitsync map` proposes it from."""
+"""course_map.py: reading config/courses.yml, and which folders are courses."""
 
 from __future__ import annotations
 
 import pytest
 
 from mitsync.core.config import Settings
+from mitsync.core.errors import ConfigError
 from mitsync.filing import course_map
-from mitsync.llm.rules_driver import RulesJudge
-from tests.test_organize import add_mirror_file, write_course_map, write_naming
+from tests.test_organize import write_course_map
 
 
-@pytest.fixture
-def prepared(settings: Settings) -> Settings:
-    write_naming(settings)
+def test_load_course_map_reads_entries(settings: Settings) -> None:
     write_course_map(
         settings,
         [{"canvas_id": 1, "folder": "Machine Learning", "course_number": "15.095", "aliases": []}],
     )
-    return settings
+    entries = course_map.load_course_map(settings)
+    assert entries == [
+        {"canvas_id": 1, "folder": "Machine Learning", "course_number": "15.095", "aliases": []}
+    ]
+    assert course_map.folder_for_canvas_id(settings, 1) == "Machine Learning"
+    assert course_map.folder_for_canvas_id(settings, "1") == "Machine Learning"
+    assert course_map.folder_for_canvas_id(settings, 2) is None
 
 
-def test_suggest_course_map_writes_nothing_without_apply(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
-
-    report = course_map.suggest_course_map(settings, RulesJudge(settings))
-
-    assert report.written is False
-    assert not (settings.paths.config_dir / "courses.yml").exists()
-    assert report.mappings and report.mappings[0]["folder"] == "Machine Learning"
-    assert "courses:" in report.yaml_text
+def test_missing_course_map_is_empty(settings: Settings) -> None:
+    course_map.courses_file(settings).unlink()
+    assert course_map.load_course_map(settings) == []
+    assert course_map.existing_course_folders(settings) == []
 
 
-def test_suggest_course_map_apply_writes_and_preserves_hand_edits(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
+def test_malformed_course_map_raises_naming_the_file(settings: Settings) -> None:
+    course_map.courses_file(settings).write_text("courses: {not: a list}\n")
+    with pytest.raises(ConfigError, match="courses.yml"):
+        course_map.load_course_map(settings)
+
+
+def test_only_mapped_folders_that_exist_are_course_folders(settings: Settings) -> None:
+    ws = settings.paths.workspace
+    (ws / "memory").mkdir()  # OpenClaw's, not a course
+    (ws / "Optimization").mkdir()
     write_course_map(
         settings,
-        [{"canvas_id": 1, "folder": "My Own Name", "course_number": "15.095", "aliases": ["ML"]}],
+        [
+            {"canvas_id": 1, "folder": "Machine Learning"},
+            {"canvas_id": 2, "folder": "Optimization"},
+            {"canvas_id": 3, "folder": "Not On Disk Yet"},
+        ],
     )
-
-    report = course_map.suggest_course_map(settings, RulesJudge(settings), apply=True)
-
-    assert report.written is True
-    entries = course_map.load_course_map(settings)
-    assert entries[0]["folder"] == "My Own Name", "a hand-edited folder must survive"
-    assert entries[0]["aliases"] == ["ML"]
-    assert report.conflicts and report.conflicts[0]["proposed_folder"] == "Machine Learning"
-    assert 1 in report.preserved and not report.added
-
-
-def test_suggest_course_map_adds_new_courses(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
-    add_mirror_file(
-        settings, uuid="u2", canvas_id=102, name="b.pdf", mirror_folder="AI", course_canvas_id=2
-    )
-    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning", "aliases": []}])
-
-    report = course_map.suggest_course_map(settings, RulesJudge(settings), apply=True)
-
-    assert report.added == [2]
-    assert {e["canvas_id"] for e in course_map.load_course_map(settings)} == {1, 2}
-
-
-def test_observed_course_numbers_are_mined_from_filenames(prepared: Settings) -> None:
-    path = prepared.paths.workspace / "Machine Learning" / "15_095_hw1.pdf"
-    path.write_text("x")
-    assert course_map.observed_course_numbers(prepared) == {"15.095": ["Machine Learning"]}
-
-
-def test_suggest_course_map_without_any_canvas_courses(settings: Settings) -> None:
-    write_naming(settings)
-    report = course_map.suggest_course_map(settings, RulesJudge(settings), apply=True)
-    assert report.mappings == [] and report.written is False
-
-
-def test_a_bare_year_is_not_a_course_number() -> None:
-    """`Fall_2026` must not become the course "20.26" (rules_driver used to let it)."""
-    assert course_map.course_numbers_in("deliv_1_15072_Fall2026.pdf") == ["15.072"]
-    assert course_map.course_numbers_in("Fall_2026") == []
-    assert course_map.course_numbers_in("15.C57 syllabus") == ["15.C57"]
+    assert course_map.existing_course_folders(settings) == ["Machine Learning", "Optimization"]
 
 
 def test_deadlines_no_longer_drags_in_organize() -> None:

@@ -1,9 +1,13 @@
 # Filing rules
 
 > **EDIT THIS FILE to change filing behavior — no code change needed.**
-> These rules are injected verbatim into every judgment prompt (`organize plan`,
-> `map`) and are also the spec the deterministic `rules` driver approximates.
-> Write them as instructions to a careful assistant, not as code.
+> The driving agent reads this file itself before writing a filing plan
+> (`mitsync unfiled --json` points at it). Write these rules as instructions to
+> a careful assistant, not as code. `mitsync organize apply` enforces only the
+> structure in §2 — course folders from `courses.yml`, the bucket names, and
+> per-item folders under `assignments/` and `recitations/`; if you change that
+> structure, `FILING_BUCKETS` / `PER_ITEM_BUCKETS` in `mitsync/filing/organize.py`
+> must change with it.
 
 ## 1. Course folders
 
@@ -100,8 +104,9 @@ then the original name is kept.)
 - A code bundle or notebook belongs to its item too: `julia-rec1.zip` under
   `Recitations/Recitation 1` goes to `recitations/recitation-01/`.
 
-## 6. Confidence
+## 6. When unsure
 
-Report low confidence (< 0.5) rather than guessing when the course is ambiguous
-or the file could plausibly sit in two subfolders. Low-confidence placements are
-shown for review instead of being applied silently.
+Leave a file out of the plan rather than guessing when the course is ambiguous
+or the file could plausibly sit in two subfolders, and say why in your reply to
+the student. A file left out stays in the Canvas mirror and is listed again by
+`mitsync unfiled` next time.

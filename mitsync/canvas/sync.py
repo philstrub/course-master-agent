@@ -24,7 +24,7 @@ Separating the mirror from the curated view is what makes the filing step safe
 to re-run, review, and undo.
 
 The metadata files exist so that everything downstream -- deadlines,
-briefings, the course map -- can answer questions about Canvas without a
+homework status, the course map -- can answer questions about Canvas without a
 network call and without a Canvas token.
 
 ## 3. How It Fits in the Architecture
@@ -439,7 +439,7 @@ def course_display_name(raw: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------
-# course selection (shared with `organize.suggest_course_map`)
+# course selection
 # --------------------------------------------------------------------------
 EXCLUDED_BY_CONFIG = "excluded by config"
 EXCLUDED_DATELESS_TERM = "term has no start/end dates"
@@ -759,7 +759,13 @@ def _write_course_meta(
     _write_meta(meta_dir / "modules.json", course_id, modules)
 
     fetches: list[tuple[str, str, dict[str, Any]]] = [
-        ("assignments", f"/courses/{course_id}/assignments", {"order_by": "due_at"}),
+        (
+            "assignments",
+            f"/courses/{course_id}/assignments",
+            # `submission` is the caller's own submission. Without it the only
+            # status field is `has_submitted_submissions`, which is course-wide.
+            {"order_by": "due_at", "include[]": ["submission"]},
+        ),
         ("pages", f"/courses/{course_id}/pages", {"include[]": ["body"]}),
         (
             "announcements",

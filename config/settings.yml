@@ -19,16 +19,6 @@ canvas:
   max_retries: 5
   min_rate_limit_remaining: 100.0  # back off when Canvas reports less than this
 
-llm:
-  driver: auto                   # auto | api | agent | rules
-                                 # auto -> api when the api key env var is set, else agent
-  provider: anthropic            # anthropic | openai | google | openai_compatible
-  model: claude-opus-5
-  api_key_env: ANTHROPIC_API_KEY
-  base_url: null                 # required for openai_compatible
-  max_output_tokens: 8000
-  temperature: 0
-
 calendar:
   cli: ical-guy                  # EventKit CLI emitting JSON; ekctl also works
   lookahead_days: 14

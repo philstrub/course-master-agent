@@ -1,16 +1,15 @@
 """
 # Config Tests
 
-Settings loading, driver resolution, ignore globs, and the workspace boundary.
+Settings loading, removed sections, ignore globs, and the workspace boundary.
 
 Covers four things that have to hold before any command is safe to run: a
 settings file parses into the expected tree and an invalid one raises
-`ConfigError` naming the file; `resolve_driver()` follows the documented
-precedence (explicit flag > settings > `auto`, where `auto` means `api` with a
-key and `agent` without); `should_ignore()` matches gitignore-style globs,
-including with the settings file entirely absent, because the built-in
-guardrail globs must survive that; and `Paths` containment rejects paths that
-escape the workspace.
+`ConfigError` naming the file; a leftover `llm:` section is rejected with a
+message saying the section was removed; `should_ignore()` matches
+gitignore-style globs, including with the settings file entirely absent,
+because the built-in guardrail globs must survive that; and `Paths`
+containment rejects paths that escape the workspace.
 
 Uses the shared `settings` and `workspace` fixtures from `conftest.py`, plus
 bare `tmp_path` for the no-settings-file cases, where the point is precisely
@@ -30,33 +29,17 @@ from mitsync.core.paths import Paths
 
 def test_loads_yaml(settings: Settings) -> None:
     assert settings.canvas.base_url == "https://canvas.mit.edu/api/v1"
-    assert settings.llm.api_key_env == "TEST_LLM_KEY"
     assert settings.calendar.lookahead_days == 14
 
 
-def test_auto_driver_without_key_is_agent(settings: Settings) -> None:
-    assert settings.resolve_driver(None) == "agent"
-
-
-def test_auto_driver_with_key_is_api(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEST_LLM_KEY", "sk-test")
-    assert settings.resolve_driver(None) == "api"
-
-
-def test_cli_override_wins(settings: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("TEST_LLM_KEY", "sk-test")
-    assert settings.resolve_driver("rules") == "rules"
-    assert settings.resolve_driver("agent") == "agent"
-
-
-def test_explicit_settings_driver_skips_auto(settings: Settings) -> None:
-    settings.llm.driver = "rules"
-    assert settings.resolve_driver(None) == "rules"
-
-
-def test_unknown_driver_raises(settings: Settings) -> None:
-    with pytest.raises(ConfigError):
-        settings.resolve_driver("telepathy")
+def test_a_leftover_llm_section_is_rejected_with_a_clear_message(tmp_path: Path) -> None:
+    """The judgment driver is gone; an old settings file must say so, not just fail."""
+    old = tmp_path / "settings.yml"
+    old.write_text("llm:\n  driver: agent\n")
+    with pytest.raises(ConfigError, match="`llm:` section was removed") as excinfo:
+        load_settings(old)
+    assert str(old) in str(excinfo.value)
+    assert "Delete the `llm:` block" in str(excinfo.value)
 
 
 @pytest.mark.parametrize(
@@ -96,7 +79,6 @@ def test_should_ignore_accepts_path_objects(settings: Settings) -> None:
 def test_missing_settings_file_uses_defaults(tmp_path: Path) -> None:
     s = load_settings(tmp_path / "nope.yml")
     assert s.canvas.token_env == "CANVAS_TOKEN"
-    assert s.llm.driver == "auto"
 
 
 @pytest.mark.parametrize(
@@ -147,5 +129,5 @@ def test_paths_layout(workspace: Path) -> None:
     assert paths.kb_text == workspace / "_kb" / "text"
     assert paths.manifest_db == workspace / "_agent" / "state" / "manifest.duckdb"
     assert paths.graph_db == workspace / "_agent" / "state" / "graph.duckdb"
-    assert paths.tasks_dir.is_dir()
+    assert paths.plans_dir.is_dir()
     assert paths.undo_dir.is_dir()

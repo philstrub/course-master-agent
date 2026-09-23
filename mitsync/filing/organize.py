@@ -1,32 +1,36 @@
 """
 # Organize
 
-File the Canvas mirror into the student's own course folders -- proposed
-first, applied only on review, and always undoable.
+File the Canvas mirror into the student's own course folders -- from a plan
+the driving agent wrote, applied only on confirmation, and always undoable.
 
 ## 1. What This Module Does
 
-Two stages, deliberately separated so nothing moves without review:
-
-`plan`
-    Ask a `Judge` where every unfiled file should go, validate each proposed
-    destination against the workspace guardrails, and write
-    `state/plans/plan-<ts>.json`. **This never touches the filesystem.**
+`unfiled`
+    List every mirrored file the manifest has not filed yet, with the context
+    an agent needs to decide where it goes (course folder, Canvas module and
+    folder), plus the allowed buckets and the path to `config/naming.md`.
+    **Deciding the destination is the agent's job, not this module's.**
+`validate_plan`
+    Check an agent-written plan -- `{"placements": [{"file_id", "destination",
+    "reason"}]}` -- against its JSON schema and against the structural filing
+    rules below, splitting it into accepted and rejected placements, each
+    rejection with its reason.
 `apply_plan` / `undo`
-    Execute a saved plan and reverse it. Canvas-mirrored files are *linked or
-    copied* into the curated folder; `_canvas/` stays the source of truth and
-    is never emptied. Only pre-existing student files are really moved, and
-    only those need -- and get -- an undo entry that restores them
-    byte-for-byte.
+    Execute the accepted placements after confirmation and reverse them.
+    Canvas-mirrored files are *linked or copied* into the curated folder;
+    `_canvas/` stays the source of truth and is never emptied. Only
+    pre-existing student files are really moved, and only those need -- and
+    get -- an undo entry that restores them byte-for-byte.
 
 ## 2. Why This Module Exists
 
 The student's course folders are their own. A tool that reorganises them on a
-model's say-so, with no preview and no way back, is not one anybody should
-run. Hence the plan/apply split, the confidence threshold below which a
-placement is shown rather than applied, the explicit confirmation before any
-pre-existing file is moved, and the undo log that refuses to reverse anything
-whose bytes changed in the meantime.
+model's say-so, with no check and no way back, is not one anybody should run.
+Hence the validation of every placement, the refusal to touch a pre-existing
+file without `--include-existing`, the confirmation before anything is
+applied, and the undo log that refuses to reverse anything whose bytes changed
+in the meantime.
 
 ## 3. How It Fits in the Architecture
 
@@ -37,39 +41,46 @@ Sits above `manifest` (which says what is mirrored and not yet filed) and
 
 ## 4. Key Concepts
 
-**The filing rules are prose, not code.** `config/naming.md` is read fresh on
-every run and injected verbatim into the judgment payload, so editing that
-file changes the next plan with no code change. Filing rules must never be
-hardcoded in Python. `classify_bucket` is the deterministic fallback used by
-the rules driver, not the policy itself.
-
-**Buckets.** `lectures`, `recitations`, `assignments`, `data`, `syllabus`,
-`notes`, `other` -- the vocabulary `naming.md` allows inside a course folder.
-Grouping context (a Canvas module name, a Canvas folder, the student's own
-subfolder) always beats the filename: a file inside `Recitation 2/` is a
-recitation even when it is called `walkthrough.pdf`.
+**The filing policy is prose; only its structure is code.** `config/naming.md`
+says how material is filed -- which bucket, which per-item folder name, when to
+rename -- and the agent reads it itself. This module enforces only the
+*shape* that prose promises, because a shape can be checked and a judgment
+cannot: a destination lies inside a course folder that `config/courses.yml`
+maps, its second component is one of `FILING_BUCKETS`, the `PER_ITEM_BUCKETS`
+(`assignments/`, `recitations/`) hold only per-item folders
+(`<course>/<bucket>/<item>/<file>`), and every other bucket is flat
+(`<course>/<bucket>/<file>`). If naming.md's structure ever changes, these
+constants must change with it.
 
 **Destinations are untrusted input.** They come from a language model.
 `validate_destination` rejects absolute paths, `..` traversal, anything
 outside the workspace, the reserved `_canvas`/`_agent`/`_kb` trees, ignored
-paths, and directory-only destinations -- at plan time *and* again at apply
-time, because a plan file can be edited between the two.
+paths, and directory-only destinations -- at validation time *and* again at
+apply time, because the disk can change between the two.
 
 **A name collision never overwrites.** An identical file already at the
-destination is a skip; a different one gets a suffixed name and is flagged for
-review.
+destination is a skip that still records the file as filed; a different one
+rejects the placement.
 
-**Why exceptions are caught here.** Three, each at a real boundary:
+**Buckets.** `BUCKETS` is the wider display vocabulary the knowledge base
+groups by, including `data/` for course folders that predate naming.md's
+"no course-wide data folder" rule. `classify_bucket` reads a bucket out of a
+path for that display; it is never used to decide a filing destination.
 
-1. `ValueError` from `validate_destination` -- this is untrusted judge output
-   being validated. A bad destination is recorded in `plan.rejected` (or the
-   apply report's errors) with the reason, and the run continues; one
-   hallucinated path must not cost the other forty placements.
-2. `OSError` around an individual file operation -- a hardlink across
+**Why exceptions are caught here.** Four, each at a real boundary:
+
+1. `ValueError` from `validate_destination` -- this is untrusted agent output
+   being validated. A bad destination is recorded as a rejected placement with
+   the reason, and the run continues; one hallucinated path must not cost the
+   other forty placements.
+2. `jsonschema.ValidationError` -- the plan file as a whole is malformed. It
+   becomes a `MitsyncError` naming the file and the failing JSON path, and
+   nothing is applied.
+3. `OSError` around an individual file operation -- a hardlink across
    filesystems falls back to a copy, and a failed move or unlink is recorded
    per file so the undo log still describes everything that *did* happen. An
    apply that aborted midway with no log would be the worst possible outcome.
-3. `OSError` in `_prune_empty`, narrowed to `ENOTEMPTY`/`EEXIST` -- on macOS
+4. `OSError` in `_prune_empty`, narrowed to `ENOTEMPTY`/`EEXIST` -- on macOS
    Finder can write a `.DS_Store` between the emptiness check and the `rmdir`.
    Losing that race means the directory is no longer ours to remove, so the
    climb stops. Every other `OSError` raises: a directory this tool can
@@ -87,10 +98,10 @@ import re
 import shutil
 import sys
 from dataclasses import asdict, dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING, Any
 
+import jsonschema
 from rich.console import Console
 from rich.table import Table
 
@@ -104,10 +115,8 @@ from mitsync.filing.course_map import (
     existing_course_folders,
     folder_for_canvas_id,
     is_ignored,
-    naming_rules,
-    walk,
+    naming_rules_path,
 )
-from mitsync.llm.base import make_task, validate_result
 
 if TYPE_CHECKING:  # pragma: no cover
     from mitsync.core.config import Settings
@@ -116,30 +125,65 @@ log = get_logger(__name__)
 console = Console()
 
 __all__ = [
+    "EXISTING_PREFIX",
+    "FILING_BUCKETS",
+    "PER_ITEM_BUCKETS",
+    "PLAN_SCHEMA",
     "ApplyReport",
     "Plan",
     "PlanEntry",
     "UndoReport",
     "apply_plan",
-    "plan",
     "undo",
+    "unfiled",
+    "validate_plan",
 ]
 
-#: Subfolders `config/naming.md` allows inside a course folder. Canonical: the
-#: knowledge base derives its own display order from this tuple.
+#: Every bucket the knowledge base may group a file under, in display order.
+#: Wider than `FILING_BUCKETS`: folders filed before naming.md dropped `data/`
+#: still exist and must still be shown.
 BUCKETS = ("lectures", "recitations", "assignments", "data", "syllabus", "notes", "other")
+
+#: The subfolders a *new* placement may target (config/naming.md §2).
+FILING_BUCKETS = ("lectures", "recitations", "assignments", "syllabus", "notes", "other")
+
+#: Buckets that hold only per-item folders, never loose files (naming.md §2).
+PER_ITEM_BUCKETS = ("assignments", "recitations")
 
 #: Top-level names that are mitsync's own, never a filing destination.
 RESERVED_TOP_LEVEL = ("_canvas", "_agent", "_kb")
 
-#: Placements below this are shown for review instead of applied (naming.md §6).
-REVIEW_THRESHOLD = 0.5
+#: `file_id` prefix for a file already in a course folder (not from the mirror).
+EXISTING_PREFIX = "existing:"
 
-#: Bucket classification, ordered: first match wins. Patterns run against a
-#: *normalised* string where `_`, `-` and `.` become spaces, so real filenames
-#: like `15_095_hw1.pdf`, `Lec03_2026.pdf` and `deliv_1_15072_Fall2026.pdf`
-#: tokenise the way a reader would expect rather than hiding the signal inside
-#: one long word.
+#: What an agent-written plan must look like. Structural rules beyond shape are
+#: checked per placement by `validate_plan`.
+PLAN_SCHEMA: dict[str, Any] = {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "object",
+    "required": ["placements"],
+    "additionalProperties": False,
+    "properties": {
+        "placements": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["file_id", "destination", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "file_id": {"type": "string", "minLength": 1},
+                    "destination": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string"},
+                },
+            },
+        }
+    },
+}
+
+#: Bucket classification for *display*, ordered: first match wins. Patterns run
+#: against a normalised string where `_`, `-` and `.` become spaces, so real
+#: filenames like `15_095_hw1.pdf` and `Lec03_2026.pdf` tokenise the way a
+#: reader would expect rather than hiding the signal inside one long word.
 _BUCKET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     (
         "syllabus",
@@ -168,18 +212,19 @@ _BUCKET_PATTERNS: tuple[tuple[str, re.Pattern[str]], ...] = (
     ("notes", re.compile(r"\bnotes?\b", re.I)),
 )
 
-#: Extensions that make a file `data/` regardless of what it is called.
+#: Extensions that display as `data/` regardless of what they are called.
 _DATA_EXTS = {".csv", ".tsv", ".xlsx", ".xls", ".json", ".parquet"}
 
 
 def classify_bucket(filename: str, *grouping: str | None) -> str:
-    """The `config/naming.md` bucket for one file.
+    """The display bucket for one file, for the knowledge base's grouping.
 
-    `grouping` is the context the file was found in -- a Canvas module name, a
-    Canvas folder, the student's own subfolders -- in priority order. Grouping
-    always wins over the filename (naming.md: a file inside "Recitation 2/" is a
-    recitation even when it is called `walkthrough.pdf`). Only when no grouping
-    text matches does the data extension, and then the filename itself, decide.
+    `grouping` is the context the file was found in -- the student's own
+    subfolders -- in priority order. Grouping always wins over the filename (a
+    file inside "Recitation 2/" is a recitation even when it is called
+    `walkthrough.pdf`). Only when no grouping text matches does the data
+    extension, and then the filename itself, decide. Never used to choose a
+    filing destination: that is the agent's call, made from naming.md.
     """
     for text in grouping:
         if not text:
@@ -201,38 +246,24 @@ def classify_bucket(filename: str, *grouping: str | None) -> str:
 # --------------------------------------------------------------------------
 @dataclass
 class PlanEntry:
-    """One proposed placement. ``uuid`` is empty for pre-existing files."""
+    """One accepted placement. ``uuid`` is empty for pre-existing files."""
 
     file_id: str
     uuid: str
     source: str
     destination: str
     reason: str
-    confidence: float
     kind: str = "canvas"  # canvas | existing
-
-    @property
-    def needs_review(self) -> bool:
-        return self.confidence < REVIEW_THRESHOLD
 
 
 @dataclass
 class Plan:
+    """An agent-written plan after validation: what will run and what will not."""
+
     plan_id: str
-    created_at: str
-    naming_rules_sha: str
     entries: list[PlanEntry] = field(default_factory=list)
     rejected: list[dict[str, str]] = field(default_factory=list)
     path: Path | None = None
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "plan_id": self.plan_id,
-            "created_at": self.created_at,
-            "naming_rules_sha": self.naming_rules_sha,
-            "entries": [asdict(e) for e in self.entries],
-            "rejected": list(self.rejected),
-        }
 
 
 @dataclass
@@ -241,8 +272,9 @@ class ApplyReport:
     link_mode: str = "hardlink"
     applied: list[dict[str, Any]] = field(default_factory=list)
     skipped: list[dict[str, Any]] = field(default_factory=list)
-    flagged: list[dict[str, Any]] = field(default_factory=list)
+    rejected: list[dict[str, str]] = field(default_factory=list)
     errors: list[dict[str, str]] = field(default_factory=list)
+    confirmed: bool = False
     undo_log: Path | None = None
 
 
@@ -303,194 +335,211 @@ def validate_destination(settings: Settings, destination: str) -> str:
     return rel
 
 
+def validate_structure(settings: Settings, rel: str, courses: list[str] | None = None) -> None:
+    """Raise ``ValueError`` unless ``rel`` has the shape naming.md promises.
+
+    ``<course>/<bucket>/<file>``, or ``<course>/<bucket>/<item>/<file>`` for a
+    per-item bucket, where the course is a folder `courses.yml` maps and that
+    exists on disk.
+    """
+    parts = PurePosixPath(rel).parts
+    known = courses if courses is not None else existing_course_folders(settings)
+    if parts[0] not in known:
+        raise ValueError(
+            f"'{parts[0]}' is not a course folder listed in config/courses.yml "
+            f"(known: {', '.join(known) or 'none'})"
+        )
+    if len(parts) < 3:
+        raise ValueError("destination must be <course>/<bucket>/.../<filename>")
+    bucket = parts[1]
+    if bucket not in FILING_BUCKETS:
+        raise ValueError(f"'{bucket}/' is not an allowed bucket ({', '.join(FILING_BUCKETS)})")
+    if bucket in PER_ITEM_BUCKETS:
+        if len(parts) == 3:
+            raise ValueError(
+                f"'{bucket}/' holds only per-item folders: use "
+                f"{parts[0]}/{bucket}/<item>/{parts[2]}"
+            )
+        if len(parts) > 4:
+            raise ValueError(f"never nest below the per-item folder in '{bucket}/'")
+    elif len(parts) > 3:
+        raise ValueError(f"'{bucket}/' is flat: no subfolders (got {'/'.join(parts[2:-1])}/)")
+
+
 # --------------------------------------------------------------------------
-# plan
+# what is waiting to be filed
 # --------------------------------------------------------------------------
-def _unfiled_canvas_files(settings: Settings) -> list[dict[str, Any]]:
+def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
+    """file_id -> every mirrored file in the manifest, filed or not."""
     db = settings.paths.manifest_db
     if not db.exists():
-        return []
+        return {}
     from mitsync.canvas.manifest import Manifest
 
-    out: list[dict[str, Any]] = []
+    out: dict[str, dict[str, Any]] = {}
     with Manifest(db) as man:
-        for rec in man.list_files(unfiled_only=True):
+        for rec in man.list_files():
             if not rec.mirror_path or is_ignored(settings, rec.mirror_path):
                 continue
-            course = folder_for_canvas_id(settings, rec.course_canvas_id) or rec.course_folder
-            out.append(
-                {
-                    "file_id": str(rec.canvas_id or rec.uuid),
-                    "uuid": rec.uuid,
-                    "source": rec.mirror_path,
-                    "display_name": rec.display_name or rec.filename,
-                    "canvas_folder": rec.canvas_folder,
-                    "module_name": rec.module_name,
-                    "module_position": rec.module_position,
-                    "content_type": rec.content_type,
-                    "size": rec.size,
-                    "course": course,
-                    "kind": "canvas",
-                }
-            )
-    return out
-
-
-def _preexisting_files(settings: Settings) -> list[dict[str, Any]]:
-    """Student files already in a course folder that are not yet in a bucket."""
-    out: list[dict[str, Any]] = []
-    for folder in existing_course_folders(settings):
-        root = settings.paths.workspace / folder
-        for path in walk(settings, root):
-            rel = settings.paths.safe_relative(path).as_posix()
-            inner = PurePosixPath(rel).relative_to(folder).parts
-            # Anything already under a bucket is filed. The depth is deliberately
-            # not pinned: naming.md may give a bucket per-item subfolders
-            # (`assignments/hw-01/profit.csv`) and did, at which point a
-            # `len(inner) == 2` test silently re-proposed every filed file as
-            # unfiled -- and `--include-existing` moves, so that would have
-            # churned the whole tree.
-            if len(inner) >= 2 and inner[0] in BUCKETS:
-                continue  # already filed the way naming.md wants
-            out.append(
-                {
-                    "file_id": f"existing:{rel}",
-                    "uuid": "",
-                    "source": rel,
-                    "display_name": path.name,
-                    "canvas_folder": PurePosixPath(rel).parent.as_posix(),
-                    "module_name": None,
-                    "module_position": None,
-                    "content_type": None,
-                    "size": path.stat().st_size,
-                    "course": folder,
-                    "kind": "existing",
-                }
-            )
-    return out
-
-
-def plan(settings: Settings, judge: Any, *, include_existing: bool = False) -> Plan:
-    """Propose destinations for unfiled files. Writes a plan; moves nothing."""
-    rules = naming_rules(settings)
-    candidates = _unfiled_canvas_files(settings)
-    if include_existing:
-        candidates += _preexisting_files(settings)
-
-    the_plan = Plan(
-        plan_id=f"plan-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}",
-        created_at=now_iso(),
-        naming_rules_sha=hashlib.sha256(rules.encode("utf-8")).hexdigest()[:16],
-    )
-
-    if not candidates:
-        console.print("[green]Nothing to file — every known file already has a home.[/green]")
-        the_plan.path = _write_plan(settings, the_plan)
-        console.print(f"[dim]empty plan written to {the_plan.path}[/dim]")
-        return the_plan
-
-    by_id = {c["file_id"]: c for c in candidates}
-    payload = {
-        "files": [
-            {
-                "file_id": c["file_id"],
-                "display_name": c["display_name"],
-                "canvas_folder": c["canvas_folder"],
-                "module_name": c["module_name"],
-                "module_position": c["module_position"],
-                "content_type": c["content_type"],
-                "size": c["size"],
-                "course": c["course"],
+            file_id = str(rec.canvas_id or rec.uuid)
+            out[file_id] = {
+                "file_id": file_id,
+                "uuid": rec.uuid,
+                "source": rec.mirror_path,
+                "display_name": rec.display_name or rec.filename,
+                "course": folder_for_canvas_id(settings, rec.course_canvas_id),
+                "mirror_course": rec.course_folder,
+                "canvas_folder": rec.canvas_folder,
+                "module_name": rec.module_name,
+                "module_position": rec.module_position,
+                "content_type": rec.content_type,
+                "size": rec.size,
+                "filed_path": rec.filed_path,
             }
-            for c in candidates
-        ],
-        "existing_folders": {
-            folder: sorted(
-                c.name
-                for c in (settings.paths.workspace / folder).iterdir()
-                if c.is_dir()
-                and not c.name.startswith(".")
-                and not is_ignored(settings, f"{folder}/{c.name}")
-            )
-            for folder in existing_course_folders(settings)
-        },
-    }
-    task = make_task(
-        "organize_plan",
-        payload,
-        rules=rules,  # verbatim config/naming.md -- prose is the tuning surface
-        origin_command="organize plan",
-        origin_args={"include_existing": include_existing},
-    )
-    result = validate_result(task, judge.judge(task))
+    return out
 
-    seen: set[str] = set()
-    for placement in result.get("placements", []):
-        file_id = str(placement.get("file_id"))
-        candidate = by_id.get(file_id)
-        if candidate is None:
-            the_plan.rejected.append(
-                {"file_id": file_id, "reason": "judgment named a file that was not in the payload"}
-            )
+
+def unfiled(settings: Settings) -> dict[str, Any]:
+    """Every mirrored file not filed yet, plus the rules the agent files by.
+
+    The agent reads `naming_rules` itself and writes a plan matching
+    `plan_schema`; `organize apply --plan` validates and applies it.
+    """
+    files = [
+        {k: v for k, v in c.items() if k not in ("uuid", "source", "filed_path")}
+        | {"mirror_path": c["source"]}
+        for c in _canvas_candidates(settings).values()
+        if not c["filed_path"]
+    ]
+    files.sort(key=lambda f: (f["course"] or "", f["mirror_path"]))
+    return {
+        "naming_rules": str(naming_rules_path(settings)),
+        "course_folders": existing_course_folders(settings),
+        "buckets": list(FILING_BUCKETS),
+        "per_item_buckets": list(PER_ITEM_BUCKETS),
+        "existing_file_id_prefix": EXISTING_PREFIX,
+        "plans_dir": str(settings.paths.plans_dir),
+        "plan_schema": PLAN_SCHEMA,
+        "files": files,
+    }
+
+
+# --------------------------------------------------------------------------
+# validate an agent-written plan
+# --------------------------------------------------------------------------
+def load_plan_document(path: Path | str) -> dict[str, Any]:
+    """Read a plan file and check it against `PLAN_SCHEMA`, naming the failing path."""
+    path = Path(path)
+    if not path.exists():
+        raise MitsyncError(f"plan file not found: {path}")
+    doc = read_json(path)
+    try:
+        jsonschema.validate(doc, PLAN_SCHEMA)
+    except jsonschema.ValidationError as exc:
+        where = "$" + "".join(f"[{p}]" if isinstance(p, int) else f".{p}" for p in exc.path)
+        raise MitsyncError(
+            f"{path} does not match the plan schema at {where}: {exc.message}"
+        ) from exc
+    return doc
+
+
+def _existing_source(settings: Settings, rel: str, courses: list[str]) -> str:
+    """Validate the source of an `existing:` placement; returns it cleaned."""
+    raw = rel.strip()
+    parts = [p for p in PurePosixPath(raw).parts if p != "."]
+    if not parts or raw.startswith(("/", "~")) or ".." in parts:
+        raise ValueError("existing source must be a workspace-relative path")
+    clean = PurePosixPath(*parts).as_posix()
+    if is_ignored(settings, clean):
+        raise ValueError(f"existing source '{clean}' is excluded by ignore_globs")
+    if parts[0] not in courses:
+        raise ValueError(f"existing source '{clean}' is not inside a mapped course folder")
+    path = settings.paths.workspace / clean
+    if not path.is_file() or not settings.paths.is_inside_workspace(path):
+        raise ValueError(f"existing source '{clean}' does not exist")
+    return clean
+
+
+def validate_plan(
+    settings: Settings, plan_path: Path | str, *, include_existing: bool = False
+) -> Plan:
+    """Split an agent-written plan into accepted entries and rejections.
+
+    Touches nothing on disk. Each rejection carries the placement's
+    ``file_id``, its ``destination`` and the ``reason``.
+    """
+    path = Path(plan_path)
+    doc = load_plan_document(path)
+    the_plan = Plan(plan_id=path.stem, path=path)
+    courses = existing_course_folders(settings)
+    candidates = _canvas_candidates(settings)
+    ws = settings.paths.workspace
+
+    seen_ids: set[str] = set()
+    seen_dests: set[str] = set()
+
+    def reject(placement: dict[str, Any], reason: str) -> None:
+        the_plan.rejected.append(
+            {
+                "file_id": placement["file_id"],
+                "destination": placement["destination"],
+                "reason": reason,
+            }
+        )
+
+    for placement in doc["placements"]:
+        file_id = placement["file_id"]
+        if file_id in seen_ids:
+            reject(placement, "duplicate placement for this file_id")
             continue
-        if file_id in seen:
-            the_plan.rejected.append({"file_id": file_id, "reason": "duplicate placement"})
-            continue
-        seen.add(file_id)
+        seen_ids.add(file_id)
+
         try:
-            dest = validate_destination(settings, placement.get("destination", ""))
+            if file_id.startswith(EXISTING_PREFIX):
+                if not include_existing:
+                    raise ValueError(
+                        "pre-existing student file: refused without --include-existing"
+                    )
+                source, uuid, kind = (
+                    _existing_source(settings, file_id[len(EXISTING_PREFIX) :], courses),
+                    "",
+                    "existing",
+                )
+            else:
+                candidate = candidates.get(file_id)
+                if candidate is None:
+                    raise ValueError("no mirrored file with this file_id in the manifest")
+                if candidate["filed_path"]:
+                    raise ValueError(f"already filed at {candidate['filed_path']}")
+                if not (ws / candidate["source"]).is_file():
+                    raise ValueError(f"source missing from the mirror: {candidate['source']}")
+                source, uuid, kind = candidate["source"], candidate["uuid"], "canvas"
+
+            dest = validate_destination(settings, placement["destination"])
+            validate_structure(settings, dest, courses)
+            if dest == source:
+                raise ValueError("already at its destination")
+            if dest in seen_dests:
+                raise ValueError("another placement in this plan targets the same destination")
+            target = ws / dest
+            if target.exists() and sha256_file(target) != sha256_file(ws / source):
+                raise ValueError("a different file already exists at the destination")
         except ValueError as exc:
-            the_plan.rejected.append(
-                {
-                    "file_id": file_id,
-                    "destination": str(placement.get("destination", "")),
-                    "reason": str(exc),
-                }
-            )
+            reject(placement, str(exc))
             continue
-        if dest == candidate["source"]:
-            the_plan.rejected.append(
-                {"file_id": file_id, "destination": dest, "reason": "already at its destination"}
-            )
-            continue
+
+        seen_dests.add(dest)
         the_plan.entries.append(
             PlanEntry(
                 file_id=file_id,
-                uuid=candidate["uuid"],
-                source=candidate["source"],
+                uuid=uuid,
+                source=source,
                 destination=dest,
-                reason=str(placement.get("reason") or ""),
-                confidence=float(placement.get("confidence") or 0.0),
-                kind=candidate["kind"],
+                reason=placement["reason"],
+                kind=kind,
             )
         )
-    for file_id in by_id:
-        if file_id not in seen:
-            the_plan.rejected.append({"file_id": file_id, "reason": "no placement was returned"})
-
-    the_plan.path = _write_plan(settings, the_plan)
-    console.print(_plan_table(the_plan))
-    for bad in the_plan.rejected:
-        console.print(f"[yellow]rejected[/yellow] {bad['file_id']}: {bad['reason']}")
-    console.print(f"plan written to [bold]{the_plan.path}[/bold] (nothing has moved)")
     return the_plan
-
-
-def _write_plan(settings: Settings, the_plan: Plan) -> Path:
-    path = unique_path(settings.paths.plans_dir / f"{the_plan.plan_id}.json")
-    path.write_text(json.dumps(the_plan.as_dict(), indent=2) + "\n", encoding="utf-8")
-    return path
-
-
-def _plan_table(the_plan: Plan) -> Table:
-    table = Table(title=f"organize plan {the_plan.plan_id}")
-    for col in ("source", "destination", "conf", "why"):
-        table.add_column(col, overflow="fold")
-    for entry in the_plan.entries:
-        flag = " [yellow]review[/yellow]" if entry.needs_review else ""
-        conf = f"{entry.confidence:.2f}{flag}"
-        table.add_row(entry.source, entry.destination, conf, entry.reason)
-    return table
 
 
 # --------------------------------------------------------------------------
@@ -501,38 +550,19 @@ def _newest(directory: Path, pattern: str) -> Path | None:
     return candidates[-1] if candidates else None
 
 
-def load_plan(settings: Settings, plan_path: Path | str | None) -> Plan:
-    if plan_path is None:
-        found = _newest(settings.paths.plans_dir, "plan-*.json")
-        if found is None:
-            raise MitsyncError(
-                f"no plan found in {settings.paths.plans_dir}; run `mitsync organize plan` first"
-            )
-        plan_path = found
-    path = Path(plan_path)
-    if not path.exists():
-        raise MitsyncError(f"plan file not found: {path}")
-    doc = read_json(path)
-    return Plan(
-        plan_id=doc["plan_id"],
-        created_at=doc["created_at"],
-        naming_rules_sha=doc["naming_rules_sha"],
-        entries=[PlanEntry(**e) for e in doc["entries"]],
-        rejected=list(doc["rejected"]),
-        path=path,
-    )
-
-
-def _confirm_existing(count: int, *, yes: bool) -> bool:
+def _confirm(the_plan: Plan, *, yes: bool) -> bool:
     if yes:
         return True
+    moves = sum(1 for e in the_plan.entries if e.kind == "existing")
+    what = f"{len(the_plan.entries)} placement(s)"
+    if moves:
+        what += f", {moves} of them MOVING a pre-existing file"
     if not sys.stdin.isatty():
         console.print(
-            f"[yellow]{count} pre-existing file(s) would be MOVED. Refusing without --yes "
-            f"(no terminal to confirm on).[/yellow]"
+            f"[yellow]{what}. Refusing without --yes (no terminal to confirm on).[/yellow]"
         )
         return False
-    answer = input(f"Move {count} pre-existing file(s) out of their current place? [y/N] ")
+    answer = input(f"Apply {what}? [y/N] ")
     return answer.strip().lower() in ("y", "yes")
 
 
@@ -553,31 +583,38 @@ def _place(source: Path, dest: Path, mode: str) -> str:
 
 
 def apply_plan(
-    settings: Settings, plan_path: Path | str | None = None, *, yes: bool = False
+    settings: Settings,
+    plan_path: Path | str,
+    *,
+    yes: bool = False,
+    include_existing: bool = False,
 ) -> ApplyReport:
-    """Execute a saved plan, writing an undo log for everything it touches."""
-    the_plan = load_plan(settings, plan_path)
+    """Validate an agent-written plan and execute what passes, writing an undo log.
+
+    Rejected placements are reported and never applied. Nothing at all is
+    applied without confirmation (interactive, or ``yes=True``).
+    """
+    the_plan = validate_plan(settings, plan_path, include_existing=include_existing)
     mode = settings.organize.link_mode
-    report = ApplyReport(plan_id=the_plan.plan_id, link_mode=mode)
+    report = ApplyReport(plan_id=the_plan.plan_id, link_mode=mode, rejected=the_plan.rejected)
     ws = settings.paths.workspace
 
-    movers = [e for e in the_plan.entries if e.kind == "existing" and not e.needs_review]
-    allow_moves = True
-    if movers:
-        allow_moves = _confirm_existing(len(movers), yes=yes)
+    if not the_plan.entries:
+        report.confirmed = True  # nothing to confirm
+        _print_report(report)
+        return report
+    report.confirmed = _confirm(the_plan, yes=yes)
+    if not report.confirmed:
+        for entry in the_plan.entries:
+            report.skipped.append({**asdict(entry), "status": "not confirmed"})
+        _print_report(report)
+        return report
 
     operations: list[dict[str, Any]] = []
     filed: list[tuple[str, str]] = []
 
     for entry in the_plan.entries:
         source = ws / entry.source
-        dest = ws / entry.destination
-        if entry.needs_review:
-            report.skipped.append({**asdict(entry), "status": "low-confidence"})
-            continue
-        if entry.kind == "existing" and not allow_moves:
-            report.skipped.append({**asdict(entry), "status": "needs --yes"})
-            continue
         if not source.exists():
             report.errors.append({"file_id": entry.file_id, "error": f"missing source {source}"})
             continue
@@ -588,16 +625,16 @@ def apply_plan(
             continue
         dest = ws / dest_rel
 
-        flagged = False
         if dest.exists():
             if sha256_file(dest) == sha256_file(source):
                 report.skipped.append({**asdict(entry), "status": "identical file already there"})
                 if entry.uuid:
                     filed.append((entry.uuid, dest_rel))
                 continue
-            dest = unique_path(dest)
-            dest_rel = settings.paths.safe_relative(dest).as_posix()
-            flagged = True
+            report.errors.append(
+                {"file_id": entry.file_id, "error": "a different file appeared at the destination"}
+            )
+            continue
 
         src_sha = sha256_file(source)
         try:
@@ -613,27 +650,25 @@ def apply_plan(
             )
             continue
 
-        op = {
-            "file_id": entry.file_id,
-            "uuid": entry.uuid,
-            "kind": entry.kind,
-            "mode": used,
-            "source": entry.source,
-            "destination": dest_rel,
-            "source_sha256": src_sha,
-            "destination_sha256": src_sha if used != "symlink" else None,
-        }
-        operations.append(op)
-        record = {**asdict(entry), "destination": dest_rel, "mode": used}
-        report.applied.append(record)
-        if flagged:
-            report.flagged.append({**record, "status": "name collision: suffixed"})
+        operations.append(
+            {
+                "file_id": entry.file_id,
+                "uuid": entry.uuid,
+                "kind": entry.kind,
+                "mode": used,
+                "source": entry.source,
+                "destination": dest_rel,
+                "source_sha256": src_sha,
+                "destination_sha256": src_sha if used != "symlink" else None,
+            }
+        )
+        report.applied.append({**asdict(entry), "destination": dest_rel, "mode": used})
         if entry.uuid:
             filed.append((entry.uuid, dest_rel))
 
     report.undo_log = _write_undo_log(settings, the_plan, mode, operations)
     _record_filed(settings, filed)
-    console.print(_apply_table(report))
+    _print_report(report)
     if report.undo_log is not None:
         console.print(f"undo log: [bold]{report.undo_log}[/bold]")
     return report
@@ -664,6 +699,19 @@ def _write_undo_log(
     }
     path.write_text(json.dumps(doc, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def _print_report(report: ApplyReport) -> None:
+    """The table, then one unwrapped line per rejection so each reason reads whole."""
+    console.print(_apply_table(report))
+    for row in report.rejected:
+        # markup off: a destination is agent-written text and may contain "[...]".
+        console.print(
+            f"rejected {row['file_id']} -> {row['destination']}: {row['reason']}",
+            soft_wrap=True,
+            markup=False,
+            highlight=False,
+        )
 
 
 def _apply_table(report: ApplyReport) -> Table:
