@@ -156,6 +156,18 @@ class OrganizeSettings(BaseModel):
     link_mode: Literal["hardlink", "copy", "symlink"] = "hardlink"
 
 
+class EmailSettings(BaseModel):
+    """Where the morning brief goes. Only this file decides; the brief JSON cannot."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sender: str | None = None
+    to: str | None = None
+    password_env: str = "GMAIL_APP_PASSWORD"
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 465
+    node: str | None = None  # absolute path when node is not on the agent's PATH
+
 
 DEFAULT_IGNORE_GLOBS = [
     "**/.DS_Store",
@@ -177,6 +189,7 @@ class Settings(BaseModel):
     calendar: CalendarSettings = Field(default_factory=CalendarSettings)
     graph: GraphSettings = Field(default_factory=GraphSettings)
     organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
+    email: EmailSettings = Field(default_factory=EmailSettings)
     ignore_globs: list[str] = Field(default_factory=lambda: list(DEFAULT_IGNORE_GLOBS))
 
     # Not part of the YAML: where this instance was loaded from / operates on.

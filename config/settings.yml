@@ -29,6 +29,12 @@ graph:
 organize:
   link_mode: hardlink            # hardlink | copy | symlink
 
+email:                           # the morning brief; the recipient is fixed here, never by the agent
+  sender: filippostrub@gmail.com
+  to: filippostrub@gmail.com
+  password_env: GMAIL_APP_PASSWORD   # a Gmail app password, kept in _agent/.env
+  # node: /Users/<you>/.nvm/versions/node/v26.1.0/bin/node   # if node is not on the agent's PATH
+
 # Paths (workspace-relative) never scanned, mirrored, or organized.
 ignore_globs:
   - "**/.DS_Store"

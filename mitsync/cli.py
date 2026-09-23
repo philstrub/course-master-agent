@@ -79,7 +79,7 @@ from mitsync.knowledge import extract as extract_mod
 from mitsync.knowledge import graph as graph_mod
 from mitsync.knowledge import kb as kb_mod
 from mitsync.schedule import calendar as calendar_read
-from mitsync.schedule import deadlines
+from mitsync.schedule import deadlines, email_brief
 
 console = Console()
 
@@ -219,6 +219,28 @@ def work(
         for f in folder["files"]
     ]
     graph_mod.print_rows("work on disk", rows)
+
+
+@app.command()
+def email(
+    date: Annotated[
+        str | None, typer.Option("--date", help="YYYY-MM-DD; default is today.")
+    ] = None,
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Validate and render only; send nothing.")
+    ] = False,
+    resend: Annotated[
+        bool, typer.Option("--resend", help="Send again even if today's brief went out.")
+    ] = False,
+) -> None:
+    """Render the agent's `_kb/briefings/<date>-morning.json` and email it (once per day)."""
+    settings = _settings()
+    result = email_brief.send_brief(settings, date, dry_run=dry_run, resend=resend)
+    console.print(f"rendered {result['html']}")
+    if result["sent"]:
+        console.print(f"[green]sent[/green] to {result['to']}")
+    else:
+        console.print("[dim]dry run: nothing sent[/dim]")
 
 
 @app.command("calendar")
@@ -469,6 +491,28 @@ def doctor() -> None:
         "PASS" if rules.is_file() else "WARN",
         "naming rules",
         str(rules) if rules.is_file() else f"{rules} is missing; the agent has no filing policy",
+    )
+
+    em = settings.email
+    node = em.node or shutil.which("node")
+    renderer = (paths.repo / "email" / "node_modules" / "tsx").exists()
+    missing = [
+        label
+        for label, ok in (
+            ("email.sender/email.to", em.sender and em.to),
+            (f"${em.password_env}", os.environ.get(em.password_env)),
+            ("node", node),
+            ("`npm install` in _agent/email", renderer),
+        )
+        if not ok
+    ]
+    add(
+        "PASS" if not missing else "WARN",
+        "email",
+        f"to {em.to} via {em.smtp_host} "
+        f"(password source: {_secret_source(dotenv_sources, em.password_env)})"
+        if not missing
+        else "`mitsync email` will fail; missing: " + ", ".join(missing),
     )
 
     _render_doctor(checks)

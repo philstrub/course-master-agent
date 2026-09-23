@@ -54,6 +54,10 @@ SETTINGS_YML = textwrap.dedent(
     calendar:
       cli: ical-guy
       lookahead_days: 14
+    email:
+      sender: student@example.com
+      to: student@example.com
+      node: /nonexistent/node
     ignore_globs:
       - "**/.DS_Store"
       - "**/.venv/**"
