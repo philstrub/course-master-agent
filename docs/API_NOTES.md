@@ -3,8 +3,8 @@
 Research backing `canvas/client.py`, `schedule/calendar.py`, and the optional
 OpenClaw integration. Everything here is either drawn from cited docs or
 explicitly marked UNVERIFIED — do not treat an unverified item as fact when
-implementing against it; validate empirically first (see
-`docs/RUNBOOK.md`).
+implementing against it; validate empirically first (`mitsync doctor`,
+then the command itself). OpenClaw setup, step by step: `openclaw/SETUP.md`.
 
 ## Canvas API
 
@@ -143,7 +143,7 @@ streamed downloads with sha256 — all of which that library abstracts away.
 - Whether `canvas.mit.edu` (MIT's specific Canvas instance) permits
   students to generate manual access tokens at all. No MIT IS&T
   documentation confirming or denying this was found. **Verify this first,
-  empirically, before building anything else** — see `docs/RUNBOOK.md`.
+  empirically, before building anything else** — `mitsync sync` is that test.
 - The actual TTL of the pre-signed file `url`.
 - Which exact HTTP status MIT's instance uses for rate-limit throttling
   (403 vs 429) in practice.
@@ -222,8 +222,6 @@ universal binary at `~/.local/bin/ical-guy` (sha256
 ad-hoc signed, so Gatekeeper objects on first run and the TCC grant may
 need re-granting after an upgrade.
 
-Alternatives to EventKit, and why each was rejected: see
-`docs/ADR/0003-calendar-read-only-eventkit.md`. ADRs own decisions.
 
 ## OpenClaw (optional host)
 
