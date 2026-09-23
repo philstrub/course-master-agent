@@ -7,7 +7,7 @@ Render the agent's morning brief as a dashboard and email it to the student.
 
 `send_brief` reads `_kb/briefings/<date>-morning.json` (written by the agent,
 validated against `email/brief.schema.json`), adds the facts the agent should
-not be trusted to copy (today's classes from the calendar, Canvas sync
+not be trusted to copy (today's calendar, classes and other events, Canvas sync
 freshness), renders it through the React Email template in `email/` into
 `<date>-morning.html` and `.txt`, and sends both as one multipart email over
 SMTP.
@@ -101,13 +101,18 @@ def validate_brief(settings: Settings, brief: Any) -> dict[str, Any]:
     return brief
 
 
-def _classes_today(settings: Settings, day: datetime) -> tuple[list[dict[str, Any]], str | None]:
-    """Course-tagged, timed events for `day` (local). Personal events stay out.
+def _schedule_today(settings: Settings, day: datetime) -> tuple[list[dict[str, Any]], str | None]:
+    """Everything on the calendar for `day` (local): classes and other events.
+
+    Each item is `{"start", "end", "title", "course", "location", "calendar",
+    "all_day", "ends_next_day"}`, times as local `HH:MM`. The dashboard draws
+    timed items on a timetable and all-day items as chips.
 
     The CLI's `--from`/`--to` are *inclusive* days, so the query asks for
     `day` to `day`; asking for `day` to `day + 1` once put Thursday's classes
-    in Wednesday's timetable. Events are also filtered to `day` here, so a
-    CLI with exclusive ends, or a multi-day event, cannot leak into it.
+    in Wednesday's timetable. Items are also filtered here: a timed event
+    must *start* on `day` (an overnight flight still shows, ending the next
+    day), an all-day event must *cover* `day`.
     """
     from mitsync.schedule import calendar as calendar_read
 
@@ -123,35 +128,48 @@ def _classes_today(settings: Settings, day: datetime) -> tuple[list[dict[str, An
         return [], f"calendar unavailable: {exc}"
     out = []
     for event in events:
-        if not event.course or event.all_day:
-            continue
         try:
             begins = datetime.fromisoformat(event.start.replace("Z", "+00:00")).astimezone()
             ends = datetime.fromisoformat(event.end.replace("Z", "+00:00")).astimezone()
         except ValueError:
             continue
-        if begins.date() != start.date():
+        if event.all_day:
+            if not begins.date() <= start.date() < max(ends.date(), begins.date() + timedelta(1)):
+                continue
+        elif begins.date() != start.date():
             continue
         out.append(
             {
-                "time": begins.strftime("%H:%M"),
+                "start": begins.strftime("%H:%M"),
                 "end": ends.strftime("%H:%M"),
                 "title": event.title,
                 "course": event.course,
-                "location": event.location,
+                "location": _short_location(event.location),
+                "calendar": event.calendar,
+                "all_day": event.all_day,
+                "ends_next_day": not event.all_day and ends.date() > start.date(),
             }
         )
-    return sorted(out, key=lambda c: c["time"]), None
+    return sorted(out, key=lambda c: (not c["all_day"], c["start"], c["title"])), None
+
+
+def _short_location(location: str | None) -> str | None:
+    """First line only, without Calendar's stray leading "; " (a full street
+    address or a list of rooms doesn't fit in a timetable block)."""
+    if not location:
+        return None
+    first = location.strip().splitlines()[0].lstrip("; ").strip()
+    return first or None
 
 
 def enrich(
     settings: Settings, brief: dict[str, Any], now: datetime | None = None
 ) -> dict[str, Any]:
-    """Add the facts: today's classes, sync freshness, generation time."""
+    """Add the facts: today's calendar, sync freshness, generation time."""
     from mitsync.schedule.deadlines import last_sync
 
     now = now or datetime.now(UTC)
-    classes, gap = _classes_today(settings, now.astimezone())
+    schedule, gap = _schedule_today(settings, now.astimezone())
     last = last_sync(settings)
     fresh = False
     if last:
@@ -165,7 +183,7 @@ def enrich(
     return {
         **brief,
         "gaps": gaps,
-        "classes": classes,
+        "schedule": schedule,
         "sync": {"last": last, "fresh": fresh},
         "generated_at": now.isoformat(timespec="seconds"),
     }

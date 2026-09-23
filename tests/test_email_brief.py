@@ -99,51 +99,49 @@ def test_schema_rejects_a_recipient_smuggled_into_the_brief(ready: Settings) -> 
 def test_enrich_flags_a_stale_sync_and_an_unavailable_calendar(ready: Settings) -> None:
     doc = email_brief.enrich(ready, _brief(), now=datetime(2026, 9, 23, 11, 30, tzinfo=UTC))
     assert doc["sync"] == {"last": None, "fresh": False}
-    assert doc["classes"] == []
+    assert doc["schedule"] == []
     assert doc["gaps"][0].startswith("Canvas has not synced")
     assert any("calendar unavailable" in g for g in doc["gaps"])
 
 
-def test_classes_are_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_schedule_is_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: the inclusive `--to` once merged Thursday into Wednesday."""
     from mitsync.schedule import calendar as calendar_read
 
     asked: list[tuple[datetime, datetime]] = []
 
+    def event(start: str, end: str, title: str, **kw) -> calendar_read.Event:
+        return calendar_read.Event(start=start, end=end, title=title, calendar="c", **kw)
+
     def events(settings, start, end):
         asked.append((start, end))
-        wed, thu = "2026-09-23T12:30:00", "2026-09-24T12:30:00"
         return [
-            calendar_read.Event(
-                start=wed,
-                end="2026-09-23T14:00:00",
-                title="Wed",
-                calendar="c",
-                course="Optimization",
-                location="E51",
+            event(
+                "2026-09-23T12:30:00", "2026-09-23T14:00:00", "Wed", course="Opt", location="E51"
             ),
-            calendar_read.Event(
-                start=thu,
-                end="2026-09-24T14:00:00",
-                title="Thu",
-                calendar="c",
-                course="Optimization",
-            ),
+            event("2026-09-23T20:25:00", "2026-09-24T03:15:00", "Flight"),
+            event("2026-09-23T00:00:00", "2026-09-24T00:00:00", "Due", all_day=True),
+            event("2026-09-24T12:30:00", "2026-09-24T14:00:00", "Thu", course="Opt"),
+            event("2026-09-24T00:00:00", "2026-09-29T00:00:00", "Trip", all_day=True),
         ]
 
     monkeypatch.setattr(calendar_read, "calendar_available", lambda s: (True, "fake"))
     monkeypatch.setattr(calendar_read, "read_events", events)
-    classes, gap = email_brief._classes_today(ready, datetime(2026, 9, 23, 7, 0))
+    schedule, gap = email_brief._schedule_today(ready, datetime(2026, 9, 23, 7, 0))
 
     assert gap is None
-    assert [c["title"] for c in classes] == ["Wed"]
-    assert classes[0] == {
-        "time": "12:30",
+    assert [c["title"] for c in schedule] == ["Due", "Wed", "Flight"]
+    assert schedule[1] == {
+        "start": "12:30",
         "end": "14:00",
         "title": "Wed",
-        "course": "Optimization",
+        "course": "Opt",
         "location": "E51",
+        "calendar": "c",
+        "all_day": False,
+        "ends_next_day": False,
     }
+    assert schedule[2]["ends_next_day"] is True
     assert asked[0][0].date() == asked[0][1].date()
 
 

@@ -91,7 +91,7 @@ M email
 
 It validates, renders `_kb/briefings/<date>-morning.html` and sends it, and a
 validation error stops it before anything is sent: fix the field it names
-and run it again. Classes and sync freshness are added by `email` itself;
+and run it again. The calendar and sync freshness are added by `email` itself;
 don't write them. Reply with one line: the headline and "brief emailed".
 
 ## Rules

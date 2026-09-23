@@ -6,12 +6,13 @@ import { cn } from "./utils";
 
 type Props = { className?: string; children: ReactNode };
 
-export function Card({ className, children }: Props) {
-  return (
-    <Section className={cn("rounded-2xl border border-solid border-border bg-card", className)}>
-      {children}
-    </Section>
-  );
+const card = "rounded-2xl border border-solid border-border bg-card";
+
+// `as="column"` makes the card a table cell, so cards side by side in one
+// <Row> share a height, which divs can't do in email.
+export function Card({ className, children, as }: Props & { as?: "section" | "column" }) {
+  if (as === "column") return <Column className={cn(card, className)}>{children}</Column>;
+  return <Section className={cn(card, className)}>{children}</Section>;
 }
 
 // shadcn's CardHeader with a CardAction slot on the right.

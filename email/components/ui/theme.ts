@@ -17,6 +17,8 @@ export const shadcnTheme = {
         "primary-foreground": "#022c22",
         secondary: "#27272a",
         "secondary-foreground": "#e4e4e7",
+        event: "#38bdf8",
+        "event-soft": "#0b2233",
         warning: "#fbbf24",
         "warning-soft": "#2a1f07",
         destructive: "#fb7185",

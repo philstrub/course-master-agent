@@ -47,32 +47,101 @@
     "Optimization HW1 isn't filed yet, so progress is judged from the handout only.",
     "Machine Learning psets are on Gradescope, which I can't see."
   ],
-  "classes": [
-    {
-      "time": "08:30",
-      "end": "11:30",
-      "title": "15.681 From Analytics to Action (Session 3)",
-      "course": "From Anaytics to Action",
-      "location": "Classroom E62-233"
-    },
-    {
-      "time": "13:00",
-      "end": "14:30",
-      "title": "15.072 Advanced Analytics Edge (H1) - Lecture",
-      "course": "Analytics Edge",
-      "location": "Classroom E51-345"
-    },
-    {
-      "time": "16:00",
-      "end": "17:30",
-      "title": "15.095 Machine Learning - Lecture",
-      "course": "Machine Learning",
-      "location": "Classroom E51-345"
-    }
-  ],
   "sync": {
     "last": "2026-09-23T18:02:00Z",
     "fresh": true
   },
-  "generated_at": "2026-09-23T11:00:00Z"
+  "generated_at": "2026-09-23T11:00:00Z",
+  "schedule": [
+    {
+      "start": "00:00",
+      "end": "23:59",
+      "title": "AI Studio - Assignment 1 due",
+      "course": "AI_Studio",
+      "location": null,
+      "calendar": "deadlines",
+      "all_day": true,
+      "ends_next_day": false
+    },
+    {
+      "start": "00:00",
+      "end": "23:59",
+      "title": "Analytics Edge - Assignment 1 due",
+      "course": "Analytics Edge",
+      "location": null,
+      "calendar": "deadlines",
+      "all_day": true,
+      "ends_next_day": false
+    },
+    {
+      "start": "00:00",
+      "end": "23:59",
+      "title": "Machine Learning - Pset 1 due",
+      "course": "Machine Learning",
+      "location": null,
+      "calendar": "deadlines",
+      "all_day": true,
+      "ends_next_day": false
+    },
+    {
+      "start": "08:30",
+      "end": "11:30",
+      "title": "15.681 From Analytics to Action (Session 3)",
+      "course": "From Anaytics to Action",
+      "location": "Classroom E62-233",
+      "calendar": "Calendar",
+      "all_day": false,
+      "ends_next_day": false
+    },
+    {
+      "start": "11:30",
+      "end": "12:30",
+      "title": "Untitled Event",
+      "course": null,
+      "location": "Sloan: E51-225 Student Study Room",
+      "calendar": "Calendar",
+      "all_day": false,
+      "ends_next_day": false
+    },
+    {
+      "start": "11:30",
+      "end": "12:30",
+      "title": "study",
+      "course": null,
+      "location": null,
+      "calendar": "Lavoro",
+      "all_day": false,
+      "ends_next_day": false
+    },
+    {
+      "start": "13:00",
+      "end": "14:30",
+      "title": "15.072 Advanced Analytics Edge (H1) - Lecture",
+      "course": "Analytics Edge",
+      "location": "Classroom E51-345",
+      "calendar": "Calendar",
+      "all_day": false,
+      "ends_next_day": false
+    },
+    {
+      "start": "16:00",
+      "end": "17:30",
+      "title": "15.095 Machine Learning - Lecture",
+      "course": "Machine Learning",
+      "location": "Classroom E51-345",
+      "calendar": "Calendar",
+      "all_day": false,
+      "ends_next_day": false
+    },
+    {
+      "start": "20:25",
+      "end": "03:15",
+      "title": "Flight: KL 618 from BOS to AMS",
+      "course": null,
+      "location": "Logan International Airport",
+      "calendar": "filippostrub@gmail.com",
+      "all_day": false,
+      "ends_next_day": true
+    }
+  ]
 }

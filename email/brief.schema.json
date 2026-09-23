@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "Morning brief (written by the agent)",
-  "description": "The agent's judgment for one morning. `mitsync email` adds the facts (classes, sync freshness), renders the dashboard and sends it. Everything here is shown to the student verbatim.",
+  "description": "The agent's judgment for one morning. `mitsync email` adds the facts (today's calendar, sync freshness), renders the dashboard and sends it. Everything here is shown to the student verbatim.",
   "type": "object",
   "additionalProperties": false,
   "required": [
