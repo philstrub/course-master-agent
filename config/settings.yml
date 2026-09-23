@@ -20,7 +20,9 @@ canvas:
   min_rate_limit_remaining: 100.0  # back off when Canvas reports less than this
 
 calendar:
-  cli: ical-guy                  # EventKit CLI emitting JSON; ekctl also works
+  # MitsyncCalendar.app via its shim (`make calendar-helper`), so the OpenClaw
+  # gateway can hold its own Calendar grant; ical-guy only works from a terminal.
+  cli: /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-calendar
   lookahead_days: 14
 
 graph:

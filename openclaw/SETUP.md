@@ -183,14 +183,32 @@ won't accept your real password for this; it needs an *app password*:
 The renderer is already set up: `email/node_modules` is installed, and
 `email.node` points at Node 26 by absolute path.
 
-**6. macOS permissions (the usual snag).** The gateway runs as a different
-process from your Terminal, and both `~/Desktop` and Calendar are
-privacy-protected. In System Settings → Privacy & Security → **Full Disk
-Access**, add the `node` binary the gateway runs. Find its path with
-`openclaw gateway status --deep`; it's usually
-`~/.nvm/versions/node/v26.10.0/bin/node`. Approve the Calendar prompt the first
-time it appears. If you skip Calendar, the brief still works and says
-"calendar unavailable".
+**6. macOS permissions (the usual snag).** The gateway is a background
+process, not your Terminal, so it holds its own privacy grants.
+
+*Full Disk Access* (for `~/Desktop`): System Settings → Privacy & Security →
+**Full Disk Access** → **+** → press **⌘⇧G**, paste
+`~/.nvm/versions/node/v26.10.0/bin/node` → **Open**, switch it on, then run
+`openclaw gateway restart`. This is the binary `openclaw gateway status
+--deep` names. Upgrading Node changes the path, so grant it again after.
+
+*Calendar* can't be granted the same way. macOS credits a Calendar request to
+the *responsible* process, which for the gateway is that bare `node`: it gets
+refused silently, with no prompt, and the Calendars pane has no **+**. So
+mitsync reads Calendar through a tiny read-only app that owns its own grant:
+
+```
+cd ~/Desktop/MIT/courses/_agent
+make calendar-helper                        # builds ~/Applications/MitsyncCalendar.app
+open ~/Applications/MitsyncCalendar.app     # click OK on "MitsyncCalendar would like to access your calendar"
+bin/mitsync-calendar events list --from today --to today --format json --group-by none | head -c 300
+```
+
+`calendar.cli` in `config/settings.yml` already points at
+`bin/mitsync-calendar`, which launches the app through `open`. That makes the
+app, not `node`, the one asking. A rebuild is a new app to macOS and needs OK
+again. If you skip this, the brief still works and says "calendar
+unavailable".
 
 **7. Test the tools without the agent.**
 
@@ -244,7 +262,8 @@ sudo pmset repeat wakeorpoweron MTWRF 07:29:00
 | agent still behaves as before a fix | the chat reuses its session; start a new chat in the dashboard, or pass `--session-id "$(uuidgen)"` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
 | sync finds nothing / files missing | Full Disk Access for the gateway's `node` (step 6) |
-| "calendar unavailable" in the brief | Calendar permission (step 6); everything else still works |
+| "calendar unavailable" / "denied calendar access to MitsyncCalendar.app" | `open ~/Applications/MitsyncCalendar.app` and click OK, or turn it on in Privacy & Security → Calendars (step 6) |
+| "MitsyncCalendar.app not found" | `make calendar-helper` (step 6) |
 | no email | `uv run mitsync email --dry-run` names the problem: no brief JSON, a schema error, no `GMAIL_APP_PASSWORD`, or a Node path. `state/sent/<date>.json` means today's was already sent (`--resend`) |
 | Gmail "Username and Password not accepted" | the password is your real one or has spaces; make an app password (step 5) |
 | anything else | `openclaw doctor`, `openclaw logs --follow`, `openclaw status --deep` |

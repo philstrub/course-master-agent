@@ -659,3 +659,15 @@ def test_module_documents_the_verified_version() -> None:
     assert "ical-guy 0.13.0" in doc
     assert "2026-09-20" in doc
     assert "events list --from" in doc
+
+
+def test_helper_denial_points_at_the_app(
+    settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The shim's denial says to open the app, not to use a terminal."""
+    fake_cli(tmp_path, monkeypatch, name="mitsync-calendar", stderr=TCC_STDERR, exit_code=1)
+    settings.calendar.cli = "mitsync-calendar"
+    with pytest.raises(CalendarAccessDenied) as excinfo:
+        calendar_read.read_events(settings)
+    assert "MitsyncCalendar.app" in str(excinfo.value)
+    assert "INTERACTIVELY" not in str(excinfo.value)

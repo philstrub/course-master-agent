@@ -36,11 +36,15 @@ filing or Canvas machinery.
 
 ## 4. Key Concepts
 
-**TCC is granted to the terminal, interactively, once.** macOS calendar access
-is gated by TCC, and the grant belongs to the *terminal application* that runs
-the binary. A background or launchd job can never be prompted -- it just gets
-an access error forever -- so a denial raises `CalendarAccessDenied` carrying
-the exact command to run by hand, rather than pretending the calendar is empty.
+**TCC is granted to the responsible app, interactively, once.** macOS
+calendar access is gated by TCC, and the grant belongs to the *responsible*
+process: the terminal app when a human runs `ical-guy`, and the gateway's
+bare `node` when OpenClaw does -- which can never be prompted and just gets an
+access error forever. `bin/mitsync-calendar` exists for that case: it
+launches `MitsyncCalendar.app` (`calendar-helper/`) through LaunchServices, so
+the app holds its own grant, and it speaks ical-guy's query and JSON, so
+nothing below changes. A denial raises `CalendarAccessDenied` carrying the
+exact command to run by hand, rather than pretending the calendar is empty.
 
 **The exact command line, and why each part of it.** For `ical-guy`:
 
@@ -168,6 +172,13 @@ _TCC_HINT = (
     "A background or launchd process can never show that prompt: it fails "
     "silently forever until the grant exists, so do this by hand first."
 )
+_HELPER_HINT = (
+    "macOS denied calendar access to MitsyncCalendar.app.\n"
+    "  1. run `open ~/Applications/MitsyncCalendar.app` and click Allow\n"
+    "  2. or turn MitsyncCalendar on under\n"
+    "     System Settings > Privacy & Security > Calendars\n"
+    "A rebuild (`make calendar-helper`) is a new app to macOS and needs this again."
+)
 
 
 @dataclass
@@ -250,6 +261,8 @@ def _argv(cli: str, start: datetime, end: datetime) -> list[str]:
 
 def _tcc_message(cli: str) -> str:
     """The TCC remediation text, quoting the exact command to run by hand."""
+    if cli.rsplit("/", 1)[-1] == "mitsync-calendar":
+        return _HELPER_HINT
     probe = " ".join(part.format(start="today", end="today") for part in _template(cli))
     return _TCC_HINT.format(cli=cli, probe=probe)
 

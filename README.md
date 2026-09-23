@@ -64,6 +64,7 @@ and runs `mitsync email`, which sends the dashboard to the address in
     bin/mitsync-agent         the one binary OpenClaw may execute
     mitsync/                  core · canvas · filing · schedule · knowledge · cli
     email/                    React Email dashboard (shadcn-style components) + brief schema
+    calendar-helper/          MitsyncCalendar.app: read-only EventKit, holds the gateway's Calendar grant
     skills/                   mit-briefing · mit-canvas-sync · mit-organize · mit-kb
     openclaw/                 openclaw.json5 + workspace/{AGENTS,SOUL,USER}.md
 ```

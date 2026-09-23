@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>local.mitsync.calendar</string>
+	<key>CFBundleName</key>
+	<string>MitsyncCalendar</string>
+	<key>CFBundleExecutable</key>
+	<string>MitsyncCalendar</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>13.0</string>
+	<!-- No Dock icon and no menu bar: it runs for a second and exits. -->
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSCalendarsUsageDescription</key>
+	<string>mitsync reads (never changes) your calendar to list today's classes in the morning brief.</string>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>mitsync reads (never changes) your calendar to list today's classes in the morning brief.</string>
+</dict>
+</plist>
