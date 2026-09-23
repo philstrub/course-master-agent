@@ -42,8 +42,11 @@
       // in OpenClaw's state database, not here):
       //   openclaw approvals allowlist add --agent mitsync \
       //     /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent
-      // That wrapper refuses `organize apply` / `organize undo`.
+      // That wrapper refuses `organize undo` and `--include-existing`.
       mode: "ask",
+      // Run on this Mac. Left on "auto", models try host=node/sandbox first
+      // and burn two failed calls per run.
+      host: "gateway",
     },
   },
 }

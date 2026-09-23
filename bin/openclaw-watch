@@ -1,0 +1,152 @@
+#!/usr/bin/env python3
+"""openclaw-watch -- follow the OpenClaw agent's tool calls live, readably.
+
+    bin/openclaw-watch            follow the newest run, and every run after it
+    bin/openclaw-watch --last     print the newest finished run and exit
+
+OpenClaw's claude-cli runtime executes each turn with the real `claude`
+binary in the workspace, and Claude Code writes the whole turn (prompt, tool
+calls, results, replies) to ~/.claude/projects/<workspace>/<session>.jsonl.
+`openclaw sessions tail` records nothing for that runtime, so this reads
+those transcripts instead. Read-only; stdlib only.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+WORKSPACE = "/Users/filippostrub/Desktop/MIT/courses"
+PROJECT = Path.home() / ".claude" / "projects" / WORKSPACE.replace("/", "-").replace("_", "-")
+POLL = 0.5
+
+DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
+GREEN, CYAN, YELLOW, RED, MAGENTA = "\033[32m", "\033[36m", "\033[33m", "\033[31m", "\033[35m"
+
+
+def short(text: str, width: int = 110) -> str:
+    text = " ".join(str(text).split())
+    return text if len(text) <= width else text[: width - 1] + "…"
+
+
+def rel(path: str) -> str:
+    return path.removeprefix(WORKSPACE + "/")
+
+
+def clock(entry: dict) -> str:
+    stamp = entry.get("timestamp")
+    try:
+        return datetime.fromisoformat(stamp.replace("Z", "+00:00")).astimezone().strftime("%H:%M:%S")
+    except (AttributeError, ValueError):
+        return "--:--:--"
+
+
+def describe_call(name: str, args: dict) -> str:
+    tool = name.removeprefix("mcp__openclaw__")
+    if tool == "exec":
+        cmd = args.get("command", "").replace(WORKSPACE + "/_agent/bin/mitsync-agent", "mitsync-agent")
+        return f"{CYAN}{BOLD}exec{RESET}  {cmd}"
+    if tool in ("read", "write"):
+        extra = f"  {DIM}({len(args.get('content', ''))} bytes){RESET}" if tool == "write" else ""
+        return f"{MAGENTA}{BOLD}{tool}{RESET}  {rel(args.get('path', ''))}{extra}"
+    return f"{BOLD}{tool}{RESET}  {short(json.dumps(args), 90)}"
+
+
+def result_text(block: dict) -> str:
+    content = block.get("content")
+    if isinstance(content, list):
+        content = " ".join(c.get("text", "") for c in content if isinstance(c, dict))
+    return str(content or "")
+
+
+def show(entry: dict) -> None:
+    msg = entry.get("message") or {}
+    content = msg.get("content")
+    t = f"{DIM}{clock(entry)}{RESET}"
+    if entry.get("type") == "user" and isinstance(content, str):
+        print(f"\n{t} {YELLOW}{BOLD}▶ trigger{RESET}  {short(content, 120)}")
+        return
+    if not isinstance(content, list):
+        return
+    for block in content:
+        kind = block.get("type")
+        if kind == "tool_use":
+            print(f"{t}   → {describe_call(block.get('name', ''), block.get('input') or {})}")
+        elif kind == "tool_result":
+            text = result_text(block)
+            bad = block.get("is_error") or any(w in text[:200].lower() for w in ("denied", "error", "refused"))
+            colour = RED if bad else DIM
+            print(f"{t}     {colour}← {short(text, 104)}{RESET}")
+        elif kind == "text" and block.get("text", "").strip():
+            print(f"{t}   {GREEN}● {short(block['text'], 116)}{RESET}")
+
+
+def newest() -> Path | None:
+    files = sorted(PROJECT.glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
+    return files[-1] if files else None
+
+
+def replay(path: Path) -> int:
+    offset = 0
+    with path.open(encoding="utf-8") as fh:
+        for line in fh:
+            offset += len(line.encode("utf-8"))
+            try:
+                show(json.loads(line))
+            except json.JSONDecodeError:
+                pass
+    return offset
+
+
+def follow() -> None:
+    print(f"{DIM}watching {PROJECT} (ctrl-c to stop){RESET}")
+    current = newest()
+    offsets: dict[Path, int] = {}
+    if current:
+        print(f"{DIM}latest run: {current.name}{RESET}")
+        offsets[current] = replay(current)
+    while True:
+        for path in sorted(PROJECT.glob("*.jsonl"), key=lambda p: p.stat().st_mtime):
+            size = path.stat().st_size
+            start = offsets.get(path)
+            if start is None:
+                if path.stat().st_mtime < time.time() - 5:
+                    offsets[path] = size  # old transcript: skip
+                    continue
+                print(f"\n{DIM}── new run: {path.name} ──{RESET}")
+                start = 0
+            if size > start:
+                with path.open(encoding="utf-8") as fh:
+                    fh.seek(start)
+                    chunk = fh.read()
+                complete, _, _rest = chunk.rpartition("\n")
+                for line in complete.splitlines():
+                    try:
+                        show(json.loads(line))
+                    except json.JSONDecodeError:
+                        pass
+                offsets[path] = start + len((complete + "\n").encode("utf-8")) if complete else start
+            else:
+                offsets.setdefault(path, start)
+        time.sleep(POLL)
+
+
+def main() -> None:
+    if not PROJECT.exists():
+        sys.exit(f"openclaw-watch: {PROJECT} not found (has OpenClaw run a turn yet?)")
+    if "--last" in sys.argv[1:]:
+        path = newest()
+        if path:
+            replay(path)
+        return
+    try:
+        follow()
+    except KeyboardInterrupt:
+        print()
+
+
+if __name__ == "__main__":
+    main()

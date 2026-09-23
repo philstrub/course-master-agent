@@ -47,6 +47,8 @@ don't retry it or rephrase it.
   Anything else is denied instantly: `ls`, `cat`, `find`, `ps`, `sleep`, `true`,
   pipes `|`, `&&`, `;`, redirects like `2>/dev/null`, `$(...)`. To find files,
   use `work --json`, `unfiled --json` or `_kb/courses/<Course>/INDEX.md`.
+- **`exec`: leave `host` out** (it is set to the gateway). `host=node` and
+  `host=sandbox` always fail here.
 - **`read` takes one file, not a directory.** Build paths from `work`/`INDEX.md`
   output, or from the naming rule `_kb/briefings/<YYYY-MM-DD>-morning.json`.
 - **`write` replaces the whole file.** There is no `apply_patch` or `edit` in a

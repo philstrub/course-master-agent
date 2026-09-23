@@ -272,8 +272,18 @@ not 14, reuses yesterday's judgment for any homework with no new files, and
 lets `email` validate instead of a separate dry run. That is about 8 tool
 calls on an ordinary day.
 
-**Screenshot the email next to the run's tool trace** (`openclaw cron runs
-<id>`, or the dashboard's session view) for the report.
+**Watch a run live.** `openclaw sessions tail` records nothing for the Claude
+CLI runtime, but each turn is a real `claude` run whose transcript lands in
+`~/.claude/projects/-Users-filippostrub-Desktop-MIT-courses/`.
+`bin/openclaw-watch` follows those files and prints every tool call and
+result as it happens (`--last` replays the newest run). For the report's
+screenshot, run it in one terminal and trigger the brief from another:
+
+```
+~/Desktop/MIT/courses/_agent/bin/openclaw-watch        # terminal 1: live trace
+rm ~/Desktop/MIT/courses/_agent/state/sent/$(date +%F).json   # only if today's brief already went out
+openclaw cron run c314b76f-2fc0-4c60-ad39-0ff4a7db9bfe       # terminal 2: start the brief
+```
 
 **9. Chat with it (optional).** `openclaw dashboard` opens the web chat at
 http://127.0.0.1:18789. A chat turn has no `--tools` list, so Claude Code's
@@ -301,6 +311,7 @@ sudo pmset repeat wakeorpoweron MTWRF 06:44:00
 | cron run takes many minutes, log shows `plugin.approval.waitDecision 120000ms` | the job has no `--tools` list, so native tools wait on approvals: `openclaw cron edit <id> --tools exec,read,write` |
 | `due`/`work` fail with "Could not set lock on file" | `sync` is still running (a `canvas-sync` job, or one `exec` backgrounded): leave `process` out of `--tools` so `exec` waits, and keep the brief off the sync slots |
 | `canvas-sync` run shows `error` with `StalePresignedURL` | Canvas gave no download link for a just-published file; the next sync retries it |
+| exec fails with `host=node requires a paired node` | `openclaw config set tools.exec.host gateway` |
 | `canvas-file` never runs | expected when nothing new arrived: its trigger stays quiet. `openclaw cron runs <id>` shows fired runs only |
 | agent still behaves as before a fix | the chat reuses its session; start a new chat in the dashboard, or pass `--session-id "$(uuidgen)"` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
