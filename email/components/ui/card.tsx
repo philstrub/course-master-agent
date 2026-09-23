@@ -1,6 +1,6 @@
 // shadcn/ui Card, ported to email-safe markup: <Section> tables instead of
 // divs with flex/gap, which Gmail and Outlook drop.
-import { Section, Text } from "@react-email/components";
+import { Column, Row, Section, Text } from "@react-email/components";
 import type { ReactNode } from "react";
 import { cn } from "./utils";
 
@@ -8,19 +8,36 @@ type Props = { className?: string; children: ReactNode };
 
 export function Card({ className, children }: Props) {
   return (
-    <Section className={cn("rounded-xl border border-solid border-border bg-card", className)}>
+    <Section className={cn("rounded-2xl border border-solid border-border bg-card", className)}>
       {children}
     </Section>
   );
 }
 
-export function CardHeader({ className, children }: Props) {
-  return <Section className={cn("px-5 pt-5", className)}>{children}</Section>;
+// shadcn's CardHeader with a CardAction slot on the right.
+export function CardHeader({ className, action, children }: Props & { action?: ReactNode }) {
+  return (
+    <Section className={cn("px-6 pt-5", className)}>
+      <Row>
+        <Column className="align-middle">{children}</Column>
+        {action && (
+          <Column align="right" className="align-middle">
+            {action}
+          </Column>
+        )}
+      </Row>
+    </Section>
+  );
 }
 
 export function CardTitle({ className, children }: Props) {
   return (
-    <Text className={cn("m-0 text-base font-semibold leading-6 text-foreground", className)}>
+    <Text
+      className={cn(
+        "m-0 text-[13px] font-medium uppercase leading-5 tracking-[0.08em] text-subtle",
+        className,
+      )}
+    >
       {children}
     </Text>
   );
@@ -28,12 +45,12 @@ export function CardTitle({ className, children }: Props) {
 
 export function CardDescription({ className, children }: Props) {
   return (
-    <Text className={cn("m-0 mt-1 text-sm leading-5 text-muted-foreground", className)}>
+    <Text className={cn("m-0 text-[14px] leading-5 text-muted-foreground", className)}>
       {children}
     </Text>
   );
 }
 
 export function CardContent({ className, children }: Props) {
-  return <Section className={cn("px-5 pb-5 pt-3", className)}>{children}</Section>;
+  return <Section className={cn("px-6 pb-5 pt-2", className)}>{children}</Section>;
 }

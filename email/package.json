@@ -5,7 +5,8 @@
   "description": "Renders the morning-brief JSON into a shadcn-styled HTML email (React Email).",
   "scripts": {
     "render": "tsx render.tsx",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "dev": "email dev --dir emails --port 3000"
   },
   "dependencies": {
     "@react-email/components": "^1.0.12",
@@ -16,5 +17,9 @@
     "react-dom": "^19.3.0",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "devDependencies": {
+    "@react-email/ui": "^6.9.5",
+    "react-email": "^6.9.5"
   }
 }

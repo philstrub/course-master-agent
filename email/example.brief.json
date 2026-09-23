@@ -1,27 +1,78 @@
 {
   "date": "2026-09-23",
-  "headline": "3 due tonight. Analytics Edge A1 is finished but not submitted: submit it first.",
+  "headline": "AI Studio HW1 is done but unsubmitted: submit it before 23:59 tonight.",
   "homework": [
-    {"course": "Analytics Edge", "title": "Assignment 1", "due_at": "2026-09-24T03:59:59Z", "urgency": "now", "status": "ready_to_submit", "progress": 100,
-     "summary": "Deliverable_1.tex answers every part (P1 a–g, P2 a–i, P3 a–d, P4 a–g); Deliverable_1.pdf compiled Tue 12:09. Canvas: unsubmitted.",
-     "next_step": "Submit Analytics Edge/Assignment 1/Deliverable_1.pdf on Canvas (5 min).", "review": [], "effort_hours": 0.1},
-    {"course": "AI Studio", "title": "HW1: Launch an Agent", "due_at": "2026-09-24T03:59:59Z", "urgency": "now", "status": "in_progress", "progress": 60,
-     "summary": "One-page report drafted (report.pdf). The screenshot is missing: OpenClaw isn't installed yet.",
-     "next_step": "Follow _agent/openclaw/SETUP.md steps 0–5, then screenshot this email.", "review": [], "effort_hours": 1.5},
-    {"course": "Optimization", "title": "HW1: Linear Optimization", "due_at": "2026-09-29T03:59:00Z", "urgency": "later", "status": "not_started", "progress": 0,
-     "summary": "Only the Canvas handout and CSVs in assignments/hw-01/. 4 problems: T/F on BFS, 2-D simplex, bounded simplex, production LP in Julia.",
-     "next_step": "Start Thu with Q1 and Q2(a–c), then Q4 in Julia over the weekend.",
-     "review": [
-       {"file": "Optimization/Fall_2026_15_C57-L2.pdf", "where": "slides 10–24", "why": "BFS, degeneracy (Q1, Q2 a–c)"},
-       {"file": "Optimization/Fall_2026_15_C57-L3.pdf", "where": "slides 4–24", "why": "reduced costs, ratio test (Q2 d–e, Q3)"},
-       {"file": "Optimization/recitation 2/Recitation2.pdf", "where": "worked example", "why": "2-D LP with bounds, closest to Q2"}],
-     "effort_hours": 8}
+    {
+      "course": "AI_Studio",
+      "title": "Homework 1: Launch an Agent",
+      "due_at": "2026-09-24T03:59:59+00:00",
+      "urgency": "now",
+      "status": "ready_to_submit",
+      "progress": 100,
+      "effort_hours": 0,
+      "summary": "report.tex and report.pdf present, PDF newer than source; Canvas: unsubmitted.",
+      "next_step": "Upload assignments/hw-01/report.pdf to Canvas.",
+      "review": []
+    },
+    {
+      "course": "Optimization",
+      "title": "15.C57 - HW 1: Linear Optimization",
+      "due_at": "2026-09-29T03:59:00+00:00",
+      "urgency": "later",
+      "status": "not_started",
+      "progress": 0,
+      "effort_hours": 8,
+      "summary": "Only the Canvas handout and CSVs. Q1 T/F, Q2 BFS/simplex, Q3 bounded simplex, Q4 Julia LP.",
+      "next_step": "File the HW1 materials, then start Q1 (true/false) from the L2 definitions.",
+      "review": [
+        {
+          "file": "Optimization/Fall_2026_15_C57-L2.pdf",
+          "where": "slides 7–11",
+          "why": "BFS, degeneracy (Q1, Q2 a–c)"
+        },
+        {
+          "file": "Optimization/Fall_2026_15_C57-L3.pdf",
+          "where": "slides 8–9",
+          "why": "reduced costs, ratio test (Q3)"
+        },
+        {
+          "file": "Optimization/recitation 2/Recitation2.pdf",
+          "where": "slides 2–3",
+          "why": "bounded LP, closest to Q3"
+        }
+      ]
+    }
   ],
-  "gaps": ["Machine Learning Pset 1 (due tonight per your calendar) is on Gradescope, which I can't see."],
+  "gaps": [
+    "Optimization HW1 isn't filed yet, so progress is judged from the handout only.",
+    "Machine Learning psets are on Gradescope, which I can't see."
+  ],
   "classes": [
-    {"time": "12:30", "title": "15.681 From Analytics to Action (Session 3)", "course": "From Anaytics to Action"},
-    {"time": "17:00", "title": "15.072 Advanced Analytics Edge — Lecture", "course": "Analytics Edge"},
-    {"time": "20:00", "title": "15.095 Machine Learning — Lecture", "course": "Machine Learning"}],
-  "sync": {"last": "2026-09-23T04:10:00Z", "fresh": true},
-  "generated_at": "2026-09-23T11:30:00Z"
+    {
+      "time": "08:30",
+      "end": "11:30",
+      "title": "15.681 From Analytics to Action (Session 3)",
+      "course": "From Anaytics to Action",
+      "location": "Classroom E62-233"
+    },
+    {
+      "time": "13:00",
+      "end": "14:30",
+      "title": "15.072 Advanced Analytics Edge (H1) - Lecture",
+      "course": "Analytics Edge",
+      "location": "Classroom E51-345"
+    },
+    {
+      "time": "16:00",
+      "end": "17:30",
+      "title": "15.095 Machine Learning - Lecture",
+      "course": "Machine Learning",
+      "location": "Classroom E51-345"
+    }
+  ],
+  "sync": {
+    "last": "2026-09-23T18:02:00Z",
+    "fresh": true
+  },
+  "generated_at": "2026-09-23T11:00:00Z"
 }

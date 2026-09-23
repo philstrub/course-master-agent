@@ -7,7 +7,15 @@
     "strict": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "types": ["node"]
+    "types": [
+      "node"
+    ],
+    "resolveJsonModule": true
   },
-  "include": ["*.tsx", "components/**/*.ts", "components/**/*.tsx"]
+  "include": [
+    "*.tsx",
+    "emails/*.tsx",
+    "components/**/*.ts",
+    "components/**/*.tsx"
+  ]
 }

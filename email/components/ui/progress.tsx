@@ -2,7 +2,15 @@
 // table cell sized by percentage rather than a translated div.
 import { cn } from "./utils";
 
-export function Progress({ value, className }: { value: number; className?: string }) {
+export function Progress({
+  value,
+  className,
+  indicatorClassName,
+}: {
+  value: number;
+  className?: string;
+  indicatorClassName?: string;
+}) {
   const pct = Math.max(0, Math.min(100, Math.round(value)));
   return (
     <table
@@ -10,12 +18,14 @@ export function Progress({ value, className }: { value: number; className?: stri
       width="100%"
       cellPadding={0}
       cellSpacing={0}
-      className={cn("h-2 rounded-full bg-secondary", className)}
+      className={cn("h-[6px] rounded-full bg-secondary", className)}
     >
       <tbody>
         <tr>
-          {pct > 0 && <td width={`${pct}%`} className="h-2 rounded-full bg-primary" />}
-          {pct < 100 && <td className="h-2" />}
+          {pct > 0 && (
+            <td width={`${pct}%`} className={cn("h-[6px] rounded-full bg-primary", indicatorClassName)} />
+          )}
+          {pct < 100 && <td className="h-[6px]" />}
         </tr>
       </tbody>
     </table>
