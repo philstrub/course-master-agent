@@ -15,11 +15,11 @@ It does not file anything into the student's own course folders — that is
 
 ## The command
 
-Always invoke through `uv run --project`, never a bare `mitsync` (there is no
-global install, and a scheduler's PATH has no shims):
+Always invoke through the wrapper, never a bare `mitsync` (there is no global
+install, a scheduler's PATH has no shims, and exec is allowlisted to it):
 
 ```
-uv run --project /Users/filippostrub/Desktop/MIT/courses/_agent mitsync sync
+/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent sync
 ```
 
 Run `mitsync sync --help` for the flags. The ones that matter in practice:
@@ -27,8 +27,8 @@ Run `mitsync sync --help` for the flags. The ones that matter in practice:
 change first, `--course "<name>"` when they ask about one class, and `--full`
 only when the manifest is suspected wrong — it is slow, so say so first.
 
-`sync` has **no** `--driver` flag and never exits 20. Judgment drivers exist
-only on `map`, `organize plan`, `graph extract`, and `kb build`.
+`sync` only reads Canvas (GET/HEAD) and writes the `_canvas/` mirror. It
+files nothing; that is `mit-organize`.
 
 ## Reporting the result
 
@@ -68,16 +68,12 @@ Genuinely bad outcomes, worth escalating:
 When in doubt, run:
 
 ```
-uv run --project /Users/filippostrub/Desktop/MIT/courses/_agent mitsync doctor
+/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent doctor
 ```
 
-which prints PASS/WARN/FAIL for python, uv, settings, Canvas token, LLM driver,
-calendar CLI, workspace, writable dirs, duckdb, and the judge task specs. It
+which prints PASS/WARN/FAIL for python, uv, settings, Canvas token, calendar
+CLI, workspace, writable dirs, duckdb, ontology, naming rules and email. It
 exits 1 if anything is FAIL.
-
-## Exit code 20
-
-Exit 20 = pending judgment. See `_agent/CLAUDE.md` § The dual execution model.
 
 ## Guardrails
 
