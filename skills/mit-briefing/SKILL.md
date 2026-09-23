@@ -23,6 +23,11 @@ M due --days 14 --json          # deadlines, YOUR Canvas status, assignment text
 M work --json                   # your files per course: canvas_copy / edited / yours, with mtimes
 ```
 
+Run them in this order, one at a time. `sync` holds a database lock until it
+finishes. If your shell reports it "still running", wait for it with the
+`process` tool (poll that session) before `due`. Otherwise `due` and `work`
+fail with "Could not set lock on file".
+
 If yesterday's `_kb/briefings/<date>-morning.json` exists, read it too, so you
 can say what moved.
 

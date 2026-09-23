@@ -219,27 +219,36 @@ bin/mitsync-agent due --days 7 --json | head -40
 bin/mitsync-agent organize apply --plan x   # must be REFUSED by the wrapper
 ```
 
-**8. First agent run, interactively.**
+**8. Schedule it, and run it once now.** The job carries a tool allow-list
+(`--tools`). That matters with the Claude CLI runtime: it switches off Claude
+Code's own tools (Skill, Read, Write, Bash). Each of those asks a human, waits
+120 s, and is denied in an unattended run. The agent gets OpenClaw's `read`
+and `write` instead, which are free inside the workspace, plus `exec` (the
+allowlist) and `process` (to wait on a command `exec` put in the background):
 
 ```
-openclaw dashboard         # web chat at http://127.0.0.1:18789
-```
-
-Type `/mit-briefing`. You'll see the tool calls (`sync`, `due`, `work`, file
-reads, the brief JSON being written, `email --dry-run`, `email`). Then the
-dashboard lands in your inbox. **Screenshot the email next to the tool
-trace** for the report.
-
-**9. Schedule it.**
-
-```
-openclaw cron add "30 7 * * 1-5" "Use the mit-briefing skill." \
-  --name morning-brief --tz America/New_York --session isolated \
+openclaw cron add "30 7 * * 1-5" \
+  "Read skills/mit-briefing/SKILL.md and follow it: write today's morning brief and send it." \
+  --name morning-brief --agent mitsync --tz America/New_York --session isolated \
+  --tools exec,read,write,process --timeout-seconds 900 \
   --no-deliver          # the skill emails the brief itself
-openclaw cron list                         # note the job id
-openclaw cron run <id> --wait              # test now; prints "already sent" if step 8 sent today's
-openclaw cron runs <id>                    # history
+openclaw cron list                                   # note the job id
+openclaw cron run <id> --wait --timeout 900000       # run it now (about 4 minutes)
+openclaw cron runs <id>                              # history
 ```
+
+The first run on 2026-09-23 went: `read SKILL.md` → `sync` → `due` → `work` →
+reads of `INDEX.md`, extracted handouts and `report.tex` → `write` the brief
+JSON → `email --dry-run` (rejected: a summary over its length limit, fixed
+and retried) → `email` (sent) → a second `email`, refused by the once-per-day
+guard. Along the way `ps`, `find` and `sleep` were denied by the allowlist.
+**Screenshot the email next to the run's tool trace** (`openclaw cron runs
+<id>`, or the dashboard's session view) for the report.
+
+**9. Chat with it (optional).** `openclaw dashboard` opens the web chat at
+http://127.0.0.1:18789. A chat turn has no `--tools` list, so Claude Code's
+own tools each ask you: click **Allow** on each Skill, Read or Write card.
+Shell commands still go only through the allowlist.
 
 The Mac must be awake at 07:30, because a sleeping laptop skips the run. To
 wake it a minute early:
@@ -259,6 +268,8 @@ sudo pmset repeat wakeorpoweron MTWRF 07:29:00
 | "unknown model" | `openclaw models list`; `model.primary` must be `anthropic/claude-sonnet-5` with `agentRuntime: claude-cli` (step 4) |
 | agent says AGENTS.md is "UNREADABLE: symlink…" | the bootstrap files are symlinks: `make openclaw-workspace` (step 2), then start a new session |
 | every command denied, "security=allowlist, ask=off" | `openclaw config set tools.exec.mode ask` (step 4) |
+| cron run takes many minutes, log shows `plugin.approval.waitDecision 120000ms` | the job has no `--tools` list, so native tools wait on approvals: `openclaw cron edit <id> --tools exec,read,write,process` |
+| `due`/`work` fail with "Could not set lock on file" | `sync` was still running in the background; the skill waits for it with `process` (needs `process` in `--tools`) |
 | agent still behaves as before a fix | the chat reuses its session; start a new chat in the dashboard, or pass `--session-id "$(uuidgen)"` |
 | exec "denied" / "not allowlisted" | the command wasn't `…/_agent/bin/mitsync-agent`; redo the allowlist in step 4 |
 | sync finds nothing / files missing | Full Disk Access for the gateway's `node` (step 6) |

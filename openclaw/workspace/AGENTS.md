@@ -38,7 +38,33 @@ matters, how far along a homework is, where a file belongs. When a tool takes
 your output (`email`, `graph add`), it validates it and names the failing
 field. Fix it and retry.
 
+## What your tools can't do (don't spend calls finding out)
+
+Each of these was tried in a real run and failed. A denied call is final, so
+don't retry it or rephrase it.
+
+- **Shell = the wrapper only.** Call its absolute path with plain arguments.
+  Anything else is denied instantly: `ls`, `cat`, `find`, `ps`, `sleep`, `true`,
+  pipes `|`, `&&`, `;`, redirects like `2>/dev/null`, `$(...)`. To find files,
+  use `work --json`, `unfiled --json` or `_kb/courses/<Course>/INDEX.md`.
+- **`read` takes one file, not a directory.** Build paths from `work`/`INDEX.md`
+  output, or from the naming rule `_kb/briefings/<YYYY-MM-DD>-morning.json`.
+- **`write` replaces the whole file.** There is no `apply_patch` or `edit` in a
+  scheduled run. To fix the brief, write the full JSON again.
+- **"still running" + a session id** means `exec` put the command in the
+  background (usually `sync`). Wait with `process` (poll that session), not
+  by sleeping or re-running it. Until `sync` ends, `due`/`work` fail with
+  "Could not set lock on file".
+- **No human in a scheduled run.** Don't ask questions or wait for approvals.
+  Decide, and record what you couldn't do in the brief's `gaps`.
+- **`email` sends once per day.** After it succeeds, stop. "already sent"
+  means the job is done, not that it failed.
+
 ## Skills
+
+A skill is a procedure in `skills/<name>/SKILL.md`. To use one, **read that
+file with your file-read tool and follow it**. Don't call a "Skill" tool: it
+needs a human approval, and in a scheduled run nobody is there to give it.
 
 - `mit-briefing` — the morning brief: deadlines, homework progress, what to review. The main job.
 - `mit-canvas-sync` — "anything new on Canvas?"
