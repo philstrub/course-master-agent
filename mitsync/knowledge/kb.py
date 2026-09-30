@@ -341,6 +341,7 @@ def _agents_md(
         "mitsync graph query --canned assignments_due",
         'mitsync graph query --sql "SELECT type, count(*) FROM nodes GROUP BY 1"',
         "mitsync graph add facts.jsonl                # append nodes/edges you extracted",
+        'mitsync graph cypher "MATCH (n:Course) RETURN n.label" --json  # read-only, Neo4j',
         "```",
         "",
         "Canned query names:",

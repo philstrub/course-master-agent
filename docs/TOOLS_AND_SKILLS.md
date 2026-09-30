@@ -20,6 +20,7 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 | `extract` | PDFs/notebooks → text in `_kb/text/` (incremental, by sha256) | `_kb/` |
 | `kb build` | per-course `INDEX.md`, `manifest.json`, `_kb/AGENTS.md`; never `NOTES.md` | `_kb/` |
 | `graph add F` · `rebuild` · `query` | append agent-written facts (checked against the ontology, all or nothing), rebuild the DuckDB cache, query it | `_kb/graph/` |
+| `graph push` · `cypher Q` | replace the Neo4j projection with the live graph, run read-only Cypher on it | Neo4j (`NEO4J_*` in `.env`) |
 | `email [--dry-run]` | validate the agent's brief JSON, add today's calendar and sync freshness, render the dashboard, send it **once per day** to the address in config | Gmail SMTP |
 | `doctor` | what is configured and what is missing | — |
 

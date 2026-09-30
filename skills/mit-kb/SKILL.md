@@ -61,6 +61,16 @@ M graph query --sql "SELECT n.type, count(*) FROM nodes n GROUP BY 1"
 `assignments_due`, `files_for_concept`, `files_of`, `submitted`, `orphans`).
 Tables: `nodes(id, type, label, attrs)` and `edges(s, p, o, conf)`.
 
+The same graph in Neo4j (after `M graph push`), read-only:
+
+```
+M graph cypher "MATCH (c:Concept)-[:CONCEPT_IN_LECTURE]->(l)-[:LECTURE_OF_COURSE]->(k) RETURN c.name, l.label, k.label" --json
+```
+
+Labels are the node types, relationship types are the edge names
+upper-cased, and attrs are plain properties. Writes are refused: facts go in
+through `graph add` only.
+
 ## Rules
 
 - SQL is read-only (`SELECT`/`WITH`). Never hand-edit `_kb/graph/*.jsonl` or
