@@ -66,7 +66,7 @@ import hashlib
 import io
 import json
 import os
-from collections.abc import Iterator
+from collections.abc import Collection, Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -107,6 +107,7 @@ UNSUPPORTED: dict[str, str] = {
     ".xlsx": "xlsx",
     ".xls": "xls",
 }
+DOCUMENT_EXTENSIONS = frozenset(SUPPORTED) | frozenset(UNSUPPORTED)
 
 
 @dataclass
@@ -149,8 +150,10 @@ def source_roots(settings: Settings) -> list[Path]:
     return roots
 
 
-def iter_sources(settings: Settings) -> Iterator[Path]:
-    """Yield every candidate document, with ignored subtrees pruned."""
+def iter_sources(
+    settings: Settings, extensions: Collection[str] = DOCUMENT_EXTENSIONS
+) -> Iterator[Path]:
+    """Yield every file with one of `extensions`, with ignored subtrees pruned."""
     paths = settings.paths
     for root in source_roots(settings):
         for dirpath, dirnames, filenames in os.walk(root):
@@ -166,7 +169,7 @@ def iter_sources(settings: Settings) -> Iterator[Path]:
                 rel = paths.safe_relative(path).as_posix()
                 if settings.should_ignore(rel) or name.startswith("."):
                     continue
-                if path.suffix.lower() not in SUPPORTED and path.suffix.lower() not in UNSUPPORTED:
+                if path.suffix.lower() not in extensions:
                     continue
                 yield path
 
@@ -300,7 +303,7 @@ _CONVERTERS = {
 # --------------------------------------------------------------------------
 # extraction
 # --------------------------------------------------------------------------
-def _sha256(path: Path) -> str | None:
+def sha256_of(path: Path) -> str | None:
     """Digest of `path`, or None when it is too large to be worth hashing."""
     if path.stat().st_size > HASH_MAX_BYTES:
         return None
@@ -336,7 +339,7 @@ def extract_file(settings: Settings, src: Path, *, force: bool = False) -> Path 
         raise ExtractionFailed(f"cannot stat source: {exc}") from exc
 
     out = text_path_for(settings, rel)
-    digest = _sha256(src)
+    digest = sha256_of(src)
     if not force and out.exists():
         # Already current? `digest` is None only above HASH_MAX_BYTES; those, and
         # only those, fall back to comparing size and mtime.

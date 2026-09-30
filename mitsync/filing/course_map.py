@@ -42,6 +42,7 @@ checks, `work`, extraction -- goes through it.
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -119,6 +120,25 @@ def folder_for_canvas_id(settings: Settings, canvas_id: Any) -> str | None:
             folder = entry.get("folder")
             return str(folder) if folder else None
     return None
+
+
+def mirror_course_folders(settings: Settings) -> dict[str, str | None]:
+    """`_canvas/<Canvas course dir>` name -> the student's folder (None when unmapped).
+
+    Resolved through the canvas id `sync` records in `<dir>/_meta/courses.json`,
+    so the mirror and the student's folder are one course no matter how Canvas
+    names it. A course dir without that file is a broken mirror and raises.
+    """
+    mirror = settings.paths.canvas_mirror
+    if not mirror.is_dir():
+        return {}
+    return {
+        d.name: folder_for_canvas_id(
+            settings, json.loads((d / "_meta" / "courses.json").read_text())["course_canvas_id"]
+        )
+        for d in sorted(mirror.iterdir())
+        if d.is_dir() and d.name != "_meta"
+    }
 
 
 def existing_course_folders(settings: Settings) -> list[str]:
