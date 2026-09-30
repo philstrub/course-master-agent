@@ -49,7 +49,7 @@ validated against it before it is stored or projected, and a violation raises
 `OntologyError` naming the offending record.
 
 **The deterministic backbone.** One `Course` node per mapped folder; one
-`PdfFile` / `DataFile` node per distinct content, so a filed hardlink and its
+`File` (document) / `DataFile` (data, code) node per distinct content, so a filed hardlink and its
 `_canvas/` original are one node (`path` + `mirror_path`) and the mirror's
 Canvas-named folder is the same course as the student's; and, wherever the
 folder a file is filed in says so unambiguously, its parent item
@@ -115,6 +115,7 @@ from mitsync.filing.course_map import (
 from mitsync.knowledge.extract import DOCUMENT_EXTENSIONS, iter_sources, sha256_of
 from mitsync.knowledge.ontology import (
     BUCKET_EDGES,
+    DOCUMENT_SUFFIXES,
     Assignment,
     Lecture,
     Recitation,
@@ -670,7 +671,7 @@ CANNED: dict[str, Canned] = {
                    json_extract_string(f.attrs, '$.path') AS path
             FROM edges e
             JOIN nodes i ON i.id = e.o
-            JOIN nodes f ON f.id = e.s AND f.type IN ('PdfFile', 'DataFile')
+            JOIN nodes f ON f.id = e.s AND f.type IN ('File', 'DataFile')
             WHERE i.id = $item OR lower(i.label) LIKE lower($item)
             ORDER BY item, edge, path
         """,
@@ -853,7 +854,7 @@ def build_backbone(settings: Settings) -> GraphReport:
                 attrs["duplicates"] = extras
             if digests[key]:
                 attrs["sha256"] = digests[key]
-            ntype = "PdfFile" if suffix == ".pdf" else "DataFile"
+            ntype = "File" if suffix in DOCUMENT_SUFFIXES else "DataFile"
             nodes[fid] = {
                 "id": fid, "type": ntype, "label": Path(canonical).name, "attrs": attrs,
                 "src": copies, "ts": ts,
@@ -967,7 +968,7 @@ def _check_src(value: Any, many: bool) -> None:
 
 
 # Only the backbone mints these: an agent may enrich an existing one, never invent one.
-BACKBONE_ONLY_TYPES = frozenset({"Course", "PdfFile", "DataFile"})
+BACKBONE_ONLY_TYPES = frozenset({"Course", "File", "DataFile"})
 
 
 def _check_record(record: Any, existing: dict[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:

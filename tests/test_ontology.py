@@ -21,7 +21,7 @@ def edge(s: str, p: str, o: str, **attrs: Any) -> dict[str, Any]:
 
 
 def pdf(nid: str, path: str) -> dict[str, Any]:
-    return node(nid, "PdfFile", path=path)
+    return node(nid, "File", path=path)
 
 
 def codes(nodes: list[dict[str, Any]], edges: list[dict[str, Any]]) -> list[tuple[str, str]]:
@@ -40,7 +40,7 @@ LEC3 = onto.item_id(onto.Lecture, ML, "03")
 def test_the_ontology_has_exactly_the_agreed_types() -> None:
     assert set(onto.NODE_TYPES) == {
         "Course", "Syllabus", "Lecture", "Recitation", "Assignment",
-        "PdfFile", "DataFile", "Repo", "Concept",
+        "File", "DataFile", "Repo", "Concept",
     }  # fmt: skip
     assert set(onto.EDGE_TYPES) == {
         "course_follows_syllabus", "lecture_of_course", "assignment_of_course",
@@ -61,7 +61,7 @@ def test_describe_carries_the_docstrings_agents_follow() -> None:
     assert "LAST RESORT" in schema["edge_types"]["file_of_course"]["doc"]
     assert schema["edge_types"]["file_of_course"]["required"] == ["reason"]
     assert schema["node_types"]["Course"]["required"] == ["folder"]
-    assert schema["edge_types"]["file_of_lecture"]["source"] == ["PdfFile", "DataFile"]
+    assert schema["edge_types"]["file_of_lecture"]["source"] == ["File", "DataFile"]
 
 
 # --------------------------------------------------------------------------
@@ -89,7 +89,26 @@ def test_bad_nodes_are_refused_by_name(record: dict[str, Any], message: str) -> 
     assert record["id"] in str(exc.value)
 
 
-TYPES = {"file:a": "PdfFile", "course:ml": "Course", "lecture:ml:01": "Lecture"}
+@pytest.mark.parametrize(
+    ("ntype", "path", "ok"),
+    [
+        ("File", f"{ML}/lectures/slides.pptx", True),
+        ("File", f"{ML}/assignments/hw-01/report.tex", True),
+        ("File", f"{ML}/assignments/hw-01/data.csv", False),
+        ("DataFile", f"{ML}/assignments/hw-01/hw1.ipynb", True),
+        ("DataFile", f"{ML}/lectures/notes.PDF", False),
+    ],
+)
+def test_the_extension_decides_file_versus_data(ntype: str, path: str, ok: bool) -> None:
+    record = node("file:1", ntype, path=path)
+    if ok:
+        onto.validate_node(record)
+    else:
+        with pytest.raises(OntologyError, match="it is a"):
+            onto.validate_node(record)
+
+
+TYPES = {"file:a": "File", "course:ml": "Course", "lecture:ml:01": "Lecture"}
 
 
 @pytest.mark.parametrize(
@@ -193,7 +212,7 @@ def test_the_misc_edge_is_rationed() -> None:
 
 
 def test_duplicate_content_is_flagged() -> None:
-    dup = node("file:1", "PdfFile", path=f"{ML}/lectures/a.pdf", duplicates=[f"{ML}/a.pdf"])
+    dup = node("file:1", "File", path=f"{ML}/lectures/a.pdf", duplicates=[f"{ML}/a.pdf"])
     lec = node(LEC3, "Lecture")
     edges = [edge(LEC3, "lecture_of_course", COURSE["id"]), edge("file:1", "file_of_lecture", LEC3)]
     assert codes([COURSE, lec, dup], edges) == [("duplicate_content", "file:1")]

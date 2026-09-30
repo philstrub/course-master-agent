@@ -56,7 +56,7 @@ the agent writes and a command validates (the existing contract in
 
 - `mitsync/knowledge/ontology.py` replaces `config/ontology.yml`. Node
   types: `Course`, `Syllabus`, `Lecture`, `Recitation`, `Assignment`,
-  `PdfFile`, `DataFile`, `Repo`, `Concept`. Edge types:
+  `File` (documents), `DataFile` (data and code), `Repo`, `Concept`. Edge types:
   `course_follows_syllabus`, `lecture_of_course`, `assignment_of_course`,
   `recitation_of_course`, `file_of_lecture`, `file_of_assignment`,
   `file_of_recitation`, `file_of_syllabus`, `file_of_course`,
@@ -208,7 +208,7 @@ the agent writes and a command validates (the existing contract in
 1. Gradescope: option A (derive + explicit mark, no secret) or B (cookie scrape).
 2. Neo4j Aura instance: the user provisions the free tier and puts
    `NEO4J_URI` / `NEO4J_USERNAME` / `NEO4J_PASSWORD` in `_agent/.env`.
-3. Non-PDF documents (`.docx`, `.pptx`, `.tex`, `.md`) are `DataFile`s in
-   this ontology. If slides and handouts in those formats should count as
-   documents, a `DocumentFile` type (or renaming `PdfFile`) is cheaper now
-   than after facts accumulate.
+3. ~~Non-PDF documents~~ Decided 2026-09-30: `File` is any document a
+   person reads (PDF, Word, PowerPoint, markdown, LaTeX), `DataFile` is data
+   and code. `ontology.DOCUMENT_SUFFIXES` decides, and both models reject a
+   path on the wrong side.

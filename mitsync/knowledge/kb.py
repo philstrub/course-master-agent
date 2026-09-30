@@ -350,7 +350,7 @@ def _agents_md(
     lines += [
         "",
         "Node types are `Course`, `Syllabus`, `Lecture`, `Recitation`, `Assignment`,",
-        "`PdfFile`, `DataFile`, `Repo`, `Concept`; `mitsync graph schema` prints every",
+        "`File`, `DataFile`, `Repo`, `Concept`; `mitsync graph schema` prints every",
         "edge type, attribute and id format. If you have no shell, grep",
         "`_kb/graph/entities/` — every node has a page listing its edges and its source",
         "documents.",

@@ -68,7 +68,7 @@ def by_path(settings: Settings) -> dict[str, dict[str, Any]]:
     return {
         n["attrs"]["path"]: n
         for n in graph_mod.load_nodes(settings).values()
-        if n["type"] in ("PdfFile", "DataFile")
+        if n["type"] in ("File", "DataFile")
     }
 
 
@@ -117,10 +117,10 @@ def seed_graph(settings: Settings) -> None:
             {"id": "course:ae", "type": "Course", "label": "Analytics Edge",
              "attrs": {"folder": "Analytics Edge"}},
             {"id": "lecture:ae:05", "type": "Lecture", "label": "Trees", "attrs": {"number": 5}},
-            {"id": "file:slides", "type": "PdfFile", "label": "trees.pdf",
+            {"id": "file:slides", "type": "File", "label": "trees.pdf",
              "attrs": {"path": "Analytics Edge/lectures/trees.pdf"},
              "src": ["Analytics Edge/lectures/trees.pdf"]},
-            {"id": "file:sub", "type": "PdfFile", "label": "hw2.pdf",
+            {"id": "file:sub", "type": "File", "label": "hw2.pdf",
              "attrs": {"path": "Analytics Edge/assignments/hw-02/hw2.pdf"}},
             {"id": "assignment:ae:hw-02", "type": "Assignment", "label": "HW2",
              "attrs": {"due_at": "2026-09-25T23:59:00Z", "submission_status": "submitted"}},
@@ -321,7 +321,7 @@ def test_a_filed_hardlink_and_its_mirror_original_are_one_file_node(seeded: Sett
     files = by_path(seeded)
     lec = files[LEC]
     assert lec["id"] == graph_mod.file_id(LEC)
-    assert lec["type"] == "PdfFile"
+    assert lec["type"] == "File"
     assert lec["attrs"]["mirror_path"].endswith("/Lectures/lec01.pdf")
     assert lec["attrs"]["duplicates"] == [LOOSE]  # same bytes, pre-existing, not the filed copy
     assert LOOSE not in files and lec["attrs"]["mirror_path"] not in files
@@ -491,7 +491,7 @@ def test_an_edge_to_a_vanished_file_is_stale_not_fatal(seeded: Settings, tmp_pat
         (
             {"id": "file:slides", "type": "DataFile", "label": "x", "src": [LEC],
              "attrs": {"path": "x"}},
-            "already exists as a PdfFile",
+            "already exists as a File",
         ),
         (
             {"s": "concept:ghost", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": LEC},

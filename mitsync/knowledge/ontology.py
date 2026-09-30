@@ -48,7 +48,7 @@ prefix must match the node type:
 | Lecture | `lecture:<course-slug>:<NN>` (zero-padded) or `:<slug>` |
 | Recitation | `recitation:<course-slug>:recitation-<NN>` |
 | Assignment | `assignment:<course-slug>:<item>` (`hw-01`, `midterm`) |
-| PdfFile, DataFile | `file:<16 hex>` (content hash) |
+| File, DataFile | `file:<16 hex>` (hash of the canonical path) |
 | Repo | `repo:<slug>` |
 | Concept | `concept:<slug>` (shared across courses) |
 
@@ -82,9 +82,10 @@ import math
 import re
 from collections import defaultdict
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from mitsync.core.errors import OntologyError
 
@@ -193,15 +194,35 @@ class _File(NodeAttrs):
     content_type: str | None = Field(default=None, description="File extension without the dot")
 
 
-class PdfFile(_File):
-    """A PDF document: slides, handouts, problem sets, solutions, readings, submissions."""
+# A file is a document a person reads; everything else is data (datasets,
+# notebooks, code, archives, plain-text outputs). The path's extension decides.
+DOCUMENT_SUFFIXES = frozenset(
+    {".pdf", ".docx", ".doc", ".pptx", ".ppt", ".md", ".markdown", ".tex", ".rtf"}
+)
+
+
+class File(_File):
+    """A document a person reads: slides, handouts, problem sets, solutions, readings,
+    notes, reports, submissions. PDF, Word, PowerPoint, markdown or LaTeX source."""
 
     pages: int | None = None
 
+    @model_validator(mode="after")
+    def _is_a_document(self) -> File:
+        if Path(self.path).suffix.lower() not in DOCUMENT_SUFFIXES:
+            raise ValueError(f"{self.path!r} is not a document; it is a DataFile")
+        return self
+
 
 class DataFile(_File):
-    """Any non-PDF file worth knowing about: datasets, notebooks, code, archives,
-    LaTeX sources, markdown, Office documents."""
+    """Data or code, not prose: datasets (CSV, XLSX, Parquet), notebooks, scripts,
+    archives, plain-text outputs."""
+
+    @model_validator(mode="after")
+    def _is_not_a_document(self) -> DataFile:
+        if Path(self.path).suffix.lower() in DOCUMENT_SUFFIXES:
+            raise ValueError(f"{self.path!r} is a document; it is a File")
+        return self
 
 
 class Repo(NodeAttrs):
@@ -232,9 +253,9 @@ class Concept(NodeAttrs):
 
 NODE_TYPES: dict[str, type[NodeAttrs]] = {
     cls.__name__: cls
-    for cls in (Course, Syllabus, Lecture, Recitation, Assignment, PdfFile, DataFile, Repo, Concept)
+    for cls in (Course, Syllabus, Lecture, Recitation, Assignment, File, DataFile, Repo, Concept)
 }
-FILE_TYPES = (PdfFile, DataFile)
+FILE_TYPES = (File, DataFile)
 ITEM_TYPES = (Lecture, Recitation, Assignment)
 
 
@@ -412,7 +433,7 @@ FILE_PARENT_EDGES = frozenset(
 
 # node type -> (edge types counted, direction, min, max); max None = unbounded
 CARDINALITY: dict[str, tuple[frozenset[str], Literal["out", "in"], int, int | None]] = {
-    "PdfFile": (FILE_PARENT_EDGES, "out", 1, 1),
+    "File": (FILE_PARENT_EDGES, "out", 1, 1),
     "DataFile": (FILE_PARENT_EDGES, "out", 1, 1),
     "Lecture": (frozenset({"lecture_of_course"}), "out", 1, 1),
     "Recitation": (frozenset({"recitation_of_course"}), "out", 1, 1),
@@ -570,7 +591,7 @@ class Violation(BaseModel):
 
 
 def _missing_code(ntype: str) -> str:
-    if ntype in ("PdfFile", "DataFile"):
+    if ntype in ("File", "DataFile"):
         return "unfiled"
     if ntype == "Concept":
         return "orphan_concept"
@@ -620,7 +641,7 @@ def structure_violations(
     files_per_course: dict[str, int] = defaultdict(int)
     misc_per_course: dict[str, list[str]] = defaultdict(list)
     for nid, node in nodes.items():
-        if node["type"] not in ("PdfFile", "DataFile"):
+        if node["type"] not in ("File", "DataFile"):
             continue
         attrs = node["attrs"]
         if attrs.get("duplicates"):
