@@ -828,66 +828,75 @@ def build_backbone(settings: Settings) -> GraphReport:
         on_disk = sorted(r for r in rels if not r.startswith("_canvas/"))
         mirrored = sorted(r for r in rels if r.startswith("_canvas/"))
         filed = [r for r in on_disk if len(r.split("/")) > 2 and r.split("/")[1] in BUCKET_EDGES]
-        canonical = (filed or on_disk or mirrored)[0]
-        folder = canonical.split("/")[0] if on_disk else mirror[mirrored[0].split("/")[1]]
-        if folder is None:
-            continue  # a Canvas course courses.yml does not map: not the student's course
-        ts = _iso(max(mtimes[r] for r in rels))
-        suffix = Path(canonical).suffix.lower()
-        fid = file_id(canonical)
-        attrs = {
-            "path": canonical,
-            "title": " ".join(Path(canonical).stem.replace("_", " ").replace("-", " ").split()),
-            "content_type": suffix.lstrip("."),
-        }
-        if mirrored:
-            attrs["mirror_path"] = mirrored[0]
-        if len(on_disk) > 1:
-            attrs["duplicates"] = [r for r in on_disk if r != canonical]
-        if digests[key]:
-            attrs["sha256"] = digests[key]
-        ntype = "PdfFile" if suffix == ".pdf" else "DataFile"
-        nodes[fid] = {
-            "id": fid, "type": ntype, "label": Path(canonical).name, "attrs": attrs,
-            "src": sorted(rels), "ts": ts,
-        }  # fmt: skip
+        loose = [r for r in on_disk if r not in filed]
+        # Each filed copy is its own node: one dataset legitimately filed under two
+        # recitations belongs to both. Mirror copies and loose copies merge into
+        # the first; a loose copy of filed content is a duplicate for the human.
+        heads = filed or [(loose or mirrored)[0]]
+        extras = [r for r in loose if r not in heads]
+        for n, canonical in enumerate(heads):
+            folder = canonical.split("/")[0] if on_disk else mirror[mirrored[0].split("/")[1]]
+            if folder is None:
+                continue  # a Canvas course courses.yml does not map: not the student's course
+            copies = sorted({canonical, *mirrored, *extras} if n == 0 else {canonical})
+            ts = _iso(max(mtimes[r] for r in copies))
+            suffix = Path(canonical).suffix.lower()
+            fid = file_id(canonical)
+            attrs = {
+                "path": canonical,
+                "title": " ".join(Path(canonical).stem.replace("_", " ").replace("-", " ").split()),
+                "content_type": suffix.lstrip("."),
+            }
+            if n == 0 and mirrored and canonical not in mirrored:
+                attrs["mirror_path"] = mirrored[0]
+            if n == 0 and extras:
+                attrs["duplicates"] = extras
+            if digests[key]:
+                attrs["sha256"] = digests[key]
+            ntype = "PdfFile" if suffix == ".pdf" else "DataFile"
+            nodes[fid] = {
+                "id": fid, "type": ntype, "label": Path(canonical).name, "attrs": attrs,
+                "src": copies, "ts": ts,
+            }  # fmt: skip
 
-        cid = course_id(folder)
-        parts = canonical.split("/")
-        bucket = parts[1] if on_disk and len(parts) > 2 else ""
-        parent: tuple[str, str, dict[str, Any]] | None = None
-        if bucket in ("assignments", "recitations") and len(parts) > 3:
-            kind = Assignment if bucket == "assignments" else Recitation
-            iid = item_id(kind, folder, parts[2])
-            number = _NUMBER_RX.search(parts[2])
-            iattrs: dict[str, Any] = {"folder": "/".join(parts[:3]), "title": parts[2]}
-            if kind is Recitation and number:
-                iattrs["number"] = int(number.group(1))
-            if kind is Assignment and parts[2].startswith("hw-"):
-                iattrs["kind"] = "homework"
-            item(iid, kind.__name__, f"{folder} {parts[2]}", iattrs, canonical, ts)
-            edges.append({"s": iid, "p": f"{kind.__name__.lower()}_of_course", "o": cid,
-                          "src": canonical, "ts": ts})  # fmt: skip
-            parent = (f"file_of_{kind.__name__.lower()}", iid, {})
-        elif bucket == "syllabus":
-            sid = syllabus_id(folder)
-            item(sid, "Syllabus", f"{folder} syllabus", {}, canonical, ts)
-            edges.append({"s": cid, "p": "course_follows_syllabus", "o": sid,
-                          "src": canonical, "ts": ts})  # fmt: skip
-            parent = ("file_of_syllabus", sid, {})
-        elif bucket == "lectures" and (m := _LECTURE_RX.search(Path(canonical).stem.lower())):
-            number = int(m.group(1))
-            lid = item_id(Lecture, folder, f"{number:02d}")
-            item(lid, "Lecture", f"{folder} lecture {number}", {"number": number}, canonical, ts)
-            edges.append({"s": lid, "p": "lecture_of_course", "o": cid,
-                          "src": canonical, "ts": ts})  # fmt: skip
-            parent = ("file_of_lecture", lid, {})
-        elif bucket in ("other", "notes"):
-            parent = ("file_of_course", cid, {"reason": f"filed under {bucket}/ on disk"})
-        if parent is not None:
-            p, target, eattrs = parent
-            edges.append({"s": fid, "p": p, "o": target, "attrs": eattrs,
-                          "src": canonical, "ts": ts})  # fmt: skip
+            cid = course_id(folder)
+            parts = canonical.split("/")
+            bucket = parts[1] if on_disk and len(parts) > 2 else ""
+            parent: tuple[str, str, dict[str, Any]] | None = None
+            if bucket in ("assignments", "recitations") and len(parts) > 3:
+                kind = Assignment if bucket == "assignments" else Recitation
+                iid = item_id(kind, folder, parts[2])
+                number = _NUMBER_RX.search(parts[2])
+                iattrs: dict[str, Any] = {"folder": "/".join(parts[:3]), "title": parts[2]}
+                if kind is Recitation and number:
+                    iattrs["number"] = int(number.group(1))
+                if kind is Assignment and parts[2].startswith("hw-"):
+                    iattrs["kind"] = "homework"
+                item(iid, kind.__name__, f"{folder} {parts[2]}", iattrs, canonical, ts)
+                edges.append({"s": iid, "p": f"{kind.__name__.lower()}_of_course", "o": cid,
+                              "src": canonical, "ts": ts})  # fmt: skip
+                parent = (f"file_of_{kind.__name__.lower()}", iid, {})
+            elif bucket == "syllabus":
+                sid = syllabus_id(folder)
+                item(sid, "Syllabus", f"{folder} syllabus", {}, canonical, ts)
+                edges.append({"s": cid, "p": "course_follows_syllabus", "o": sid,
+                              "src": canonical, "ts": ts})  # fmt: skip
+                parent = ("file_of_syllabus", sid, {})
+            elif bucket == "lectures" and (m := _LECTURE_RX.search(Path(canonical).stem.lower())):
+                number = int(m.group(1))
+                lid = item_id(Lecture, folder, f"{number:02d}")
+                item(
+                    lid, "Lecture", f"{folder} lecture {number}", {"number": number}, canonical, ts
+                )
+                edges.append({"s": lid, "p": "lecture_of_course", "o": cid,
+                              "src": canonical, "ts": ts})  # fmt: skip
+                parent = ("file_of_lecture", lid, {})
+            elif bucket in ("other", "notes"):
+                parent = ("file_of_course", cid, {"reason": f"filed under {bucket}/ on disk"})
+            if parent is not None:
+                p, target, eattrs = parent
+                edges.append({"s": fid, "p": p, "o": target, "attrs": eattrs,
+                              "src": canonical, "ts": ts})  # fmt: skip
 
     records = [normalize_node(n) for n in nodes.values()]
     for node in records:

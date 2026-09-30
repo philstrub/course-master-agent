@@ -346,6 +346,19 @@ def test_the_folder_decides_the_parent_when_it_is_unambiguous(seeded: Settings) 
     assert nodes[LEC01]["attrs"] == {"number": 1}
 
 
+def test_one_dataset_filed_under_two_items_belongs_to_both(seeded: Settings) -> None:
+    recs = seeded.paths.workspace / ML / "recitations"
+    for item in ("recitation-02", "recitation-03"):
+        (recs / item).mkdir(parents=True)
+        (recs / item / "loans.csv").write_text("id,amount\n1,2\n")
+    graph_mod.build_backbone(seeded)
+    files = by_path(seeded)
+    for item in ("recitation-02", "recitation-03"):
+        node = files[f"{ML}/recitations/{item}/loans.csv"]
+        assert "duplicates" not in node["attrs"]
+    assert not [v for v in graph_mod.check(seeded) if "loans" in v.message]
+
+
 def test_what_the_folder_does_not_decide_is_left_for_the_agent(seeded: Settings) -> None:
     graph_mod.build_backbone(seeded)
     unfiled = [v for v in graph_mod.check(seeded) if v.code == "unfiled"]
