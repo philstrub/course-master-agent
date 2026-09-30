@@ -360,6 +360,47 @@ def graph_add(
     print(f"graph add: {report.summary()}")
 
 
+@graph_app.command("backbone")
+def graph_backbone(as_json: JsonOpt = False) -> None:
+    """Regenerate the deterministic part of the graph from the files on disk."""
+    settings = _settings()
+    report = graph_mod.build_backbone(settings)
+    doc = {"files": report.documents, "nodes": report.nodes, "edges": report.edges,
+           "changed": report.changed}  # fmt: skip
+    if as_json:
+        _emit_json(doc)
+        return
+    print(f"graph backbone: {report.summary()}" + ("" if report.changed else " (unchanged)"))
+
+
+@graph_app.command("check")
+def graph_check(as_json: JsonOpt = False) -> None:
+    """Every structural violation; exit 1 while any `error` or `human` one remains.
+
+    This is the sync loop's stopping condition: `error` violations are the
+    agent's work list, `human` ones are escalated, `info` never blocks.
+    """
+    settings = _settings()
+    violations = graph_mod.check(settings)
+    counts = {sev: sum(v.severity == sev for v in violations) for sev in ("error", "human", "info")}
+    if as_json:
+        _emit_json({"ok": not (counts["error"] or counts["human"]), "counts": counts,
+                    "violations": [v.model_dump() for v in violations]})  # fmt: skip
+    else:
+        graph_mod.print_rows("graph check", [v.model_dump() for v in violations])
+        print("graph check: " + ", ".join(f"{n} {sev}" for sev, n in counts.items()))
+    if counts["error"] or counts["human"]:
+        raise typer.Exit(1)
+
+
+@graph_app.command("schema")
+def graph_schema() -> None:
+    """The ontology as JSON: node and edge types, attrs, id formats, structural rules."""
+    from mitsync.knowledge.ontology import describe
+
+    _emit_json(describe())
+
+
 @graph_app.command("rebuild")
 def graph_rebuild() -> None:
     """Re-derive the whole graph from `_kb/graph/*.jsonl`."""
@@ -486,17 +527,9 @@ def doctor() -> None:
     except ImportError as exc:
         add("FAIL", "duckdb", f"import failed ({exc}); run `uv sync`")
 
-    try:
-        from mitsync.knowledge.graph import load_ontology
+    from mitsync.knowledge.ontology import EDGE_TYPES, NODE_TYPES
 
-        onto = load_ontology(settings)
-        add(
-            "PASS",
-            "ontology",
-            f"{onto.path}: {len(onto.node_types)} node types, {len(onto.edge_types)} edge types",
-        )
-    except MitsyncError as exc:
-        add("FAIL", "ontology", str(exc).splitlines()[0])
+    add("PASS", "ontology", f"{len(NODE_TYPES)} node types, {len(EDGE_TYPES)} edge types")
 
     rules = naming_rules_path(settings)
     add(

@@ -23,7 +23,10 @@ def built(workspace: Path, settings: Settings) -> Settings:
     (ml / "data").mkdir(parents=True, exist_ok=True)
     (ml / "data" / "train.csv").write_text("a,b\n1,2\n")
 
-    (workspace / "_canvas" / "Analytics Edge").mkdir(parents=True)
+    (workspace / "_canvas" / "Analytics Edge" / "_meta").mkdir(parents=True)
+    (workspace / "_canvas" / "Analytics Edge" / "_meta" / "courses.json").write_text(
+        json.dumps({"fetched_at": "", "course_canvas_id": 38522, "items": []})
+    )
     make_pdf(workspace / "_canvas" / "Analytics Edge" / "syllabus.pdf", ("syllabus",))
 
     junk = workspace / "AI_Studio" / "nandatown" / ".venv" / "lib" / "site-packages"
@@ -87,7 +90,7 @@ def test_manifest_is_machine_readable(built: Settings) -> None:
     assert lec["bucket"] == "lectures"
     assert lec["content_type"] == "pdf"
     assert lec["text"].startswith("_kb/text/")
-    assert graph_mod.resource_id("Machine Learning/lectures/lec01.pdf") in lec["node_ids"]
+    assert graph_mod.file_id("Machine Learning/lectures/lec01.pdf") in lec["node_ids"]
 
 
 def test_build_is_idempotent(built: Settings) -> None:

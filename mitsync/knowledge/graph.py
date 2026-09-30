@@ -1,17 +1,18 @@
 """
 # Knowledge Graph
 
-Append-only JSONL truth, a rebuildable DuckDB projection, and an ontology that
-every record must satisfy.
+Append-only JSONL truth, a regenerated deterministic backbone, a rebuildable
+DuckDB projection, and the ontology (`ontology.py`) every record must satisfy.
 
 ## 1. What This Module Does
 
 Stores nodes and edges, projects them into a queryable database, and renders
-one greppable markdown page per node. `build_backbone` writes the
-deterministic part of the graph from extracted text; `add_records` validates
-and appends the nodes and edges the driving agent wrote itself; `rebuild`
-re-derives everything downstream from the JSONL; `query` runs a canned query
-by name or raw SQL.
+one greppable markdown page per node. `build_backbone` regenerates the
+deterministic part of the graph from the files on disk; `add_records`
+validates and appends the nodes and edges the driving agent wrote itself;
+`rebuild` re-derives everything downstream from the JSONL; `query` runs a
+canned query by name or raw SQL; `check` lists every structural violation,
+which is the sync loop's stopping condition.
 
 ## 2. Why This Module Exists
 
@@ -22,34 +23,44 @@ graph is that cross-document index.
 Its storage split exists because agent-written facts accumulate slowly and
 expensively and must never be lost to a schema change or a corrupted database.
 `_kb/graph/nodes.jsonl` and `_kb/graph/triples.jsonl` are append-only and are
-the ONLY source of truth. `state/graph.duckdb` is a cache: deleting it and
+the ONLY source of agent-written truth. `_kb/graph/backbone.jsonl` is derived
+state: `build_backbone` overwrites it from the disk on every run, so a deleted
+or re-filed file leaves no ghost behind. `state/graph.duckdb` is a cache: deleting it and
 running `rebuild()` must reproduce identical query results, and a test asserts
 exactly that. The markdown entity pages exist for the same reason in the other
 direction -- an agent with nothing but `grep` can still read the graph.
 
 ## 3. How It Fits in the Architecture
 
-Reads `_kb/text/*.md` written by `extract`; is read by `kb`, which lists each
-file's node ids in `_kb/manifest.json`. Nothing here judges anything: the
-backbone is derived from paths, and every other fact arrives through `graph
-add` from an agent that read the documents itself.
+Walks the course folders and the Canvas mirror with `extract.iter_sources`;
+is read by `kb`, which lists each file's node ids in `_kb/manifest.json`.
+Nothing here judges anything: the backbone is derived from paths and content
+hashes, and every other fact arrives through `graph add` from an agent that
+read the documents itself.
 
 ## 4. Key Concepts
 
 **Nodes and edges.** Not vertices, not entities, not relationships. Node
 types and edge types.
 
-**The ontology is configuration.** `config/ontology.yml` declares the allowed
-node types and their attributes, the edge types and theirs, and which node
-types an edge may join. Every node and edge is validated against it before it
-is stored or projected, and a violation raises `OntologyError` naming the
-offending record. The configured repo copy wins; an unconfigured checkout
-falls back to the copy shipped beside the package.
+**The ontology is code.** `ontology.py` declares the node types, edge types,
+typed ids and structural rules as pydantic models. Every node and edge is
+validated against it before it is stored or projected, and a violation raises
+`OntologyError` naming the offending record.
 
-**The deterministic backbone.** A `Course` node per folder, a `Resource` node
-per document, and a `part_of` edge joining them are always written, with no
-model involved. The graph is therefore useful before any agent has added a
-single concept.
+**The deterministic backbone.** One `Course` node per mapped folder; one
+`PdfFile` / `DataFile` node per distinct content, so a filed hardlink and its
+`_canvas/` original are one node (`path` + `mirror_path`) and the mirror's
+Canvas-named folder is the same course as the student's; and, wherever the
+folder a file is filed in says so unambiguously, its parent item
+(`assignments/<item>/`, `recitations/<item>/`, `syllabus/`, a numbered file in
+`lectures/`, `other/` / `notes/`). Everything else is left unattached for the
+agent, and `check` lists it as `unfiled`.
+
+**Stale edges.** An agent edge whose endpoint the backbone no longer produces
+(the file was deleted or re-filed) is kept in the append-only file, left out of
+every projection, and reported by `check` as `stale_edge`. That is the
+documented skip in `load_graph`.
 
 **`graph add` is all or nothing.** A node needs `id`, `type`, `label` and
 `src` (its source documents); an edge needs `s`, `p`, `o` and `src`; unknown
@@ -57,8 +68,9 @@ keys are refused, and an edge endpoint must already exist or be defined in the
 same file. One bad line rejects the whole file with every error listed by line
 number, so a half-applied batch can never leave dangling facts behind.
 
-**Projection rules.** For nodes, the last line wins per id and `src` unions
-across lines; for edges, `(s, p, o, src)` is the dedupe key. Appending the
+**Projection rules.** Backbone lines are read first, then agent lines. For
+nodes, attrs merge across lines (later keys win), the last label wins and
+`src` unions; for edges, `(s, p, o, src)` is the dedupe key. Appending the
 same fact twice is free, which is what makes the append-only file safe to
 re-run against.
 
@@ -66,8 +78,7 @@ re-run against.
 change, so a rebuild over unchanged inputs looks like a no-op to every tool
 watching the tree.
 
-**Why exceptions are caught here.** Three handlers, all at an input boundary.
-`yaml.YAMLError` on the ontology becomes an `OntologyError` naming the file.
+**Why exceptions are caught here.** Two handlers, both at an input boundary.
 A malformed line in the canonical JSONL becomes a `MitsyncError` naming the
 file and line number -- mitsync wrote that file, so malformed means mitsync
 wrote garbage, and the append-only source of truth must never be read past a
@@ -83,19 +94,39 @@ import hashlib
 import json
 import re
 import tempfile
+from collections import defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
-import yaml
 from rich.console import Console
 from rich.table import Table
 
 from mitsync.core.clock import now_iso
 from mitsync.core.errors import MitsyncError, OntologyError
 from mitsync.core.logging import get_logger
-from mitsync.core.paths import REPO_ROOT
+from mitsync.filing.course_map import (
+    existing_course_folders,
+    load_course_map,
+    mirror_course_folders,
+)
+from mitsync.knowledge.extract import DOCUMENT_EXTENSIONS, iter_sources, sha256_of
+from mitsync.knowledge.ontology import (
+    BUCKET_EDGES,
+    Assignment,
+    Lecture,
+    Recitation,
+    Violation,
+    course_id,
+    item_id,
+    slug,
+    structure_violations,
+    syllabus_id,
+    validate_edge,
+    validate_node,
+)
 
 if TYPE_CHECKING:  # pragma: no cover
     from mitsync.core.config import Settings
@@ -106,142 +137,7 @@ EXTRACTOR_VERSION = "1"
 
 NODES_FILE = "nodes.jsonl"
 TRIPLES_FILE = "triples.jsonl"
-
-
-# --------------------------------------------------------------------------
-# ontology
-# --------------------------------------------------------------------------
-@dataclass(frozen=True)
-class EdgeType:
-    name: str
-    source: tuple[str, ...]
-    target: tuple[str, ...]
-    attributes: tuple[str, ...] = ()
-
-
-@dataclass(frozen=True)
-class Ontology:
-    version: int
-    node_types: dict[str, tuple[str, ...]]
-    edge_types: dict[str, EdgeType]
-    path: Path | None = None
-
-    # --- validation -------------------------------------------------------
-    def validate_node(self, node: dict[str, Any]) -> None:
-        nid = node.get("id")
-        if not isinstance(nid, str) or not nid.strip():
-            raise OntologyError(f"node has no id: {_show(node)}")
-        ntype = node.get("type")
-        if ntype not in self.node_types:
-            raise OntologyError(
-                f"unknown node type {ntype!r} (allowed: {', '.join(sorted(self.node_types))}) "
-                f"in {_show(node)}"
-            )
-        attrs = node.get("attrs") or {}
-        if not isinstance(attrs, dict):
-            raise OntologyError(f"node attrs must be an object in {_show(node)}")
-        allowed = set(self.node_types[ntype])
-        unknown = sorted(set(attrs) - allowed)
-        if unknown:
-            raise OntologyError(
-                f"node type {ntype} has no attribute(s) {unknown} "
-                f"(allowed: {sorted(allowed)}) in {_show(node)}"
-            )
-
-    def validate_edge(self, edge: dict[str, Any], node_types: dict[str, str]) -> None:
-        pred = edge.get("p")
-        spec = self.edge_types.get(pred) if isinstance(pred, str) else None
-        if spec is None:
-            raise OntologyError(
-                f"unknown edge type {pred!r} (allowed: {', '.join(sorted(self.edge_types))}) "
-                f"in {_show(edge)}"
-            )
-        s, o = edge.get("s"), edge.get("o")
-        for role, nid in (("s", s), ("o", o)):
-            if not isinstance(nid, str) or not nid.strip():
-                raise OntologyError(f"edge {role} is missing in {_show(edge)}")
-            if nid not in node_types:
-                raise OntologyError(f"edge {role} {nid!r} is not a known node in {_show(edge)}")
-        unknown = sorted(set(edge.get("attrs") or {}) - set(spec.attributes))
-        if unknown:
-            raise OntologyError(
-                f"edge type {pred} has no attribute(s) {unknown} "
-                f"(allowed: {list(spec.attributes)}) in {_show(edge)}"
-            )
-        s_type, o_type = node_types[s], node_types[o]
-        if s_type not in spec.source:
-            raise OntologyError(
-                f"edge '{pred}' cannot start at a {s_type} "
-                f"(allowed sources: {list(spec.source)}) in {_show(edge)}"
-            )
-        if o_type not in spec.target:
-            raise OntologyError(
-                f"edge '{pred}' cannot point at a {o_type} "
-                f"(allowed targets: {list(spec.target)}) in {_show(edge)}"
-            )
-
-
-def _show(record: dict[str, Any]) -> str:
-    return json.dumps(record, sort_keys=True, default=str)[:400]
-
-
-def load_ontology(settings: Settings) -> Ontology:
-    """Parse and validate `config/ontology.yml`.
-
-    The configured repo wins; a checkout that has not been configured falls back
-    to the copy shipped beside the package.
-    """
-    path = settings.paths.config_dir / "ontology.yml"
-    if not path.exists():
-        path = REPO_ROOT / "config" / "ontology.yml"
-    if not path.exists():
-        raise OntologyError(f"ontology file not found: {path}")
-    try:
-        raw = yaml.safe_load(path.read_text()) or {}
-    except yaml.YAMLError as exc:
-        raise OntologyError(f"{path} is not valid YAML: {exc}") from exc
-    if not isinstance(raw, dict):
-        raise OntologyError(f"{path} must contain a YAML mapping")
-
-    node_types: dict[str, tuple[str, ...]] = {}
-    for name, body in (raw.get("node_types") or {}).items():
-        body = body or {}
-        if not isinstance(body, dict):
-            raise OntologyError(f"{path}: node type {name!r} must be a mapping")
-        attrs = body.get("attributes") or []
-        if not isinstance(attrs, list):
-            raise OntologyError(f"{path}: node type {name!r} attributes must be a list")
-        node_types[str(name)] = tuple(str(a) for a in attrs)
-    if not node_types:
-        raise OntologyError(f"{path}: no node_types defined")
-
-    edge_types: dict[str, EdgeType] = {}
-    for name, body in (raw.get("edge_types") or {}).items():
-        body = body or {}
-        if not isinstance(body, dict):
-            raise OntologyError(f"{path}: edge type {name!r} must be a mapping")
-        source = [str(x) for x in (body.get("source") or [])]
-        target = [str(x) for x in (body.get("target") or [])]
-        if not source or not target:
-            raise OntologyError(f"{path}: edge type {name!r} needs both source and target")
-        bad = sorted({t for t in (*source, *target) if t not in node_types})
-        if bad:
-            raise OntologyError(f"{path}: edge type {name!r} references unknown node types {bad}")
-        edge_types[str(name)] = EdgeType(
-            name=str(name),
-            source=tuple(source),
-            target=tuple(target),
-            attributes=tuple(str(a) for a in (body.get("attributes") or [])),
-        )
-    if not edge_types:
-        raise OntologyError(f"{path}: no edge_types defined")
-
-    return Ontology(
-        version=int(raw.get("version", 0)),
-        node_types=node_types,
-        edge_types=edge_types,
-        path=path,
-    )
+BACKBONE_FILE = "backbone.jsonl"
 
 
 # --------------------------------------------------------------------------
@@ -255,12 +151,13 @@ class GraphReport:
     chunks: int = 0
     appended_nodes: int = 0
     appended_edges: int = 0
+    changed: bool = False
     db: Path | None = None
 
     def summary(self) -> str:
         bits = [f"{self.nodes} nodes", f"{self.edges} edges"]
         if self.documents:
-            bits.append(f"{self.documents} docs")
+            bits.append(f"{self.documents} files")
         if self.appended_nodes or self.appended_edges:
             bits.append(f"+{self.appended_nodes} new nodes/+{self.appended_edges} new edges")
         return ", ".join(bits)
@@ -272,6 +169,16 @@ def nodes_jsonl(settings: Settings) -> Path:
 
 def triples_jsonl(settings: Settings) -> Path:
     return settings.paths.kb_graph / TRIPLES_FILE
+
+
+def backbone_jsonl(settings: Settings) -> Path:
+    return settings.paths.kb_graph / BACKBONE_FILE
+
+
+def _backbone_records(settings: Settings) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Backbone lines split into (nodes, edges); an edge is a line with `p`."""
+    records = list(_read_jsonl(backbone_jsonl(settings)))
+    return [r for r in records if "p" not in r], [r for r in records if "p" in r]
 
 
 def _read_jsonl(path: Path) -> Iterator[dict[str, Any]]:
@@ -330,28 +237,38 @@ def edge_key(edge: dict[str, Any]) -> tuple[str, str, str, str]:
     return (str(edge.get("s")), str(edge.get("p")), str(edge.get("o")), str(edge.get("src") or ""))
 
 
+def merge_node(prior: dict[str, Any] | None, node: dict[str, Any]) -> dict[str, Any]:
+    """A later line for the same id: attrs merge (later keys win), `src` unions."""
+    if prior is None:
+        return node
+    return {
+        **node,
+        "attrs": {**prior["attrs"], **node["attrs"]},
+        "src": sorted(set(prior["src"]) | set(node["src"])),
+    }
+
+
 def load_nodes(settings: Settings) -> dict[str, dict[str, Any]]:
-    """Project `nodes.jsonl`: last line wins per id, `src` unions across lines."""
+    """Project the backbone, then `nodes.jsonl`, merging lines per id."""
     out: dict[str, dict[str, Any]] = {}
-    for raw in _read_jsonl(nodes_jsonl(settings)):
+    backbone, _ = _backbone_records(settings)
+    for raw in [*backbone, *_read_jsonl(nodes_jsonl(settings))]:
         node = normalize_node(raw)
         if not node["id"]:
             raise MitsyncError(f"{nodes_jsonl(settings)} has a node record with no id: {raw!r}")
-        prior = out.get(node["id"])
-        if prior is not None:
-            node["src"] = sorted(set(prior["src"]) | set(node["src"]))
-        out[node["id"]] = node
+        out[node["id"]] = merge_node(out.get(node["id"]), node)
     return dict(sorted(out.items()))
 
 
 def load_edges(settings: Settings) -> list[dict[str, Any]]:
-    """Project `triples.jsonl`, deduped on (s,p,o,src).
+    """Project the backbone's edges and `triples.jsonl`, deduped on (s,p,o,src).
 
     A later line with a newer `extractor_version` supersedes an older one for
     the same key, so re-extraction replaces rather than accumulates.
     """
     best: dict[tuple[str, str, str, str], tuple[tuple[int, str], int, dict[str, Any]]] = {}
-    for index, raw in enumerate(_read_jsonl(triples_jsonl(settings))):
+    _, backbone = _backbone_records(settings)
+    for index, raw in enumerate([*backbone, *_read_jsonl(triples_jsonl(settings))]):
         edge = normalize_edge(raw)
         if not (edge["s"] and edge["p"] and edge["o"]):
             raise MitsyncError(
@@ -365,6 +282,22 @@ def load_edges(settings: Settings) -> list[dict[str, Any]]:
     return [edge for _, (_, _, edge) in sorted(best.items())]
 
 
+def load_graph(
+    settings: Settings,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """(nodes, live edges, stale edges).
+
+    A stale edge names an endpoint no line defines any more -- the backbone
+    stopped producing a file or item the agent once pointed at. It stays in the
+    append-only file, is left out of every projection, and `check` reports it.
+    """
+    nodes = load_nodes(settings)
+    edges = load_edges(settings)
+    live = [e for e in edges if e["s"] in nodes and e["o"] in nodes]
+    stale = [e for e in edges if e["s"] not in nodes or e["o"] not in nodes]
+    return nodes, live, stale
+
+
 def _append(path: Path, records: list[dict[str, Any]]) -> None:
     with path.open("a", encoding="utf-8") as fh:
         for record in records:
@@ -372,25 +305,19 @@ def _append(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def append_nodes(settings: Settings, nodes: Iterable[dict[str, Any]]) -> int:
-    """Append validated nodes, skipping ones already stored identically."""
-    ontology = load_ontology(settings)
+    """Append nodes whose merged result validates, skipping ones that change nothing."""
     existing = load_nodes(settings)
     fresh: list[dict[str, Any]] = []
     for raw in nodes:
         node = normalize_node(raw)
-        ontology.validate_node(node)
         prior = existing.get(node["id"])
-        if prior is not None and (
-            prior["type"] == node["type"]
-            and prior["label"] == node["label"]
-            and prior["attrs"] == node["attrs"]
-            and set(node["src"]).issubset(set(prior["src"]))
-            and prior["extractor_version"] == node["extractor_version"]
+        merged = merge_node(prior, node)
+        validate_node(merged)
+        if prior is not None and all(
+            prior[k] == merged[k] for k in ("type", "label", "attrs", "src", "extractor_version")
         ):
             continue
-        if prior is not None:
-            node["src"] = sorted(set(prior["src"]) | set(node["src"]))
-        existing[node["id"]] = node
+        existing[node["id"]] = merged
         fresh.append(node)
     if fresh:
         _append(nodes_jsonl(settings), fresh)
@@ -399,13 +326,12 @@ def append_nodes(settings: Settings, nodes: Iterable[dict[str, Any]]) -> int:
 
 def append_edges(settings: Settings, edges: Iterable[dict[str, Any]]) -> int:
     """Append validated edges, skipping (s,p,o,src) keys already at this version."""
-    ontology = load_ontology(settings)
     node_types = {nid: node["type"] for nid, node in load_nodes(settings).items()}
     seen = {edge_key(e): _version_key(e["extractor_version"]) for e in load_edges(settings)}
     fresh: list[dict[str, Any]] = []
     for raw in edges:
         edge = normalize_edge(raw)
-        ontology.validate_edge(edge, node_types)
+        validate_edge(edge, node_types)
         key = edge_key(edge)
         version = _version_key(edge["extractor_version"])
         if key in seen and seen[key] >= version:
@@ -527,15 +453,14 @@ class DuckDBBackend:
 
     # --- projection -------------------------------------------------------
     def rebuild(self) -> None:
-        """Drop every table and reload from the JSONL files."""
-        nodes = list(load_nodes(self.settings).values())
-        edges = load_edges(self.settings)
-        ontology = load_ontology(self.settings)
+        """Drop every table and reload from the JSONL files (stale edges left out)."""
+        by_id, edges, _ = load_graph(self.settings)
+        nodes = list(by_id.values())
         for node in nodes:
-            ontology.validate_node(node)
+            validate_node(node)
         node_types = {n["id"]: n["type"] for n in nodes}
         for edge in edges:
-            ontology.validate_edge(edge, node_types)
+            validate_edge(edge, node_types)
 
         con = self._connect()
         try:
@@ -590,21 +515,13 @@ def get_backend(settings: Settings) -> GraphBackend:
 # --------------------------------------------------------------------------
 # entity pages
 # --------------------------------------------------------------------------
-_SLUG_RX = re.compile(r"[^a-z0-9]+")
-
-
-def slug(text: str) -> str:
-    return _SLUG_RX.sub("-", str(text).lower()).strip("-") or "unnamed"
-
-
 def entity_filename(node_id: str) -> str:
     return f"{slug(node_id)}.md"
 
 
 def write_entity_pages(settings: Settings) -> int:
     """One greppable markdown page per node under `_kb/graph/entities/`."""
-    nodes = load_nodes(settings)
-    edges = load_edges(settings)
+    nodes, edges, _ = load_graph(settings)
     out_dir = settings.paths.kb_graph / "entities"
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -615,8 +532,7 @@ def write_entity_pages(settings: Settings) -> int:
         incoming.setdefault(edge["o"], []).append(edge)
 
     def link(node_id: str) -> str:
-        # `validate_edge` has already rejected any edge whose endpoint is not a
-        # known node, so every id reaching here is in `nodes`.
+        # `load_graph` left stale edges out, so every id reaching here is in `nodes`.
         return f"[{nodes[node_id]['label']}]({entity_filename(node_id)})"
 
     keep: set[str] = set()
@@ -676,11 +592,8 @@ def rebuild(settings: Settings) -> GraphReport:
     """Re-derive the DuckDB projection and the entity pages from JSONL."""
     backend = get_backend(settings)
     backend.rebuild()
-    report = GraphReport(
-        nodes=len(load_nodes(settings)),
-        edges=len(load_edges(settings)),
-        db=settings.paths.graph_db,
-    )
+    nodes, edges, _ = load_graph(settings)
+    report = GraphReport(nodes=len(nodes), edges=len(edges), db=settings.paths.graph_db)
     write_entity_pages(settings)
     log.info("graph rebuild: %s", report.summary())
     print(f"graph rebuild: {report.summary()} -> {report.db}")
@@ -694,75 +607,93 @@ class Canned:
     help: str = ""
 
 
+_ITEM_OF_COURSE = "('lecture_of_course', 'assignment_of_course', 'recitation_of_course')"
+_CONCEPT_IN = "('concept_in_lecture', 'concept_in_assignment', 'concept_in_recitation')"
+_FILE_OF_ITEM = (
+    "('file_of_lecture', 'file_of_assignment', 'file_of_recitation', 'file_of_syllabus')"
+)
+
 CANNED: dict[str, Canned] = {
     "concepts_by_course": Canned(
-        sql="""
-            SELECT c.label AS course, n.label AS concept, count(*) AS mentions
+        sql=f"""
+            SELECT c.label AS course, n.label AS concept, count(DISTINCT e.o) AS items
             FROM edges e
-            JOIN nodes n ON n.id = e.o AND n.type = 'Concept'
-            JOIN edges pe ON pe.s = e.s AND pe.p = 'part_of'
-            JOIN nodes c ON c.id = pe.o AND c.type = 'Course'
-            WHERE e.p IN ('covers', 'assesses', 'requires')
+            JOIN nodes n ON n.id = e.s AND n.type = 'Concept'
+            JOIN edges pe ON pe.s = e.o AND pe.p IN {_ITEM_OF_COURSE}
+            JOIN nodes c ON c.id = pe.o
+            WHERE e.p IN {_CONCEPT_IN}
             GROUP BY 1, 2
             ORDER BY 1, 3 DESC, 2
         """,
-        help="Concepts each course's materials cover, most-referenced first.",
+        help="Concepts each course teaches or assesses, by number of lectures/recitations/"
+        "assignments.",
     ),
     "assignments_due": Canned(
         sql="""
-            SELECT c.label AS course,
+            SELECT DISTINCT c.label AS course,
                    n.label AS assignment,
                    json_extract_string(n.attrs, '$.due_at') AS due_at,
-                   json_extract_string(n.attrs, '$.kind') AS kind,
+                   json_extract_string(n.attrs, '$.submission_status') AS status,
                    n.id AS node_id
             FROM nodes n
-            LEFT JOIN edges e ON e.s = n.id AND e.p = 'part_of'
-            LEFT JOIN nodes c ON c.id = e.o AND c.type = 'Course'
+            JOIN edges e ON e.s = n.id AND e.p = 'assignment_of_course'
+            JOIN nodes c ON c.id = e.o
             WHERE n.type = 'Assignment'
-            ORDER BY due_at NULLS LAST, course NULLS LAST, assignment
+            ORDER BY due_at NULLS LAST, course, assignment
         """,
-        help="Assignment nodes with their due dates and course.",
+        help="Assignments with their course, due date and the student's submission status.",
     ),
-    "resources_for_concept": Canned(
-        sql="""
-            SELECT t.label AS concept,
-                   r.label AS resource,
-                   r.type AS resource_type,
-                   json_extract_string(r.attrs, '$.path') AS path,
-                   e.conf
-            FROM edges e
-            JOIN nodes r ON r.id = e.s
-            JOIN nodes t ON t.id = e.o AND t.type = 'Concept'
-            WHERE e.p IN ('covers', 'requires')
+    "files_for_concept": Canned(
+        sql=f"""
+            SELECT DISTINCT t.label AS concept,
+                   i.type AS item_type,
+                   i.label AS item,
+                   json_extract_string(f.attrs, '$.path') AS path
+            FROM edges ce
+            JOIN nodes t ON t.id = ce.s AND t.type = 'Concept'
+            JOIN nodes i ON i.id = ce.o
+            JOIN edges fe ON fe.o = i.id AND fe.p IN {_FILE_OF_ITEM}
+            JOIN nodes f ON f.id = fe.s
+            WHERE ce.p IN {_CONCEPT_IN}
               AND (t.id = $concept OR lower(t.label) LIKE lower($concept))
-            ORDER BY concept, e.conf DESC, resource
+            ORDER BY concept, item_type, item, path
         """,
         params={"concept": "%"},
-        help="Resources and sessions covering a concept ($concept: id or LIKE pattern).",
+        help="Where a concept is taught or assessed, and the files to read "
+        "($concept: id or LIKE pattern).",
     ),
-    "prerequisites_of": Canned(
+    "files_of": Canned(
         sql="""
-            WITH RECURSIVE seed AS (
-                SELECT id, label FROM nodes
-                WHERE id = $node OR lower(label) LIKE lower($node)
-            ),
-            chain(target, id, depth) AS (
-                SELECT s.id, e.s, 1
-                FROM seed s JOIN edges e ON e.o = s.id AND e.p = 'prerequisite_of'
-                UNION
-                SELECT c.target, e.s, c.depth + 1
-                FROM chain c JOIN edges e ON e.o = c.id AND e.p = 'prerequisite_of'
-            )
-            SELECT t.label AS needed_for, n.label AS prerequisite, n.type AS type,
-                   min(c.depth) AS depth
-            FROM chain c
-            JOIN nodes n ON n.id = c.id
-            JOIN nodes t ON t.id = c.target
-            GROUP BY 1, 2, 3
-            ORDER BY 1, 4, 2
+            SELECT DISTINCT i.label AS item,
+                   e.p AS edge,
+                   json_extract_string(e.attrs, '$.role') AS role,
+                   json_extract_string(f.attrs, '$.path') AS path
+            FROM edges e
+            JOIN nodes i ON i.id = e.o
+            JOIN nodes f ON f.id = e.s AND f.type IN ('PdfFile', 'DataFile')
+            WHERE i.id = $item OR lower(i.label) LIKE lower($item)
+            ORDER BY item, edge, path
         """,
-        params={"node": "%"},
-        help="Transitive prerequisites of a concept or session ($node: id or LIKE pattern).",
+        params={"item": "%"},
+        help="Files attached to a lecture, recitation, assignment, syllabus or course "
+        "($item: id or LIKE pattern).",
+    ),
+    "submitted": Canned(
+        sql="""
+            SELECT a.label AS assignment,
+                   json_extract_string(a.attrs, '$.submission_status') AS status,
+                   json_extract_string(a.attrs, '$.submitted_via') AS via,
+                   json_extract_string(f.attrs, '$.path') AS submitted_file
+            FROM nodes a
+            LEFT JOIN edges e ON e.o = a.id AND e.p = 'file_of_assignment'
+                 AND json_extract_string(e.attrs, '$.role') = 'submission'
+            LEFT JOIN nodes f ON f.id = e.s
+            WHERE a.type = 'Assignment'
+              AND (json_extract_string(a.attrs, '$.submission_status')
+                     IN ('submitted', 'late', 'graded') OR f.id IS NOT NULL)
+            ORDER BY assignment, submitted_file
+        """,
+        help="What the student has turned in, and which file it was.",
     ),
     "orphans": Canned(
         sql="""
@@ -828,90 +759,177 @@ def print_rows(title: str, rows: list[dict[str, Any]]) -> None:
 
 
 # --------------------------------------------------------------------------
-# extraction: extracted text -> nodes and triples
+# the deterministic backbone: files on disk -> nodes and edges
 # --------------------------------------------------------------------------
-def resource_id(rel: str) -> str:
-    return "resource:" + hashlib.sha1(rel.encode("utf-8")).hexdigest()[:12]  # noqa: S324
+# What the graph knows about. Beyond the extractable documents: data, code and
+# LaTeX sources, which is what an assignment folder is mostly made of.
+GRAPH_EXTENSIONS = DOCUMENT_EXTENSIONS | frozenset(
+    {".zip", ".py", ".jl", ".r", ".rmd", ".tex", ".tsv", ".parquet", ".dat", ".mod", ".sql"}
+)
+
+# `Lec03_2026`, `Lecture-04`, `Fall_2026_15_C57-L5`, `lecture 7 - trees`
+_LECTURE_RX = re.compile(r"(?:^|[^a-z])(?:lec(?:ture)?|l)[\s_-]*0*(\d{1,2})(?!\d)")
+_NUMBER_RX = re.compile(r"(\d+)$")
 
 
-def course_id(course: str) -> str:
-    return "course:" + slug(course)
+def file_id(rel: str) -> str:
+    """Id of the file node whose canonical path is `rel`: stable across edits."""
+    return "file:" + hashlib.sha1(rel.encode("utf-8")).hexdigest()[:16]  # noqa: S324
 
 
-def _documents(settings: Settings, since: str | None) -> list[dict[str, Any]]:
-    import frontmatter
-
-    from mitsync.knowledge.extract import course_of
-
-    docs: list[dict[str, Any]] = []
-    text_dir = settings.paths.kb_text
-    if not text_dir.is_dir():
-        return docs
-    for path in sorted(text_dir.glob("*.md")):
-        post = frontmatter.load(path)
-        rel = str(post.metadata.get("source") or "")
-        if not rel or settings.should_ignore(rel):
-            continue
-        if since and str(post.metadata.get("extracted_at") or "") < since:
-            continue
-        docs.append(
-            {
-                "source": rel,
-                "course": str(post.metadata.get("course") or course_of(rel)),
-                "title": str(post.metadata.get("title") or Path(rel).stem),
-                "content_type": str(post.metadata.get("content_type") or "unknown"),
-                "text": post.content,
-                "text_path": path,
-            }
-        )
-    return docs
+def _iso(mtime: float) -> str:
+    return datetime.fromtimestamp(mtime, UTC).isoformat()
 
 
-def build_backbone(settings: Settings, *, since: str | None = None) -> GraphReport:
-    """Write the deterministic backbone for `_kb/text/*.md`: Course, Resource, `part_of`.
+def build_backbone(settings: Settings) -> GraphReport:
+    """Regenerate `_kb/graph/backbone.jsonl` from the course folders and the mirror.
 
-    No judgment is involved, so this is safe to run unattended from `kb build`.
-    Concepts, sessions, assignments and their relations are written by the
-    driving agent through `add_records`.
+    Files are grouped by content hash, so the filed copy and its `_canvas/`
+    original are one node; the canonical path is the copy filed in a bucket,
+    else any course-folder copy, else the mirror copy. Mirror files of a Canvas
+    course that `config/courses.yml` does not map belong to no course and are
+    left out: that is the documented skip below. No judgment is involved, so
+    this is safe to run unattended from `kb build`.
     """
-    docs = _documents(settings, since)
-    report = GraphReport(documents=len(docs))
+    folders = existing_course_folders(settings)
+    mirror = mirror_course_folders(settings)
+    groups: dict[str, list[str]] = defaultdict(list)
+    digests: dict[str, str | None] = {}
+    mtimes: dict[str, float] = {}
+    for path in iter_sources(settings, GRAPH_EXTENSIONS):
+        rel = settings.paths.safe_relative(path).as_posix()
+        digest = sha256_of(path)
+        key = digest or rel  # too large to hash: a group of its own
+        groups[key].append(rel)
+        digests[key] = digest
+        mtimes[rel] = path.stat().st_mtime
 
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
-    for doc in docs:
-        rel, course = doc["source"], doc["course"]
-        rid = resource_id(rel)
-        nodes[rid] = {
-            "id": rid,
-            "type": "Resource",
-            "label": doc["title"],
-            "attrs": {"title": doc["title"], "path": rel, "content_type": doc["content_type"]},
-            "src": [rel],
-        }
-        if not course:
-            continue  # a document outside every course folder has no Course to join
-        cid = course_id(course)
+    for entry in load_course_map(settings):
+        if entry.get("folder") not in folders:
+            continue  # mapped but not on disk: `doctor` reports it
+        attrs = {"folder": entry["folder"]}
+        attrs |= {k: entry[k] for k in ("course_number", "canvas_id") if entry.get(k)}
+        cid = course_id(entry["folder"])
+        nodes[cid] = {
+            "id": cid, "type": "Course", "label": entry["folder"], "attrs": attrs,
+            "src": [], "ts": _iso(0),
+        }  # fmt: skip
+
+    def item(nid: str, ntype: str, label: str, attrs: dict[str, Any], rel: str, ts: str) -> None:
         node = nodes.setdefault(
-            cid,
-            {"id": cid, "type": "Course", "label": course, "attrs": {"name": course}, "src": []},
+            nid, {"id": nid, "type": ntype, "label": label, "attrs": attrs, "src": [], "ts": ts}
         )
         node["src"] = sorted({*node["src"], rel})
-        edges.append({"s": rid, "p": "part_of", "o": cid, "src": rel, "conf": 1.0})
+        node["ts"] = max(node["ts"], ts)
 
-    report.appended_nodes += append_nodes(settings, list(nodes.values()))
-    report.appended_edges += append_edges(settings, edges)
+    for key, rels in sorted(groups.items()):
+        on_disk = sorted(r for r in rels if not r.startswith("_canvas/"))
+        mirrored = sorted(r for r in rels if r.startswith("_canvas/"))
+        filed = [r for r in on_disk if len(r.split("/")) > 2 and r.split("/")[1] in BUCKET_EDGES]
+        canonical = (filed or on_disk or mirrored)[0]
+        folder = canonical.split("/")[0] if on_disk else mirror[mirrored[0].split("/")[1]]
+        if folder is None:
+            continue  # a Canvas course courses.yml does not map: not the student's course
+        ts = _iso(max(mtimes[r] for r in rels))
+        suffix = Path(canonical).suffix.lower()
+        fid = file_id(canonical)
+        attrs = {
+            "path": canonical,
+            "title": " ".join(Path(canonical).stem.replace("_", " ").replace("-", " ").split()),
+            "content_type": suffix.lstrip("."),
+        }
+        if mirrored:
+            attrs["mirror_path"] = mirrored[0]
+        if len(on_disk) > 1:
+            attrs["duplicates"] = [r for r in on_disk if r != canonical]
+        if digests[key]:
+            attrs["sha256"] = digests[key]
+        ntype = "PdfFile" if suffix == ".pdf" else "DataFile"
+        nodes[fid] = {
+            "id": fid, "type": ntype, "label": Path(canonical).name, "attrs": attrs,
+            "src": sorted(rels), "ts": ts,
+        }  # fmt: skip
+
+        cid = course_id(folder)
+        parts = canonical.split("/")
+        bucket = parts[1] if on_disk and len(parts) > 2 else ""
+        parent: tuple[str, str, dict[str, Any]] | None = None
+        if bucket in ("assignments", "recitations") and len(parts) > 3:
+            kind = Assignment if bucket == "assignments" else Recitation
+            iid = item_id(kind, folder, parts[2])
+            number = _NUMBER_RX.search(parts[2])
+            iattrs: dict[str, Any] = {"folder": "/".join(parts[:3]), "title": parts[2]}
+            if kind is Recitation and number:
+                iattrs["number"] = int(number.group(1))
+            if kind is Assignment and parts[2].startswith("hw-"):
+                iattrs["kind"] = "homework"
+            item(iid, kind.__name__, f"{folder} {parts[2]}", iattrs, canonical, ts)
+            edges.append({"s": iid, "p": f"{kind.__name__.lower()}_of_course", "o": cid,
+                          "src": canonical, "ts": ts})  # fmt: skip
+            parent = (f"file_of_{kind.__name__.lower()}", iid, {})
+        elif bucket == "syllabus":
+            sid = syllabus_id(folder)
+            item(sid, "Syllabus", f"{folder} syllabus", {}, canonical, ts)
+            edges.append({"s": cid, "p": "course_follows_syllabus", "o": sid,
+                          "src": canonical, "ts": ts})  # fmt: skip
+            parent = ("file_of_syllabus", sid, {})
+        elif bucket == "lectures" and (m := _LECTURE_RX.search(Path(canonical).stem.lower())):
+            number = int(m.group(1))
+            lid = item_id(Lecture, folder, f"{number:02d}")
+            item(lid, "Lecture", f"{folder} lecture {number}", {"number": number}, canonical, ts)
+            edges.append({"s": lid, "p": "lecture_of_course", "o": cid,
+                          "src": canonical, "ts": ts})  # fmt: skip
+            parent = ("file_of_lecture", lid, {})
+        elif bucket in ("other", "notes"):
+            parent = ("file_of_course", cid, {"reason": f"filed under {bucket}/ on disk"})
+        if parent is not None:
+            p, target, eattrs = parent
+            edges.append({"s": fid, "p": p, "o": target, "attrs": eattrs,
+                          "src": canonical, "ts": ts})  # fmt: skip
+
+    records = [normalize_node(n) for n in nodes.values()]
+    for node in records:
+        validate_node(node)
+    node_types = {n["id"]: n["type"] for n in records}
+    lines = [normalize_edge(e) for e in edges]
+    for edge in lines:
+        validate_edge(edge, node_types)
+    body = "".join(
+        json.dumps(r, sort_keys=True) + "\n"
+        for r in sorted(records, key=lambda n: n["id"]) + sorted(lines, key=edge_key)
+    )
+    path = backbone_jsonl(settings)
+    report = GraphReport(documents=len(groups))
+    report.changed = not path.exists() or path.read_text(encoding="utf-8") != body
+    if report.changed:
+        path.write_text(body, encoding="utf-8")
     _project(settings, report)
     log.info("graph backbone: %s", report.summary())
     return report
 
 
 def _project(settings: Settings, report: GraphReport) -> None:
-    report.nodes = len(load_nodes(settings))
-    report.edges = len(load_edges(settings))
     get_backend(settings).rebuild()
     write_entity_pages(settings)
+    nodes, edges, _ = load_graph(settings)
+    report.nodes, report.edges = len(nodes), len(edges)
     report.db = settings.paths.graph_db
+
+
+def check(settings: Settings) -> list[Violation]:
+    """Every structural violation of the projected graph, plus its stale edges."""
+    nodes, edges, stale = load_graph(settings)
+    return structure_violations(nodes, edges) + [
+        Violation(
+            code="stale_edge",
+            severity="info",
+            node=e["s"],
+            message=f"{e['s']} -{e['p']}-> {e['o']} names a node that no longer exists",
+        )
+        for e in stale
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -939,9 +957,11 @@ def _check_src(value: Any, many: bool) -> None:
             raise OntologyError(f"`src` {item!r} points into machinery, not course content")
 
 
-def _check_record(
-    record: Any, ontology: Ontology, existing: dict[str, dict[str, Any]]
-) -> tuple[str, dict[str, Any]]:
+# Only the backbone mints these: an agent may enrich an existing one, never invent one.
+BACKBONE_ONLY_TYPES = frozenset({"Course", "PdfFile", "DataFile"})
+
+
+def _check_record(record: Any, existing: dict[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:
     """Classify one agent-written line as a node or an edge and check its shape."""
     if not isinstance(record, dict):
         raise OntologyError("each line must be a JSON object")
@@ -963,12 +983,17 @@ def _check_record(
         if not isinstance(record["label"], str):
             raise OntologyError("node label must be a string")
         node = normalize_node(record)
-        ontology.validate_node(node)
         prior = existing.get(node["id"])
         if prior is not None and prior["type"] != node["type"]:
             raise OntologyError(
                 f"node {node['id']!r} already exists as a {prior['type']}, not a {node['type']}"
             )
+        if prior is None and node["type"] in BACKBONE_ONLY_TYPES:
+            raise OntologyError(
+                f"{node['type']} nodes come from the files on disk; {node['id']!r} is not one "
+                "(run `mitsync graph backbone`, then attach to the id it prints)"
+            )
+        validate_node(merge_node(prior, node))
         return kind, node
     conf = record.get("conf")
     if conf is not None and (
@@ -981,7 +1006,7 @@ def _check_record(
 def add_records(settings: Settings, path: Path | str) -> GraphReport:
     """Validate an agent-written JSONL file of nodes and edges, then append it.
 
-    Every line must be a node or an edge that satisfies `config/ontology.yml`,
+    Every line must be a node or an edge that satisfies `ontology.py`,
     and every edge endpoint must be a node already in the graph or defined in
     the same file. Any error rejects the **whole file** -- nothing is appended
     -- and the `MitsyncError` lists every failing line by number.
@@ -989,7 +1014,6 @@ def add_records(settings: Settings, path: Path | str) -> GraphReport:
     path = Path(path)
     if not path.is_file():
         raise MitsyncError(f"graph records file not found: {path}")
-    ontology = load_ontology(settings)
     existing = load_nodes(settings)
 
     errors: list[str] = []
@@ -1005,7 +1029,7 @@ def add_records(settings: Settings, path: Path | str) -> GraphReport:
                 errors.append(f"line {lineno}: not valid JSON ({exc.msg})")
                 continue
             try:
-                kind, clean = _check_record(record, ontology, existing)
+                kind, clean = _check_record(record, existing)
             except OntologyError as exc:
                 errors.append(f"line {lineno}: {exc}")
                 continue
@@ -1018,7 +1042,7 @@ def add_records(settings: Settings, path: Path | str) -> GraphReport:
     node_types.update({n["id"]: n["type"] for n in nodes})
     for lineno, edge in edges:
         try:
-            ontology.validate_edge(edge, node_types)
+            validate_edge(edge, node_types)
         except OntologyError as exc:
             errors.append(f"line {lineno}: {exc}")
     if errors:

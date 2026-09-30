@@ -1,8 +1,13 @@
-"""The knowledge graph: ontology validation, JSONL truth, `graph add`, projection, queries."""
+"""The knowledge graph: JSONL truth, the backbone, `graph add`, projection, queries, `check`.
+
+Record-level ontology rules are tested in `test_ontology.py`; here they are
+exercised only through the storage paths that must enforce them.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -14,22 +19,37 @@ from mitsync.knowledge import extract as extract_mod
 from mitsync.knowledge import graph as graph_mod
 from tests.test_extract import make_notebook, make_pdf
 
+ML = "Machine Learning"
+LEC = f"{ML}/lectures/lec01.pdf"
+HW = f"{ML}/assignments/hw-01/hw1.ipynb"
+LOOSE = f"{ML}/Lec1.pdf"
+
 
 # --------------------------------------------------------------------------
 # fixtures
 # --------------------------------------------------------------------------
 @pytest.fixture
 def seeded(workspace: Path, settings: Settings) -> Settings:
-    ml = workspace / "Machine Learning"
+    """A filed lecture, a filed assignment, a loose duplicate, a mirror copy, nandatown."""
+    ml = workspace / ML
     make_pdf(ml / "lectures" / "lec01.pdf", ("regularization and ridge regression",))
-    make_notebook(ml / "assignments" / "hw1.ipynb")
-    (workspace / "Analytics Edge" / "lectures").mkdir(parents=True)
-    (workspace / "Analytics Edge" / "lectures" / "trees.md").write_text("# CART\n\nTrees.\n")
+    make_notebook(ml / "assignments" / "hw-01" / "hw1.ipynb")
+    (ml / "assignments" / "hw-01" / "data.zip").write_bytes(b"PK\x03\x04 not really")
+    (ml / "Lec1.pdf").write_bytes((ml / "lectures" / "lec01.pdf").read_bytes())
+    (ml / "other").mkdir()
+    (ml / "other" / "textbook.pdf").write_bytes(b"%PDF-1.4 textbook")
+
+    course = workspace / "_canvas" / "15.095 Machine Learning Under a Modern Optimization Lens"
+    (course / "_meta").mkdir(parents=True)
+    (course / "_meta" / "courses.json").write_text(json.dumps({"course_canvas_id": 38524}))
+    (course / "Lectures").mkdir()
+    os.link(ml / "lectures" / "lec01.pdf", course / "Lectures" / "lec01.pdf")
+    make_pdf(course / "Lectures" / "Lecture05.pdf", ("trees",))  # mirrored, not yet filed
+
     (settings.paths.config_dir / "courses.yml").write_text(
-        "courses:\n  - folder: Machine Learning\n  - folder: Analytics Edge\n"
+        f"courses:\n  - folder: {ML}\n    canvas_id: 38524\n    course_number: '15.095'\n"
         "  - folder: AI_Studio\n"
     )
-
     junk = workspace / "AI_Studio" / "nandatown" / ".venv" / "lib" / "site-packages"
     junk.mkdir(parents=True, exist_ok=True)
     (junk / "notes.md").write_text("# venv notes about regression")
@@ -44,12 +64,21 @@ def write_jsonl(path: Path, records: list[Any]) -> Path:
     return path
 
 
-LEC = "Machine Learning/lectures/lec01.pdf"
+def by_path(settings: Settings) -> dict[str, dict[str, Any]]:
+    return {
+        n["attrs"]["path"]: n
+        for n in graph_mod.load_nodes(settings).values()
+        if n["type"] in ("PdfFile", "DataFile")
+    }
+
+
+LEC01 = "lecture:machine-learning:01"
+HW01 = "assignment:machine-learning:hw-01"
+COURSE = "course:machine-learning"
 
 
 def agent_facts(tmp_path: Path) -> Path:
-    """What an agent writes after reading lec01: two concepts and how they relate."""
-    rid = graph_mod.resource_id(LEC)
+    """What an agent writes after reading lec01 and hw1: concepts and where they occur."""
     return write_jsonl(
         tmp_path / "facts.jsonl",
         [
@@ -61,17 +90,19 @@ def agent_facts(tmp_path: Path) -> Path:
                 "src": [LEC],
             },
             {
-                "id": "concept:linear-regression",
+                "id": "concept:ridge-regression",
                 "type": "Concept",
-                "label": "Linear Regression",
+                "label": "Ridge regression",
+                "attrs": {"name": "Ridge regression", "aliases": ["L2 regularization"]},
                 "src": LEC,
             },
-            {"s": rid, "p": "covers", "o": "concept:regularization", "src": LEC, "conf": 0.9},
+            {"s": "concept:regularization", "p": "concept_in_lecture", "o": LEC01, "src": LEC},
             {
-                "s": "concept:linear-regression",
-                "p": "prerequisite_of",
-                "o": "concept:regularization",
-                "src": LEC,
+                "s": "concept:ridge-regression",
+                "p": "concept_in_assignment",
+                "o": HW01,
+                "attrs": {"depth": "applied"},
+                "src": HW,
                 "conf": 0.8,
             },
         ],
@@ -83,155 +114,79 @@ def seed_graph(settings: Settings) -> None:
     graph_mod.append_nodes(
         settings,
         [
-            {"id": "course:ae", "type": "Course", "label": "Analytics Edge", "attrs": {}},
-            {
-                "id": "resource:slides",
-                "type": "Resource",
-                "label": "Trees slides",
-                "attrs": {"path": "Analytics Edge/lectures/trees.pdf"},
-                "src": ["Analytics Edge/lectures/trees.pdf"],
-            },
-            {
-                "id": "assignment:hw2",
-                "type": "Assignment",
-                "label": "HW2",
-                "attrs": {"due_at": "2026-09-25T23:59:00Z", "kind": "pset"},
-            },
-            {"id": "concept:cart", "type": "Concept", "label": "CART", "attrs": {}},
-            {"id": "concept:entropy", "type": "Concept", "label": "Entropy", "attrs": {}},
-            {"id": "concept:probability", "type": "Concept", "label": "Probability", "attrs": {}},
-            {"id": "concept:lonely", "type": "Concept", "label": "Lonely", "attrs": {}},
+            {"id": "course:ae", "type": "Course", "label": "Analytics Edge",
+             "attrs": {"folder": "Analytics Edge"}},
+            {"id": "lecture:ae:05", "type": "Lecture", "label": "Trees", "attrs": {"number": 5}},
+            {"id": "file:slides", "type": "PdfFile", "label": "trees.pdf",
+             "attrs": {"path": "Analytics Edge/lectures/trees.pdf"},
+             "src": ["Analytics Edge/lectures/trees.pdf"]},
+            {"id": "file:sub", "type": "PdfFile", "label": "hw2.pdf",
+             "attrs": {"path": "Analytics Edge/assignments/hw-02/hw2.pdf"}},
+            {"id": "assignment:ae:hw-02", "type": "Assignment", "label": "HW2",
+             "attrs": {"due_at": "2026-09-25T23:59:00Z", "submission_status": "submitted"}},
+            {"id": "concept:cart", "type": "Concept", "label": "CART", "attrs": {"name": "CART"}},
+            {"id": "concept:lonely", "type": "Concept", "label": "Lonely",
+             "attrs": {"name": "Lonely"}},
         ],
-    )
+    )  # fmt: skip
     graph_mod.append_edges(
         settings,
         [
-            {"s": "resource:slides", "p": "part_of", "o": "course:ae", "src": "a.pdf"},
-            {"s": "assignment:hw2", "p": "part_of", "o": "course:ae", "src": "a.pdf"},
-            {
-                "s": "resource:slides",
-                "p": "covers",
-                "o": "concept:cart",
-                "src": "a.pdf",
-                "conf": 0.9,
-            },
-            {"s": "assignment:hw2", "p": "assesses", "o": "concept:cart", "src": "a.pdf"},
-            {"s": "concept:entropy", "p": "prerequisite_of", "o": "concept:cart", "src": "a.pdf"},
-            {
-                "s": "concept:probability",
-                "p": "prerequisite_of",
-                "o": "concept:entropy",
-                "src": "a.pdf",
-            },
+            {"s": "lecture:ae:05", "p": "lecture_of_course", "o": "course:ae", "src": "a.pdf"},
+            {"s": "assignment:ae:hw-02", "p": "assignment_of_course", "o": "course:ae",
+             "src": "a.pdf"},
+            {"s": "file:slides", "p": "file_of_lecture", "o": "lecture:ae:05", "src": "a.pdf",
+             "attrs": {"role": "slides"}},
+            {"s": "file:sub", "p": "file_of_assignment", "o": "assignment:ae:hw-02",
+             "src": "a.pdf", "attrs": {"role": "submission"}},
+            {"s": "concept:cart", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": "a.pdf",
+             "conf": 0.9},
+            {"s": "concept:cart", "p": "concept_in_assignment", "o": "assignment:ae:hw-02",
+             "src": "a.pdf"},
         ],
-    )
+    )  # fmt: skip
     graph_mod.rebuild(settings)
 
 
 # --------------------------------------------------------------------------
-# ontology
+# JSONL truth and projection
 # --------------------------------------------------------------------------
-def test_load_ontology_parses_the_shipped_file(settings: Settings) -> None:
-    onto = graph_mod.load_ontology(settings)
-    assert "Concept" in onto.node_types
-    assert onto.edge_types["covers"].target == ("Concept",)
-    assert "Resource" in onto.edge_types["covers"].source
-
-
-def test_ontology_rejects_an_unknown_node_type(settings: Settings) -> None:
-    onto = graph_mod.load_ontology(settings)
-    bad = {"id": "widget:1", "type": "Widget", "label": "w", "attrs": {}}
-    with pytest.raises(OntologyError) as exc:
-        onto.validate_node(bad)
-    assert "Widget" in str(exc.value)
-    assert "widget:1" in str(exc.value)  # the offending record is named
-
-
-def test_ontology_rejects_an_unknown_attribute(settings: Settings) -> None:
-    onto = graph_mod.load_ontology(settings)
-    with pytest.raises(OntologyError, match="colour"):
-        onto.validate_node(
-            {"id": "concept:x", "type": "Concept", "label": "x", "attrs": {"colour": "red"}}
-        )
-
-
-def test_ontology_rejects_a_backwards_edge(settings: Settings) -> None:
-    onto = graph_mod.load_ontology(settings)
-    types = {"course:ae": "Course", "concept:cart": "Concept", "resource:r": "Resource"}
-    # `part_of` goes Session/Assignment/Resource -> Course, never Course -> Concept.
-    with pytest.raises(OntologyError) as exc:
-        onto.validate_edge({"s": "course:ae", "p": "part_of", "o": "concept:cart"}, types)
-    assert "cannot start at a Course" in str(exc.value)
-
-    # `covers` points AT a Concept; a Resource covering a Course is invalid too.
-    with pytest.raises(OntologyError, match="cannot point at a Course"):
-        onto.validate_edge({"s": "resource:r", "p": "covers", "o": "course:ae"}, types)
-
-
-def test_ontology_rejects_an_unknown_edge_type_and_dangling_endpoints(
-    settings: Settings,
-) -> None:
-    onto = graph_mod.load_ontology(settings)
-    with pytest.raises(OntologyError, match="unknown edge type"):
-        onto.validate_edge(
-            {"s": "course:ae", "p": "vibes_with", "o": "course:ae"}, {"course:ae": "Course"}
-        )
-    with pytest.raises(OntologyError, match="not a known node"):
-        onto.validate_edge(
-            {"s": "resource:x", "p": "part_of", "o": "course:ae"}, {"course:ae": "Course"}
-        )
-
-
 def test_append_validates_against_the_ontology(settings: Settings) -> None:
     with pytest.raises(OntologyError):
         graph_mod.append_nodes(settings, [{"id": "x:1", "type": "Widget", "label": "x"}])
     assert not graph_mod.nodes_jsonl(settings).exists()
 
 
-def test_a_custom_ontology_in_the_config_dir_wins(settings: Settings) -> None:
-    (settings.paths.config_dir / "ontology.yml").write_text(
-        "version: 9\nnode_types:\n  Thing:\n    attributes: [name]\n"
-        "edge_types:\n  relates_to:\n    source: [Thing]\n    target: [Thing]\n"
-    )
-    onto = graph_mod.load_ontology(settings)
-    assert onto.version == 9
-    assert set(onto.node_types) == {"Thing"}
-    with pytest.raises(OntologyError, match="unknown node type 'Concept'"):
-        onto.validate_node({"id": "concept:x", "type": "Concept", "label": "x"})
-
-
-# --------------------------------------------------------------------------
-# JSONL truth and projection
-# --------------------------------------------------------------------------
-def test_jsonl_is_append_only_and_dedupes_on_projection(settings: Settings) -> None:
-    node = {"id": "course:ae", "type": "Course", "label": "Analytics Edge"}
+def test_jsonl_is_append_only_and_attrs_merge_on_projection(settings: Settings) -> None:
+    node = {"id": "course:ae", "type": "Course", "label": "Analytics Edge",
+            "attrs": {"folder": "Analytics Edge"}}  # fmt: skip
     assert graph_mod.append_nodes(settings, [node]) == 1
     assert graph_mod.append_nodes(settings, [node]) == 0  # unchanged: nothing appended
 
-    edge = {"s": "course:ae", "p": "part_of", "o": "course:ae", "src": "x.pdf"}
-    graph_mod.append_nodes(
-        settings, [{"id": "resource:r", "type": "Resource", "label": "R", "src": ["x.pdf"]}]
-    )
-    edge = {"s": "resource:r", "p": "part_of", "o": "course:ae", "src": "x.pdf"}
+    lec = {"id": "lecture:ae:01", "type": "Lecture", "label": "L1", "src": ["x.pdf"]}
+    graph_mod.append_nodes(settings, [lec])
+    edge = {"s": "lecture:ae:01", "p": "lecture_of_course", "o": "course:ae", "src": "x.pdf"}
     assert graph_mod.append_edges(settings, [edge]) == 1
     assert graph_mod.append_edges(settings, [edge]) == 0
 
-    # a later line for the same id is a correction, last write wins
-    graph_mod.append_nodes(settings, [{**node, "label": "Analytics Edge (15.071)"}])
-    assert graph_mod.load_nodes(settings)["course:ae"]["label"] == "Analytics Edge (15.071)"
+    # a later line for the same id is a correction: attrs merge, the last label wins
+    graph_mod.append_nodes(
+        settings, [{**node, "label": "AE", "attrs": {"course_number": "15.072"}}]
+    )
+    merged = graph_mod.load_nodes(settings)["course:ae"]
+    assert merged["label"] == "AE"
+    assert merged["attrs"] == {"folder": "Analytics Edge", "course_number": "15.072"}
     assert len(graph_mod.nodes_jsonl(settings).read_text().strip().splitlines()) == 3
 
 
 def test_rebuild_projects_jsonl_into_duckdb(settings: Settings) -> None:
     seed_graph(settings)
-    rows = graph_mod.query(settings, sql="SELECT count(*) AS n FROM nodes")
-    assert rows[0]["n"] == 7
-    rows = graph_mod.query(settings, sql="SELECT count(*) AS n FROM edges")
-    assert rows[0]["n"] == 6
+    assert graph_mod.query(settings, sql="SELECT count(*) AS n FROM nodes")[0]["n"] == 7
+    assert graph_mod.query(settings, sql="SELECT count(*) AS n FROM edges")[0]["n"] == 6
     attrs = graph_mod.query(
         settings,
         sql="SELECT json_extract_string(attrs, '$.due_at') AS due FROM nodes "
-        "WHERE id = 'assignment:hw2'",
+        "WHERE id = 'assignment:ae:hw-02'",
     )
     assert attrs[0]["due"] == "2026-09-25T23:59:00Z"
 
@@ -248,7 +203,6 @@ def test_deleting_the_duckdb_and_rebuilding_gives_identical_results(
     )
 
     settings.paths.graph_db.unlink()
-    assert not settings.paths.graph_db.exists()
     graph_mod.rebuild(settings)
 
     after = {name: graph_mod.query(settings, canned=name) for name in graph_mod.CANNED}
@@ -265,18 +219,15 @@ def test_rebuild_is_idempotent(settings: Settings) -> None:
     first = graph_mod.rebuild(settings)
     second = graph_mod.rebuild(settings)
     assert (first.nodes, first.edges) == (second.nodes, second.edges)
-    assert graph_mod.query(settings, sql="SELECT count(*) AS n FROM edges")[0]["n"] == 6
 
 
 def test_entity_pages_are_written_for_every_node(settings: Settings) -> None:
     seed_graph(settings)
     entities = settings.paths.kb_graph / "entities"
-    pages = {p.name for p in entities.glob("*.md")}
-    assert graph_mod.entity_filename("concept:cart") in pages
     body = (entities / graph_mod.entity_filename("concept:cart")).read_text()
     assert "type: Concept" in body
     assert "## Incoming edges" in body and "## Outgoing edges" in body
-    assert "`covers`" in body or "covers" in body
+    assert "`concept_in_lecture`" in body
     assert "## Source documents" in body
 
 
@@ -286,51 +237,60 @@ def test_entity_pages_are_written_for_every_node(settings: Settings) -> None:
 def test_canned_concepts_by_course(settings: Settings) -> None:
     seed_graph(settings)
     rows = graph_mod.query(settings, canned="concepts_by_course")
-    assert {"course": "Analytics Edge", "concept": "CART", "mentions": 2} in rows
+    assert rows == [{"course": "Analytics Edge", "concept": "CART", "items": 2}]
 
 
 def test_canned_assignments_due(settings: Settings) -> None:
     seed_graph(settings)
-    rows = graph_mod.query(settings, canned="assignments_due")
-    assert rows == [
+    assert graph_mod.query(settings, canned="assignments_due") == [
         {
             "course": "Analytics Edge",
             "assignment": "HW2",
             "due_at": "2026-09-25T23:59:00Z",
-            "kind": "pset",
-            "node_id": "assignment:hw2",
+            "status": "submitted",
+            "node_id": "assignment:ae:hw-02",
         }
     ]
 
 
-def test_canned_resources_for_concept(settings: Settings) -> None:
+def test_canned_files_for_concept(settings: Settings) -> None:
     seed_graph(settings)
-    everything = graph_mod.query(settings, canned="resources_for_concept")
-    assert [r["resource"] for r in everything] == ["Trees slides"]
+    everything = graph_mod.query(settings, canned="files_for_concept")
+    assert [(r["item"], r["path"]) for r in everything] == [
+        ("HW2", "Analytics Edge/assignments/hw-02/hw2.pdf"),
+        ("Trees", "Analytics Edge/lectures/trees.pdf"),
+    ]
     targeted = graph_mod.query(
-        settings, canned="resources_for_concept", params={"concept": "concept:cart"}
+        settings, canned="files_for_concept", params={"concept": "concept:cart"}
     )
     assert targeted == everything
-    assert (
-        graph_mod.query(settings, canned="resources_for_concept", params={"concept": "nope"}) == []
-    )
+    assert graph_mod.query(settings, canned="files_for_concept", params={"concept": "no"}) == []
 
 
-def test_canned_prerequisites_of_is_transitive(settings: Settings) -> None:
+def test_canned_files_of_and_submitted(settings: Settings) -> None:
     seed_graph(settings)
-    rows = graph_mod.query(settings, canned="prerequisites_of", params={"node": "concept:cart"})
-    assert [(r["prerequisite"], r["depth"]) for r in rows] == [("Entropy", 1), ("Probability", 2)]
+    rows = graph_mod.query(settings, canned="files_of", params={"item": "lecture:ae:05"})
+    assert [(r["role"], r["path"]) for r in rows] == [
+        ("slides", "Analytics Edge/lectures/trees.pdf")
+    ]
+    assert graph_mod.query(settings, canned="submitted") == [
+        {
+            "assignment": "HW2",
+            "status": "submitted",
+            "via": None,
+            "submitted_file": "Analytics Edge/assignments/hw-02/hw2.pdf",
+        }
+    ]
 
 
 def test_canned_orphans(settings: Settings) -> None:
     seed_graph(settings)
-    rows = graph_mod.query(settings, canned="orphans")
-    assert [r["id"] for r in rows] == ["concept:lonely"]
+    assert [r["id"] for r in graph_mod.query(settings, canned="orphans")] == ["concept:lonely"]
 
 
 def test_unknown_canned_query_names_the_alternatives(settings: Settings) -> None:
     seed_graph(settings)
-    with pytest.raises(Exception, match="unknown canned query"):
+    with pytest.raises(MitsyncError, match="unknown canned query"):
         graph_mod.query(settings, canned="nope")
 
 
@@ -349,22 +309,68 @@ def test_query_rebuilds_a_missing_database(settings: Settings) -> None:
 # --------------------------------------------------------------------------
 # the deterministic backbone
 # --------------------------------------------------------------------------
-def test_backbone_writes_courses_resources_and_part_of(seeded: Settings) -> None:
-    report = graph_mod.build_backbone(seeded)
-    assert report.documents == 3
+def test_one_course_node_for_the_folder_and_its_canvas_mirror(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    courses = [n for n in graph_mod.load_nodes(seeded).values() if n["type"] == "Course"]
+    assert [c["id"] for c in courses] == ["course:ai-studio", COURSE]
+    assert courses[1]["attrs"] == {"folder": ML, "canvas_id": 38524, "course_number": "15.095"}
+
+
+def test_a_filed_hardlink_and_its_mirror_original_are_one_file_node(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    files = by_path(seeded)
+    lec = files[LEC]
+    assert lec["id"] == graph_mod.file_id(LEC)
+    assert lec["type"] == "PdfFile"
+    assert lec["attrs"]["mirror_path"].endswith("/Lectures/lec01.pdf")
+    assert lec["attrs"]["duplicates"] == [LOOSE]  # same bytes, pre-existing, not the filed copy
+    assert LOOSE not in files and lec["attrs"]["mirror_path"] not in files
+
+
+def test_the_folder_decides_the_parent_when_it_is_unambiguous(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    files = by_path(seeded)
+    parents = {
+        (e["s"], e["p"], e["o"]) for e in graph_mod.load_edges(seeded) if e["p"].startswith("file_")
+    }
+    assert (files[LEC]["id"], "file_of_lecture", LEC01) in parents
+    assert (files[HW]["id"], "file_of_assignment", HW01) in parents
+    zip_ = files[f"{ML}/assignments/hw-01/data.zip"]
+    assert zip_["type"] == "DataFile" and (zip_["id"], "file_of_assignment", HW01) in parents
+    textbook = files[f"{ML}/other/textbook.pdf"]["id"]
+    assert (textbook, "file_of_course", COURSE) in parents
     nodes = graph_mod.load_nodes(seeded)
-    assert nodes[graph_mod.course_id("Machine Learning")]["type"] == "Course"
-    assert nodes[graph_mod.resource_id(LEC)]["attrs"]["path"] == LEC
-    assert all(e["p"] == "part_of" for e in graph_mod.load_edges(seeded))
-    assert {n["type"] for n in nodes.values()} == {"Course", "Resource"}
+    assert nodes[HW01]["attrs"] == {
+        "folder": f"{ML}/assignments/hw-01", "title": "hw-01", "kind": "homework",
+    }  # fmt: skip
+    assert nodes[LEC01]["attrs"] == {"number": 1}
 
 
-def test_backbone_is_idempotent(seeded: Settings) -> None:
+def test_what_the_folder_does_not_decide_is_left_for_the_agent(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    unfiled = [v for v in graph_mod.check(seeded) if v.code == "unfiled"]
+    mirror_only = by_path(seeded)
+    [path] = [p for p in mirror_only if p.endswith("Lecture05.pdf")]
+    assert [v.node for v in unfiled] == [mirror_only[path]["id"]]
+
+
+def test_check_escalates_duplicates_to_the_human(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    [dup] = [v for v in graph_mod.check(seeded) if v.code == "duplicate_content"]
+    assert dup.severity == "human" and LOOSE in dup.message
+
+
+def test_backbone_is_regenerated_not_appended(seeded: Settings) -> None:
     first = graph_mod.build_backbone(seeded)
     second = graph_mod.build_backbone(seeded)
-    assert (second.appended_nodes, second.appended_edges) == (0, 0)
+    assert first.changed and not second.changed
     assert (first.nodes, first.edges) == (second.nodes, second.edges)
-    assert graph_mod.query(seeded, sql="SELECT count(*) AS n FROM edges")[0]["n"] == first.edges
+    assert not graph_mod.nodes_jsonl(seeded).exists(), "the backbone never touches agent truth"
+
+    (seeded.paths.workspace / ML / "other" / "textbook.pdf").unlink()
+    third = graph_mod.build_backbone(seeded)
+    assert third.changed and third.nodes == first.nodes - 1
+    assert f"{ML}/other/textbook.pdf" not in by_path(seeded)
 
 
 def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
@@ -373,13 +379,7 @@ def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
     assert "nandatown" not in blob
     assert "site-packages" not in blob
     entities = seeded.paths.kb_graph / "entities"
-    assert entities.is_dir()
     assert not [p for p in entities.glob("*.md") if "nandatown" in p.read_text()]
-
-
-def test_backbone_since_filters_documents(seeded: Settings) -> None:
-    report = graph_mod.build_backbone(seeded, since="2999-01-01T00:00:00+00:00")
-    assert report.documents == 0
 
 
 # --------------------------------------------------------------------------
@@ -391,16 +391,9 @@ def test_graph_add_appends_valid_agent_facts(seeded: Settings, tmp_path: Path) -
 
     assert (report.appended_nodes, report.appended_edges) == (2, 2)
     nodes = graph_mod.load_nodes(seeded)
-    assert nodes["concept:regularization"]["type"] == "Concept"
-    assert nodes["concept:linear-regression"]["src"] == [LEC]
-    covers = [e for e in graph_mod.load_edges(seeded) if e["p"] == "covers"]
-    assert [(e["s"], e["o"]) for e in covers] == [
-        (graph_mod.resource_id(LEC), "concept:regularization")
-    ]
-    rows = graph_mod.query(
-        seeded, canned="prerequisites_of", params={"node": "concept:regularization"}
-    )
-    assert [r["prerequisite"] for r in rows] == ["Linear Regression"]
+    assert nodes["concept:ridge-regression"]["src"] == [LEC]
+    rows = graph_mod.query(seeded, canned="files_for_concept", params={"concept": "ridge%"})
+    assert {r["path"] for r in rows} == {HW, f"{ML}/assignments/hw-01/data.zip"}
     assert (seeded.paths.kb_graph / "entities" / "concept-regularization.md").exists()
 
 
@@ -412,25 +405,63 @@ def test_graph_add_is_idempotent(seeded: Settings, tmp_path: Path) -> None:
     assert (again.appended_nodes, again.appended_edges) == (0, 0)
 
 
+def test_an_agent_attaching_an_unfiled_file_closes_the_violation(
+    seeded: Settings, tmp_path: Path
+) -> None:
+    graph_mod.build_backbone(seeded)
+    [path] = [p for p in by_path(seeded) if p.endswith("Lecture05.pdf")]
+    fid = by_path(seeded)[path]["id"]
+    lec5 = "lecture:machine-learning:05"
+    graph_mod.add_records(
+        seeded,
+        write_jsonl(
+            tmp_path / "f.jsonl",
+            [
+                {"id": lec5, "type": "Lecture", "label": "Lecture 5", "attrs": {"number": 5},
+                 "src": [path]},
+                {"s": lec5, "p": "lecture_of_course", "o": COURSE, "src": path},
+                {"s": fid, "p": "file_of_lecture", "o": lec5, "src": path},
+            ],
+        ),
+    )  # fmt: skip
+    assert "unfiled" not in {v.code for v in graph_mod.check(seeded)}
+
+
+def test_an_edge_to_a_vanished_file_is_stale_not_fatal(seeded: Settings, tmp_path: Path) -> None:
+    graph_mod.build_backbone(seeded)
+    textbook = by_path(seeded)[f"{ML}/other/textbook.pdf"]["id"]
+    graph_mod.add_records(
+        seeded,
+        write_jsonl(
+            tmp_path / "f.jsonl",
+            [{"s": textbook, "p": "file_of_course", "o": COURSE, "src": LEC,
+              "attrs": {"reason": "the course textbook, used by every lecture"}}],
+        ),
+    )  # fmt: skip
+    (seeded.paths.workspace / ML / "other" / "textbook.pdf").unlink()
+    graph_mod.build_backbone(seeded)  # projects without the stale edge
+    stale = [v for v in graph_mod.check(seeded) if v.code == "stale_edge"]
+    assert [(v.node, v.severity) for v in stale] == [(textbook, "info")]
+
+
 @pytest.mark.parametrize(
     ("line", "message"),
     [
         ("{not json", "not valid JSON"),
         ('["a", "list"]', "JSON object"),
         ({"id": "widget:1", "type": "Widget", "label": "W", "src": [LEC]}, "unknown node type"),
-        (
-            {"id": "concept:x", "type": "Concept", "src": [LEC]},
-            "missing required field(s) ['label']",
-        ),
+        ({"id": "concept:x", "type": "Concept", "src": [LEC]}, "missing required field(s)"),
         ({"id": "concept:x", "type": "Concept", "label": "X"}, "['src']"),
         (
             {"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC], "kind": "node"},
             "unknown key(s) ['kind']",
         ),
         (
-            {"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC], "attrs": {"z": 1}},
+            {"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC],
+             "attrs": {"name": "X", "z": 1}},
             "no attribute(s) ['z']",
         ),
+        ({"id": "concept:x", "type": "Concept", "label": "X", "src": [LEC]}, "name: Field"),
         (
             {"id": "concept:x", "type": "Concept", "label": "X", "src": ["/etc/passwd"]},
             "workspace-relative",
@@ -440,33 +471,37 @@ def test_graph_add_is_idempotent(seeded: Settings, tmp_path: Path) -> None:
             "machinery",
         ),
         (
-            {"s": "concept:ghost", "p": "covers", "o": "concept:cart", "src": LEC},
+            {"id": "course:new", "type": "Course", "label": "New", "src": [LEC],
+             "attrs": {"folder": "New"}},
+            "come from the files on disk",
+        ),
+        (
+            {"id": "file:slides", "type": "DataFile", "label": "x", "src": [LEC],
+             "attrs": {"path": "x"}},
+            "already exists as a PdfFile",
+        ),
+        (
+            {"s": "concept:ghost", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": LEC},
             "not a known node",
         ),
         ({"s": "concept:cart", "p": "teleports", "o": "concept:cart", "src": LEC}, "unknown edge"),
-        ({"s": "concept:cart", "p": "part_of", "o": "course:ae", "src": LEC}, "cannot start at"),
-        ({"s": "resource:slides", "p": "covers", "o": "concept:cart"}, "['src']"),
         (
-            {"s": "resource:slides", "p": "covers", "o": "concept:cart", "src": LEC, "conf": 3},
+            {"s": "concept:cart", "p": "lecture_of_course", "o": "course:ae", "src": LEC},
+            "cannot start at",
+        ),
+        ({"s": "concept:cart", "p": "concept_in_lecture", "o": "lecture:ae:05"}, "['src']"),
+        (
+            {"s": "concept:cart", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": LEC,
+             "conf": 3},
             "between 0 and 1",
         ),
         (
-            {
-                "s": "resource:slides",
-                "p": "covers",
-                "o": "concept:cart",
-                "src": LEC,
-                "attrs": {"colour": "red"},
-            },
-            "no attribute(s) ['colour']",
-        ),
-        (
-            {"id": "concept:cart", "type": "Session", "label": "CART", "src": [LEC]},
-            "already exists",
+            {"s": "file:slides", "p": "file_of_course", "o": "course:ae", "src": LEC},
+            "reason: Field required",
         ),
         ({"label": "neither"}, "a line is a node"),
     ],
-)
+)  # fmt: skip
 def test_graph_add_rejects_the_whole_file_on_any_bad_line(
     settings: Settings, tmp_path: Path, line: Any, message: str
 ) -> None:
@@ -475,7 +510,8 @@ def test_graph_add_rejects_the_whole_file_on_any_bad_line(
         graph_mod.nodes_jsonl(settings).read_text(),
         graph_mod.triples_jsonl(settings).read_text(),
     )
-    good = {"id": "concept:fine", "type": "Concept", "label": "Fine", "src": [LEC]}
+    good = {"id": "concept:fine", "type": "Concept", "label": "Fine", "src": [LEC],
+            "attrs": {"name": "Fine"}}  # fmt: skip
     path = write_jsonl(tmp_path / "facts.jsonl", [good, line])
 
     with pytest.raises(MitsyncError) as excinfo:
@@ -511,10 +547,11 @@ def test_graph_add_accepts_edges_to_nodes_defined_later_in_the_file(
     path = write_jsonl(
         tmp_path / "facts.jsonl",
         [
-            {"s": "resource:slides", "p": "covers", "o": "concept:gini", "src": LEC},
-            {"id": "concept:gini", "type": "Concept", "label": "Gini impurity", "src": [LEC]},
+            {"s": "concept:gini", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": LEC},
+            {"id": "concept:gini", "type": "Concept", "label": "Gini impurity", "src": [LEC],
+             "attrs": {"name": "Gini impurity"}},
         ],
-    )
+    )  # fmt: skip
     report = graph_mod.add_records(settings, path)
     assert (report.appended_nodes, report.appended_edges) == (1, 1)
 
@@ -543,36 +580,29 @@ def test_an_unimplemented_backend_fails_with_a_clear_message(settings: Settings)
 def test_backend_upserts_are_replacements_not_duplicates(settings: Settings) -> None:
     seed_graph(settings)
     backend = graph_mod.get_backend(settings)
-    edge = {
-        "s": "resource:slides",
-        "p": "covers",
-        "o": "concept:cart",
-        "src": "a.pdf",
-        "conf": 0.1,
-    }
+    edge = {"s": "concept:cart", "p": "concept_in_lecture", "o": "lecture:ae:05", "src": "a.pdf",
+            "conf": 0.1}  # fmt: skip
     backend.upsert_edges([edge])
     backend.upsert_edges([edge])
-    rows = backend.query(
-        "SELECT conf FROM edges WHERE s='resource:slides' AND p='covers' AND o='concept:cart'"
-    )
+    rows = backend.query("SELECT conf FROM edges WHERE s='concept:cart' AND p='concept_in_lecture'")
     assert rows == [{"conf": 0.1}]
 
 
 # --------------------------------------------------------------------------
 # corruption in the append-only source of truth is loud, never skipped
 # --------------------------------------------------------------------------
-def test_a_malformed_jsonl_line_raises_naming_the_file_and_line(seeded: Settings) -> None:
+def test_a_malformed_jsonl_line_raises_naming_the_file_and_line(settings: Settings) -> None:
     """mitsync wrote nodes.jsonl. Garbage in it means mitsync wrote garbage."""
-    graph_mod.build_backbone(seeded)
-    path = graph_mod.nodes_jsonl(seeded)
+    seed_graph(settings)
+    path = graph_mod.nodes_jsonl(settings)
     path.write_text(path.read_text() + "{not json\n")
     with pytest.raises(MitsyncError, match="not valid JSON"):
-        graph_mod.load_nodes(seeded)
+        graph_mod.load_nodes(settings)
 
 
-def test_a_node_record_with_no_id_raises(seeded: Settings) -> None:
-    graph_mod.build_backbone(seeded)
-    path = graph_mod.nodes_jsonl(seeded)
+def test_a_node_record_with_no_id_raises(settings: Settings) -> None:
+    seed_graph(settings)
+    path = graph_mod.nodes_jsonl(settings)
     path.write_text(path.read_text() + json.dumps({"type": "Concept", "label": "x"}) + "\n")
     with pytest.raises(MitsyncError, match="no id"):
-        graph_mod.load_nodes(seeded)
+        graph_mod.load_nodes(settings)

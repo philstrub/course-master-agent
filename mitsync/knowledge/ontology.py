@@ -543,7 +543,13 @@ def _show(record: dict[str, Any]) -> str:
 # whole-graph structure
 # --------------------------------------------------------------------------
 class Violation(BaseModel):
-    """One structural problem `graph check` reports. `code` is stable for scripts."""
+    """One structural problem `graph check` reports. `code` is stable for scripts.
+
+    `severity` tells the loop what to do: `error` the agent fixes with `graph
+    add`; `human` only the student can fix (a duplicate pre-existing file may
+    not be deleted unasked), so the loop escalates; `info` is reported and
+    never blocks the stop condition.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
@@ -556,9 +562,11 @@ class Violation(BaseModel):
         "wrong_folder",
         "course_mismatch",
         "duplicate_content",
+        "stale_edge",
     ]
     node: str
     message: str
+    severity: Literal["error", "human", "info"] = "error"
 
 
 def _missing_code(ntype: str) -> str:
@@ -619,6 +627,7 @@ def structure_violations(
             out.append(
                 Violation(
                     code="duplicate_content",
+                    severity="human",
                     node=nid,
                     message=f"{attrs['path']} has identical copies at {attrs['duplicates']}",
                 )

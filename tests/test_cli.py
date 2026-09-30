@@ -184,3 +184,33 @@ def test_graph_add_reports_line_numbers(settings: Settings, use, tmp_path: Path)
     result = runner.invoke(cli.app, ["graph", "add", str(path)])
     assert result.exit_code != 0
     assert "line 1:" in str(result.exception) + result.output
+
+
+# --------------------------------------------------------------------------
+# graph check / schema: the loop's stopping oracle and the agents' ontology
+# --------------------------------------------------------------------------
+def test_graph_check_json_and_exit_code(use, settings: Settings) -> None:
+    use(settings)
+    ml = settings.paths.workspace / "Machine Learning"
+    (ml / "Lec1.pdf").write_bytes(b"%PDF-1.4 loose")
+    runner.invoke(cli.app, ["graph", "backbone"])
+
+    result = runner.invoke(cli.app, ["graph", "check", "--json"])
+    assert result.exit_code == 1  # a loose file nobody attached
+    doc = json.loads(result.stdout)
+    assert set(doc) == {"ok", "counts", "violations"}
+    assert doc["ok"] is False and doc["counts"] == {"error": 1, "human": 0, "info": 0}
+    [v] = doc["violations"]
+    assert set(v) == {"code", "node", "message", "severity"} and v["code"] == "unfiled"
+
+    (ml / "Lec1.pdf").unlink()
+    runner.invoke(cli.app, ["graph", "backbone"])
+    assert run_json("graph", "check")["ok"] is True
+
+
+def test_graph_schema_prints_the_ontology() -> None:
+    result = runner.invoke(cli.app, ["graph", "schema"])
+    assert result.exit_code == 0
+    doc = json.loads(result.stdout)
+    assert {"node_types", "edge_types", "cardinality", "bucket_edges"} <= set(doc)
+    assert doc["edge_types"]["file_of_lecture"]["target"] == ["Lecture"]
