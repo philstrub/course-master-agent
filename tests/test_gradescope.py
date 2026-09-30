@@ -237,7 +237,8 @@ def test_backbone_assignments_carry_canvas_and_gradescope_status(seeded: Setting
     nodes, edges, _ = graph_mod.load_graph(seeded)
 
     hw1 = nodes["assignment:machine-learning:hw-01"]  # the folder and both systems: one node
-    assert hw1["label"] == "15.095 - HW 1: Ridge - Fall 2026"
+    assert hw1["label"] == "Homework 1"
+    assert hw1["attrs"]["title"] == "15.095 - HW 1: Ridge - Fall 2026"
     assert hw1["attrs"]["folder"] == "Machine Learning/assignments/hw-01"
     assert hw1["attrs"]["submission_status"] == "graded"
     assert hw1["attrs"]["submitted_via"] == "gradescope"

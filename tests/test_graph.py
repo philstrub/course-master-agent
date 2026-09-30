@@ -116,13 +116,14 @@ def seed_graph(settings: Settings) -> None:
         [
             {"id": "course:ae", "type": "Course", "label": "Analytics Edge",
              "attrs": {"folder": "Analytics Edge"}},
-            {"id": "lecture:ae:05", "type": "Lecture", "label": "Trees", "attrs": {"number": 5}},
+            {"id": "lecture:ae:05", "type": "Lecture", "label": "Lecture 5",
+             "attrs": {"number": 5, "title": "Trees"}},
             {"id": "file:slides", "type": "File", "label": "trees.pdf",
              "attrs": {"path": "Analytics Edge/lectures/trees.pdf"},
              "src": ["Analytics Edge/lectures/trees.pdf"]},
             {"id": "file:sub", "type": "File", "label": "hw2.pdf",
              "attrs": {"path": "Analytics Edge/assignments/hw-02/hw2.pdf"}},
-            {"id": "assignment:ae:hw-02", "type": "Assignment", "label": "HW2",
+            {"id": "assignment:ae:hw-02", "type": "Assignment", "label": "Homework 2",
              "attrs": {"due_at": "2026-09-25T23:59:00Z", "submission_status": "submitted"}},
             {"id": "concept:cart", "type": "Concept", "label": "CART", "attrs": {"name": "CART"}},
             {"id": "concept:lonely", "type": "Concept", "label": "Lonely",
@@ -163,7 +164,7 @@ def test_jsonl_is_append_only_and_attrs_merge_on_projection(settings: Settings) 
     assert graph_mod.append_nodes(settings, [node]) == 1
     assert graph_mod.append_nodes(settings, [node]) == 0  # unchanged: nothing appended
 
-    lec = {"id": "lecture:ae:01", "type": "Lecture", "label": "L1", "src": ["x.pdf"]}
+    lec = {"id": "lecture:ae:01", "type": "Lecture", "label": "Lecture 1", "src": ["x.pdf"]}
     graph_mod.append_nodes(settings, [lec])
     edge = {"s": "lecture:ae:01", "p": "lecture_of_course", "o": "course:ae", "src": "x.pdf"}
     assert graph_mod.append_edges(settings, [edge]) == 1
@@ -245,7 +246,7 @@ def test_canned_assignments_due(settings: Settings) -> None:
     assert graph_mod.query(settings, canned="assignments_due") == [
         {
             "course": "Analytics Edge",
-            "assignment": "HW2",
+            "assignment": "Homework 2",
             "due_at": "2026-09-25T23:59:00Z",
             "status": "submitted",
             "node_id": "assignment:ae:hw-02",
@@ -257,8 +258,8 @@ def test_canned_files_for_concept(settings: Settings) -> None:
     seed_graph(settings)
     everything = graph_mod.query(settings, canned="files_for_concept")
     assert [(r["item"], r["path"]) for r in everything] == [
-        ("HW2", "Analytics Edge/assignments/hw-02/hw2.pdf"),
-        ("Trees", "Analytics Edge/lectures/trees.pdf"),
+        ("Homework 2", "Analytics Edge/assignments/hw-02/hw2.pdf"),
+        ("Lecture 5", "Analytics Edge/lectures/trees.pdf"),
     ]
     targeted = graph_mod.query(
         settings, canned="files_for_concept", params={"concept": "concept:cart"}
@@ -275,7 +276,7 @@ def test_canned_files_of_and_submitted(settings: Settings) -> None:
     ]
     assert graph_mod.query(settings, canned="submitted") == [
         {
-            "assignment": "HW2",
+            "assignment": "Homework 2",
             "status": "submitted",
             "via": None,
             "submitted_file": "Analytics Edge/assignments/hw-02/hw2.pdf",

@@ -52,6 +52,18 @@ prefix must match the node type:
 | Repo | `repo:<slug>` |
 | Concept | `concept:<slug>` (shared across courses) |
 
+**Names are canonical.** The id carries the course and the path; the label is
+what a person calls the item. A numbered lecture, recitation or assignment is
+named `Lecture 1`, `Recitation 2`, `Homework 3` (`Assignment 3` where the
+course says assignment), `Midterm 1`, and a
+pre-assignment `Recitation 1 Preassignment`, whatever Canvas, Gradescope or
+the folder call it ("15.C57 - HW 1: Linear Optimization - Fall 2026", `hw-01`).
+An unnumbered one is its title without course numbers or terms ("Project
+Proposal"), and a syllabus is `Syllabus`. The full source title stays in
+`attrs.title`. `item_label` computes the name and `validate_node` refuses any
+other. `title_key` is the same reduction as a key, which is how a Canvas
+assignment, its Gradescope twin and its folder are recognised as one item.
+
 **Edges read left to right.** `file_of_lecture` goes file -> lecture,
 `concept_in_assignment` goes concept -> assignment, `course_follows_syllabus`
 goes course -> syllabus.
@@ -93,11 +105,62 @@ MISC_SHARE = 0.15
 MISC_FLOOR = 2
 
 _SLUG_RX = re.compile(r"[^a-z0-9]+")
+_KINDS = {
+    "hw": "hw", "homework": "hw", "pset": "hw", "problem set": "hw", "ps": "hw",
+    "assignment": "hw", "lab": "lab", "midterm": "midterm", "exam": "exam",
+    "quiz": "quiz", "recitation": "recitation", "project": "project", "lecture": "lecture",
+    "lec": "lecture",
+}  # fmt: skip
+KIND_NAMES = {
+    "hw": "Homework", "lab": "Lab", "midterm": "Midterm", "exam": "Exam", "quiz": "Quiz",
+    "recitation": "Recitation", "project": "Project", "lecture": "Lecture",
+}  # fmt: skip
+_NUMBERED_RX = re.compile(
+    r"\b("
+    + "|".join(sorted(map(re.escape, _KINDS), key=len, reverse=True))
+    + r")\s*[-#_]?\s*0*(\d{1,2})\b"
+)
+_PRE_RX = re.compile(r"\bpre[\s-]?assignment\b")
+_NOISE_RX = re.compile(
+    r"\b(\d{1,2}\.[a-z0-9]{2,4}(_[a-z]{2}\d{2})?|fall|spring|summer|winter|20\d\d)\b",
+    re.IGNORECASE,
+)
 _KEY_RX = re.compile(r"^[a-z0-9][a-z0-9.-]*(:[a-z0-9][a-z0-9.-]*)*$")
 
 
 def slug(text: str) -> str:
     return _SLUG_RX.sub("-", str(text).lower()).strip("-") or "unnamed"
+
+
+# --------------------------------------------------------------------------
+# names
+# --------------------------------------------------------------------------
+def title_key(title: str) -> tuple[str, ...]:
+    """A key on which Canvas, Gradescope and folder names of one item agree.
+
+    A numbered kind becomes `("hw", "1")` / `("midterm", "2")`, prefixed `pre-`
+    for a pre-assignment; anything else its lowercased words without course
+    numbers and terms.
+    """
+    text = title.lower().replace("_", " ")
+    m = _NUMBERED_RX.search(text)
+    if m:
+        kind = _KINDS[m.group(1)]
+        return ("pre-" + kind if _PRE_RX.search(text) else kind, m.group(2).lstrip("0") or "0")
+    return tuple(re.findall(r"[a-z0-9]+", _NOISE_RX.sub(" ", text)))
+
+
+def item_label(title: str) -> str:
+    """The canonical name of a lecture, recitation or assignment (see Names above)."""
+    m = _NUMBERED_RX.search(title.lower().replace("_", " "))
+    if m:
+        word = "Assignment" if m.group(1) == "assignment" else KIND_NAMES[_KINDS[m.group(1)]]
+        name = f"{word} {m.group(2).lstrip('0') or '0'}"
+        return name + " Preassignment" if _PRE_RX.search(title.lower()) else name
+    text = " ".join(_NOISE_RX.sub(" ", title.replace("_", " ")).split())
+    text = re.sub(r"^[\s\-:,.]+|[\s\-:,.]+$", "", text)
+    text = re.sub(r"\s+-\s+-\s+", " - ", text)
+    return text[:1].upper() + text[1:] if text else title
 
 
 # --------------------------------------------------------------------------
@@ -520,6 +583,14 @@ def validate_node(node: dict[str, Any]) -> None:
     problem = _attr_errors(model, attrs, f"node type {ntype}")
     if problem:
         raise OntologyError(f"{problem} in {_show(node)}")
+    label = str(node.get("label") or "")
+    if model in ITEM_TYPES and label != item_label(label):
+        raise OntologyError(
+            f"{ntype} label must be the canonical name {item_label(label)!r}, not {label!r} "
+            f"(keep the source title in attrs.title) in {_show(node)}"
+        )
+    if model is Syllabus and label != "Syllabus":
+        raise OntologyError(f"a Syllabus is labelled 'Syllabus', not {label!r} in {_show(node)}")
 
 
 def validate_edge(edge: dict[str, Any], node_types: dict[str, str]) -> None:

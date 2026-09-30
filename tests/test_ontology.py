@@ -12,8 +12,8 @@ from mitsync.knowledge import ontology as onto
 ML = "Machine Learning"
 
 
-def node(nid: str, ntype: str, **attrs: Any) -> dict[str, Any]:
-    return {"id": nid, "type": ntype, "label": nid, "attrs": attrs, "src": []}
+def node(nid: str, ntype: str, label: str | None = None, **attrs: Any) -> dict[str, Any]:
+    return {"id": nid, "type": ntype, "label": label or nid, "attrs": attrs, "src": []}
 
 
 def edge(s: str, p: str, o: str, **attrs: Any) -> dict[str, Any]:
@@ -68,7 +68,38 @@ def test_describe_carries_the_docstrings_agents_follow() -> None:
 # records
 # --------------------------------------------------------------------------
 def test_a_valid_node_passes() -> None:
-    onto.validate_node(node(LEC3, "Lecture", number=3, held_on="2026-09-10"))
+    onto.validate_node(node(LEC3, "Lecture", "Lecture 3", number=3, held_on="2026-09-10"))
+
+
+@pytest.mark.parametrize(
+    ("title", "name"),
+    [
+        ("15.C57 - HW 1: Linear Optimization - Fall 2026", "Homework 1"),
+        ("hw-01", "Homework 1"),
+        ("recitation 03", "Recitation 3"),
+        ("Assignment 1", "Assignment 1"),
+        ("15.C57 - Midterm 2 - Fall 2026", "Midterm 2"),
+        ("Recitation 1 Preassignment", "Recitation 1 Preassignment"),
+        ("15.C57 - Term Project Presentations - Fall 2026", "Term Project Presentations"),
+        ("Project Proposal", "Project Proposal"),
+    ],
+)
+def test_items_have_canonical_names(title: str, name: str) -> None:
+    assert onto.item_label(title) == name
+    assert onto.item_label(name) == name  # a canonical name is a fixed point
+
+
+@pytest.mark.parametrize(
+    ("record", "message"),
+    [
+        (node(LEC3, "Lecture", "Machine Learning lecture 3"), "canonical name 'Lecture 3'"),
+        (node(HW1, "Assignment", "HW 1: Linear Optimization"), "canonical name 'Homework 1'"),
+        (node("syllabus:machine-learning", "Syllabus", "ML syllabus"), "labelled 'Syllabus'"),
+    ],
+)
+def test_non_canonical_item_names_are_refused(record: dict[str, Any], message: str) -> None:
+    with pytest.raises(OntologyError, match=message):
+        onto.validate_node(record)
 
 
 @pytest.mark.parametrize(

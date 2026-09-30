@@ -114,7 +114,6 @@ from mitsync.filing.course_map import (
     load_course_map,
     mirror_course_folders,
 )
-from mitsync.gradescope.snapshot import title_key
 from mitsync.knowledge.extract import DOCUMENT_EXTENSIONS, iter_sources, sha256_of
 from mitsync.knowledge.ontology import (
     BUCKET_EDGES,
@@ -125,9 +124,11 @@ from mitsync.knowledge.ontology import (
     Violation,
     course_id,
     item_id,
+    item_label,
     slug,
     structure_violations,
     syllabus_id,
+    title_key,
     validate_edge,
     validate_node,
 )
@@ -875,22 +876,21 @@ def build_backbone(settings: Settings) -> GraphReport:
                     iattrs["number"] = int(number.group(1))
                 if kind is Assignment and parts[2].startswith("hw-"):
                     iattrs["kind"] = "homework"
-                item(iid, kind.__name__, f"{folder} {parts[2]}", iattrs, canonical, ts)
+                label = item_label(parts[2].replace("-", " ").replace("_", " "))
+                item(iid, kind.__name__, label, iattrs, canonical, ts)
                 edges.append({"s": iid, "p": f"{kind.__name__.lower()}_of_course", "o": cid,
                               "src": canonical, "ts": ts})  # fmt: skip
                 parent = (f"file_of_{kind.__name__.lower()}", iid, {})
             elif bucket == "syllabus":
                 sid = syllabus_id(folder)
-                item(sid, "Syllabus", f"{folder} syllabus", {}, canonical, ts)
+                item(sid, "Syllabus", "Syllabus", {}, canonical, ts)
                 edges.append({"s": cid, "p": "course_follows_syllabus", "o": sid,
                               "src": canonical, "ts": ts})  # fmt: skip
                 parent = ("file_of_syllabus", sid, {})
             elif bucket == "lectures" and (m := _LECTURE_RX.search(Path(canonical).stem.lower())):
                 number = int(m.group(1))
                 lid = item_id(Lecture, folder, f"{number:02d}")
-                item(
-                    lid, "Lecture", f"{folder} lecture {number}", {"number": number}, canonical, ts
-                )
+                item(lid, "Lecture", f"Lecture {number}", {"number": number}, canonical, ts)
                 edges.append({"s": lid, "p": "lecture_of_course", "o": cid,
                               "src": canonical, "ts": ts})  # fmt: skip
                 parent = ("file_of_lecture", lid, {})
@@ -959,7 +959,7 @@ def _add_assignments(
         node = nodes.setdefault(
             aid, {"id": aid, "type": "Assignment", "attrs": {}, "src": [], "ts": ts}
         )
-        node["label"] = fact["title"]
+        node["label"] = item_label(fact["title"])
         node["attrs"] = {**node["attrs"], **attrs}
         node["src"] = sorted({*node["src"], *src})
         node["ts"] = max(node["ts"], ts)

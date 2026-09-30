@@ -7,9 +7,9 @@ modules need from it.
 ## 1. What This Module Does
 
 Declares `Snapshot` / `GsCourse` / `GsAssignment` (pydantic, `extra="forbid"`),
-reads and writes `state/gradescope.json`, renders an assignment's status the
-way `deadlines.submission_status` renders Canvas's (`status_text`), and
-reduces an assignment title to a key two systems can agree on (`title_key`).
+reads and writes `state/gradescope.json`, and renders an assignment's status
+the way `deadlines.submission_status` renders Canvas's (`status_text`).
+`title_key` is re-exported from the ontology, which owns naming.
 
 ## 2. Why This Module Exists
 
@@ -25,22 +25,21 @@ A leaf: no HTTP, no parsing. `client` writes the file, `deadlines` and
 
 ## 4. Key Concepts
 
-**Title keys.** A numbered kind (`hw 1`, `Homework 01`, `pset1`, `Midterm 2`)
-becomes `("hw", 1)` / `("midterm", 2)`. Anything else becomes its lowercased
-words with the course number and term removed. Two titles match when their
-keys are equal.
+**Title keys.** `ontology.title_key` reduces "HW 1", "Homework 01" and
+`hw-01` to `("hw", "1")`. Two titles match when their keys are equal.
 
 **Status.** One of the ontology's `submission_status` values. A score on the
-dashboard means `graded`; "No Submission" after the due date means `missing`.
+dashboard means `graded`, and "No Submission" after the due date means `missing`.
 """
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel, ConfigDict
+
+from mitsync.knowledge.ontology import title_key
 
 if TYPE_CHECKING:  # pragma: no cover
     from pathlib import Path
@@ -50,18 +49,6 @@ if TYPE_CHECKING:  # pragma: no cover
 __all__ = ["GsAssignment", "GsCourse", "Snapshot", "load", "path", "status_text", "title_key"]
 
 Status = Literal["unsubmitted", "submitted", "late", "missing", "graded"]
-
-_KINDS = {
-    "hw": "hw", "homework": "hw", "pset": "hw", "problem set": "hw", "ps": "hw",
-    "assignment": "hw", "lab": "lab", "midterm": "midterm", "exam": "exam",
-    "quiz": "quiz", "recitation": "recitation", "project": "project",
-}  # fmt: skip
-_NUMBERED_RX = re.compile(
-    r"\b("
-    + "|".join(sorted(map(re.escape, _KINDS), key=len, reverse=True))
-    + r")\s*[-#_]?\s*0*(\d{1,2})\b"
-)
-_NOISE_RX = re.compile(r"\b(\d{1,2}\.[a-z0-9]{2,4}|fall|spring|summer|winter|20\d\d)\b")
 
 
 class GsAssignment(BaseModel):
@@ -112,12 +99,3 @@ def status_text(a: GsAssignment) -> str:
     if a.score is not None and a.points:
         text += f", {a.score:g}/{a.points:g}"
     return text
-
-
-def title_key(title: str) -> tuple[str, ...]:
-    """A key on which Canvas, Gradescope and folder names of one assignment agree."""
-    text = title.lower().replace("_", " ")
-    m = _NUMBERED_RX.search(text)
-    if m:
-        return (_KINDS[m.group(1)], m.group(2).lstrip("0") or "0")
-    return tuple(re.findall(r"[a-z0-9]+", _NOISE_RX.sub(" ", text)))
