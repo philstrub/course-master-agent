@@ -27,10 +27,13 @@ time. Nothing reads Neo4j back into mitsync. Connection settings come from
 
 ## 4. Key Concepts
 
-**Labels and types.** Every node carries the `MitNode` label (the uniqueness
-constraint on `id` and the scope of the wipe) plus its ontology type (`Course`,
-`File`, ...). A relationship's type is the edge name upper-cased
-(`file_of_lecture` -> `FILE_OF_LECTURE`).
+**Labels and types.** A node's only label is its ontology type (`Course`,
+`File`, ...), with a uniqueness constraint on `id` per type. A relationship's
+type is the edge name upper-cased (`file_of_lecture` -> `FILE_OF_LECTURE`).
+
+**What a push replaces.** Every node labelled with an ontology type, and its
+relationships. Nodes with other labels are left alone, so the database may be
+shared, but a node someone else labelled `Course` is replaced like ours.
 
 **Flat properties.** Neo4j properties are scalars or lists of scalars, so
 `attrs` are stored as top-level properties next to `id`, `label` and `src`,
@@ -58,6 +61,7 @@ from typing import TYPE_CHECKING, Any
 
 from mitsync.core.errors import MitsyncError
 from mitsync.knowledge.graph import load_graph
+from mitsync.knowledge.ontology import NODE_TYPES
 
 if TYPE_CHECKING:  # pragma: no cover
     from neo4j import Driver
@@ -66,7 +70,6 @@ if TYPE_CHECKING:  # pragma: no cover
 
 __all__ = ["cypher", "push", "records"]
 
-NODE_LABEL = "MitNode"
 BATCH = 500
 URI_SCHEMES = ("bolt", "bolt+s", "bolt+ssc", "neo4j", "neo4j+s", "neo4j+ssc")
 _WRITE_RX = re.compile(
@@ -113,7 +116,11 @@ def _props(base: dict[str, Any], attrs: dict[str, Any]) -> dict[str, Any]:
 
 
 def records(settings: Settings) -> tuple[dict[str, list[dict]], dict[str, list[dict]]]:
-    """(node props by type, relationship rows by rel type) for the live graph."""
+    """(node props by type, relationship rows by rel type) for the live graph.
+
+    A relationship row carries its endpoint types, so the push can match both
+    ends through the per-type id index.
+    """
     nodes, edges, _ = load_graph(settings)
     by_type: dict[str, list[dict]] = defaultdict(list)
     for node in nodes.values():
@@ -128,7 +135,8 @@ def records(settings: Settings) -> tuple[dict[str, list[dict]], dict[str, list[d
         prior = merged.get(key)
         src = sorted({edge["src"], *(prior["props"]["src"] if prior else [])})
         props = _props({"src": src, "conf": edge["conf"]}, edge["attrs"])
-        merged[key] = {"s": edge["s"], "o": edge["o"], "props": props}
+        ends = {"s_type": nodes[edge["s"]]["type"], "o_type": nodes[edge["o"]]["type"]}
+        merged[key] = {"s": edge["s"], "o": edge["o"], "props": props, **ends}
     by_rel: dict[str, list[dict]] = defaultdict(list)
     for (_, p, _), row in merged.items():
         by_rel[p.upper()].append(row)
@@ -144,29 +152,37 @@ def _batches(rows: list[dict]) -> Iterator[list[dict]]:
 
 
 def push(settings: Settings) -> dict[str, int]:
-    """Replace mitsync's part of the Neo4j database with the live graph; returns counts."""
+    """Replace every ontology-typed node in Neo4j with the live graph; returns counts."""
     by_type, by_rel = records(settings)
+    types = sorted(NODE_TYPES)
+    ours = "any(l IN labels(n) WHERE l IN $types)"
     with _driver() as driver:
-        driver.execute_query(
-            f"CREATE CONSTRAINT mitnode_id IF NOT EXISTS "
-            f"FOR (n:{NODE_LABEL}) REQUIRE n.id IS UNIQUE"
-        )
-        driver.execute_query(f"MATCH (n:{NODE_LABEL}) DETACH DELETE n")
+        for ntype in types:
+            driver.execute_query(
+                f"CREATE CONSTRAINT {ntype.lower()}_id IF NOT EXISTS "
+                f"FOR (n:`{ntype}`) REQUIRE n.id IS UNIQUE"
+            )
+        driver.execute_query(f"MATCH (n) WHERE {ours} DETACH DELETE n", types=types)
         for ntype, rows in by_type.items():
             for batch in _batches(rows):
                 driver.execute_query(
-                    f"UNWIND $rows AS r CREATE (n:{NODE_LABEL}:`{ntype}`) SET n = r", rows=batch
+                    f"UNWIND $rows AS r CREATE (n:`{ntype}`) SET n = r", rows=batch
                 )
+        groups: dict[tuple[str, str, str], list[dict]] = defaultdict(list)
         for rel, rows in by_rel.items():
+            for row in rows:
+                groups[(rel, row["s_type"], row["o_type"])].append(row)
+        for (rel, s_type, o_type), rows in groups.items():
             for batch in _batches(rows):
                 driver.execute_query(
-                    f"UNWIND $rows AS r MATCH (a:{NODE_LABEL} {{id: r.s}}), "
-                    f"(b:{NODE_LABEL} {{id: r.o}}) CREATE (a)-[e:`{rel}`]->(b) SET e = r.props",
+                    f"UNWIND $rows AS r MATCH (a:`{s_type}` {{id: r.s}}), "
+                    f"(b:`{o_type}` {{id: r.o}}) CREATE (a)-[e:`{rel}`]->(b) SET e = r.props",
                     rows=batch,
                 )
         stored = driver.execute_query(
-            f"MATCH (n:{NODE_LABEL}) OPTIONAL MATCH (n)-[e]->(:{NODE_LABEL}) "
-            "RETURN count(DISTINCT n) AS nodes, count(e) AS edges"
+            f"MATCH (n) WHERE {ours} OPTIONAL MATCH (n)-[e]->() "
+            "RETURN count(DISTINCT n) AS nodes, count(e) AS edges",
+            types=types,
         ).records[0]
     expected = {"nodes": sum(map(len, by_type.values())), "edges": sum(map(len, by_rel.values()))}
     if dict(stored) != expected:

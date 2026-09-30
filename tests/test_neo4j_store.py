@@ -22,7 +22,7 @@ def test_records_flatten_attrs_label_by_type_and_upper_case_edges(settings: Sett
     assert set(by_type) == {"Course", "Lecture", "File", "Assignment", "Concept"}
     hw = next(r for r in by_type["Assignment"] if r["id"] == "assignment:ae:hw-02")
     assert hw["submission_status"] == "submitted"  # attrs are top-level properties
-    assert hw["name"] == "HW2"  # the caption browsers pick up
+    assert hw["name"] == "Homework 2"  # the caption browsers pick up
     assert "attrs" not in hw
     assert all(v is not None for rows in by_type.values() for r in rows for v in r.values())
 
