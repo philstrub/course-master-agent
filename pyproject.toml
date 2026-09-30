@@ -13,6 +13,7 @@ dependencies = [
     "jsonschema>=4",
     "python-frontmatter>=1.1",
     "pymupdf>=1.24",
+    "neo4j>=5.20",
 ]
 
 [project.optional-dependencies]

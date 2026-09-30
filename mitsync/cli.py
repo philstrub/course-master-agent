@@ -418,6 +418,32 @@ def graph_query(
     graph_mod.query(settings, sql=sql, canned=canned)
 
 
+@graph_app.command("push")
+def graph_push() -> None:
+    """Replace the graph in Neo4j (NEO4J_URI / _USERNAME / _PASSWORD) with the live JSONL graph."""
+    from mitsync.knowledge import neo4j_store
+
+    settings = _settings()
+    counts = neo4j_store.push(settings)
+    print(f"graph push: {counts['nodes']} nodes, {counts['edges']} edges -> neo4j")
+
+
+@graph_app.command("cypher")
+def graph_cypher(
+    query: Annotated[str, typer.Argument(help="A read-only Cypher query.")],
+    as_json: JsonOpt = False,
+) -> None:
+    """Run a read-only Cypher query against the graph pushed to Neo4j."""
+    from mitsync.knowledge import neo4j_store
+
+    _settings()  # loads .env
+    rows = neo4j_store.cypher(query)
+    if as_json:
+        _emit_json(rows)
+        return
+    graph_mod.print_rows("cypher", rows)
+
+
 @kb_app.command("build")
 def kb_build() -> None:
     """Rebuild `_kb/` indexes, manifest and AGENTS.md. Never touches an agent's NOTES.md."""

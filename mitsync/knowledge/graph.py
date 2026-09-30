@@ -506,10 +506,9 @@ def get_backend(settings: Settings) -> GraphBackend:
     if backend == "duckdb":
         return DuckDBBackend(settings)
     raise MitsyncError(
-        f"unsupported graph backend {backend!r}: only 'duckdb' is implemented. "
-        "A neo4j projection would need a running Neo4j server, connection settings "
-        "(uri, user, password env var) and a GraphBackend implementation over the bolt "
-        "driver -- none of which exist. Set graph.backend: duckdb in config/settings.yml."
+        f"unsupported graph backend {backend!r}: canned queries run on 'duckdb'. "
+        "Neo4j is a second projection, not a backend: `mitsync graph push` fills it and "
+        "`mitsync graph cypher` reads it. Set graph.backend: duckdb in config/settings.yml."
     )
 
 
