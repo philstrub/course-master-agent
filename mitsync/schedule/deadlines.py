@@ -105,6 +105,7 @@ __all__ = [
     "FILES_PER_FOLDER",
     "RECENT_WORK_DAYS",
     "DueReport",
+    "assignment_facts",
     "build_due",
     "class_meetings",
     "course_files",
@@ -403,6 +404,86 @@ def _gradescope_overlay(
                 )
             )  # fmt: skip
     return items + added
+
+
+_PLACEHOLDER_TYPES = frozenset({"none", "not_graded", "on_paper", "external_tool"})
+_KIND_OF_KEY = {"hw": "homework", "lab": "homework", "midterm": "exam", "exam": "exam",
+                "quiz": "quiz", "project": "project"}  # fmt: skip
+
+
+def _kind(title: str) -> str | None:
+    key = gs_snapshot.title_key(title)
+    return _KIND_OF_KEY.get(key[0]) if key else None
+
+
+def _canvas_status(raw: dict[str, Any]) -> str | None:
+    """Canvas's status in the ontology's words; None for a placeholder that takes no work."""
+    if set(raw.get("submission_types") or []) <= _PLACEHOLDER_TYPES:
+        return None  # handed in elsewhere (Gradescope, paper): Canvas cannot know
+    sub = raw.get("submission") or {}
+    if sub.get("missing"):
+        return "missing"
+    state = sub.get("workflow_state") or "unsubmitted"
+    if state == "graded":
+        return "graded"
+    if state in ("submitted", "pending_review"):
+        return "late" if sub.get("late") else "submitted"
+    return "unsubmitted"
+
+
+def assignment_facts(settings: Settings) -> list[dict[str, Any]]:
+    """Every Canvas and Gradescope assignment of a mapped course, as `Assignment` attrs.
+
+    Each dict carries `course` (the student's folder), `src` and `ts` next to the
+    attrs. Gradescope's status and score win on the Canvas record with the same
+    `title_key`, exactly as in `due`, and a Gradescope-only assignment is its own
+    fact. This is the graph's memory of submitted work.
+    """
+    folders = _course_folders(settings)
+    mapped = set(existing_course_folders(settings))
+    facts: list[dict[str, Any]] = []
+    for meta in sorted(settings.paths.canvas_mirror.glob("*/_meta/assignments.json")):
+        course = folders.get(meta.parent.parent.name)
+        if course not in mapped:
+            continue
+        fetched = read_json(meta).get("fetched_at")
+        for raw in read_meta(meta):
+            sub = raw.get("submission") or {}
+            title = str(raw.get("name") or "(untitled)")
+            status = _canvas_status(raw)
+            facts.append({
+                "course": course, "title": title,
+                "kind": _kind(title),
+                "due_at": _iso(raw.get("due_at")), "canvas_id": raw.get("id"),
+                "points_possible": raw.get("points_possible"),
+                "submission_status": status,
+                "submitted_at": _iso(sub.get("submitted_at")) if status else None,
+                "score": sub.get("score") if status else None,
+                "submitted_via": "canvas" if status else None,
+                "src": [settings.paths.safe_relative(meta).as_posix()], "ts": _iso(fetched),
+            })  # fmt: skip
+    snap = gs_snapshot.load(settings)
+    for course in snap.courses if snap else []:
+        if course.folder not in mapped:
+            continue
+        rows = [f for f in facts if f["course"] == course.folder]
+        for a in course.assignments:
+            key = gs_snapshot.title_key(a.title)
+            hits = [f for f in rows if gs_snapshot.title_key(f["title"]) == key]
+            fact = hits[0] if len(hits) == 1 else None
+            if fact is None:
+                fact = {"course": course.folder, "title": a.title,
+                        "kind": _kind(a.title),
+                        "due_at": a.due_at and a.due_at.isoformat(), "src": []}  # fmt: skip
+                facts.append(fact)
+            fact |= {
+                "submission_status": a.status, "score": a.score, "submitted_via": "gradescope",
+                "points_possible": a.points or fact.get("points_possible"),
+                "src": [*fact["src"],
+                        a.url or f"https://www.gradescope.com/courses/{course.gradescope_id}"],
+                "ts": snap.fetched_at.isoformat(),
+            }  # fmt: skip
+    return facts
 
 
 def last_sync(settings: Settings) -> str | None:

@@ -157,10 +157,9 @@ class Assignment(NodeAttrs):
     """Anything graded or submitted: homework, project, exam, pre-assignment.
 
     Stored in `<Course>/assignments/<item>/`. The submission fields are the
-    memory of the student's own work: set them from `mitsync due --json`
-    (Canvas) or from the student's word for work submitted elsewhere
-    (Gradescope), and mark the submitted file with
-    `file_of_assignment {role: submission}`.
+    memory of the student's own work: the backbone sets them from Canvas and
+    from `gradescope sync` (Gradescope wins), and the agent marks the file
+    that was handed in with `file_of_assignment {role: submission}`.
     """
 
     id_prefix: ClassVar[str] = "assignment"

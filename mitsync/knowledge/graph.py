@@ -55,7 +55,9 @@ Canvas-named folder is the same course as the student's; and, wherever the
 folder a file is filed in says so unambiguously, its parent item
 (`assignments/<item>/`, `recitations/<item>/`, `syllabus/`, a numbered file in
 `lectures/`, `other/` / `notes/`). Everything else is left unattached for the
-agent, and `check` lists it as `unfiled`.
+agent, and `check` lists it as `unfiled`. Every Canvas and Gradescope
+assignment of a mapped course is an `Assignment` node carrying the student's
+submission status, joined to its `assignments/<item>/` node by title key.
 
 **Stale edges.** An agent edge whose endpoint the backbone no longer produces
 (the file was deleted or re-filed) is kept in the append-only file, left out of
@@ -94,7 +96,7 @@ import hashlib
 import json
 import re
 import tempfile
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -112,6 +114,7 @@ from mitsync.filing.course_map import (
     load_course_map,
     mirror_course_folders,
 )
+from mitsync.gradescope.snapshot import title_key
 from mitsync.knowledge.extract import DOCUMENT_EXTENSIONS, iter_sources, sha256_of
 from mitsync.knowledge.ontology import (
     BUCKET_EDGES,
@@ -898,6 +901,7 @@ def build_backbone(settings: Settings) -> GraphReport:
                 edges.append({"s": fid, "p": p, "o": target, "attrs": eattrs,
                               "src": canonical, "ts": ts})  # fmt: skip
 
+    _add_assignments(settings, nodes, edges)
     records = [normalize_node(n) for n in nodes.values()]
     for node in records:
         validate_node(node)
@@ -917,6 +921,50 @@ def build_backbone(settings: Settings) -> GraphReport:
     _project(settings, report)
     log.info("graph backbone: %s", report.summary())
     return report
+
+
+def _add_assignments(
+    settings: Settings, nodes: dict[str, dict[str, Any]], edges: list[dict[str, Any]]
+) -> None:
+    """Canvas and Gradescope assignments, with the student's submission state.
+
+    A fact joins the `assignments/<item>/` node of its course with the same
+    `title_key` when exactly one does, so `hw-01/` and "HW 1: Linear
+    Optimization" are one node carrying both the files and the status. Two
+    facts of one course sharing a key ("Homework 2" and "Homework 2 (Extra)")
+    join nothing and are keyed by their full titles instead.
+    """
+    from mitsync.schedule.deadlines import assignment_facts
+
+    facts = assignment_facts(settings)
+    folder_items: dict[tuple[str, tuple[str, ...]], list[str]] = defaultdict(list)
+    for node in nodes.values():
+        if node["type"] == "Assignment":
+            course = node["attrs"]["folder"].split("/")[0]
+            folder_items[(course, title_key(node["attrs"]["title"]))].append(node["id"])
+    shared = Counter((f["course"], title_key(f["title"])) for f in facts)
+    fields = set(Assignment.model_fields)
+    for fact in facts:
+        key = (fact["course"], title_key(fact["title"]))
+        unique = shared[key] == 1
+        if unique and len(folder_items[key]) == 1:
+            aid = folder_items[key][0]
+        else:
+            numbered = len(key[1]) == 2 and key[1][1].isdigit()
+            name = f"{key[1][0]}-{int(key[1][1]):02d}" if numbered else "-".join(key[1])
+            aid = item_id(Assignment, fact["course"], (name if unique else "") or fact["title"])
+        attrs = {k: v for k, v in fact.items() if k in fields and v is not None}
+        src = [fact["src"]] if isinstance(fact["src"], str) else fact["src"]
+        ts = fact["ts"] or _iso(0)
+        node = nodes.setdefault(
+            aid, {"id": aid, "type": "Assignment", "attrs": {}, "src": [], "ts": ts}
+        )
+        node["label"] = fact["title"]
+        node["attrs"] = {**node["attrs"], **attrs}
+        node["src"] = sorted({*node["src"], *src})
+        node["ts"] = max(node["ts"], ts)
+        edges.append({"s": aid, "p": "assignment_of_course", "o": course_id(fact["course"]),
+                      "src": src[0], "ts": ts})  # fmt: skip
 
 
 def _project(settings: Settings, report: GraphReport) -> None:

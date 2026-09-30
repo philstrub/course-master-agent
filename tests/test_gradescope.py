@@ -191,3 +191,64 @@ def test_due_warns_when_the_cookie_is_set_but_sync_never_ran(
     monkeypatch.setenv("GRADESCOPE_COOKIE", "c=1")
     warnings = deadlines.build_due(seeded).warnings
     assert any("gradescope sync" in w for w in warnings)
+
+
+# --------------------------------------------------------------------------
+# the graph's memory of submitted work
+# --------------------------------------------------------------------------
+def test_backbone_assignments_carry_canvas_and_gradescope_status(seeded: Settings) -> None:  # noqa: F811
+    from mitsync.knowledge import graph as graph_mod
+    from tests.test_deadlines import MIRROR, write_meta
+
+    write_meta(
+        seeded.paths.canvas_mirror / MIRROR / "_meta" / "assignments.json",
+        1,
+        [
+            {"id": 71, "name": "15.095 - HW 1: Ridge - Fall 2026",
+             "submission_types": ["not_graded"], "due_at": "2026-09-20T03:59:00Z",
+             "submission": {"workflow_state": "unsubmitted"}},
+            {"id": 72, "name": "Project Proposal", "submission_types": ["online_upload"],
+             "points_possible": 10, "submission": {"workflow_state": "graded", "score": 9,
+                                                   "submitted_at": "2026-09-10T12:00:00Z"}},
+            {"id": 73, "name": "Homework 2", "submission_types": ["online_upload"]},
+            {"id": 74, "name": "Homework 2 (Extra)", "submission_types": ["online_upload"]},
+        ],
+    )  # fmt: skip
+    hw = seeded.paths.workspace / "Machine Learning" / "assignments" / "hw-01"
+    hw.mkdir(parents=True)
+    (hw / "answers.md").write_text("# my answers\n")
+    snapshot.path(seeded).write_text(
+        snapshot.Snapshot(
+            fetched_at=NOW,
+            courses=[snapshot.GsCourse(
+                gradescope_id="111", shortname="15.095", name="ML", folder="Machine Learning",
+                assignments=[snapshot.GsAssignment(
+                    gradescope_id="501", title="HW 1", status="graded", score=8, points=10,
+                    url="https://www.gradescope.com/courses/111/assignments/501")],
+            )],
+        ).model_dump_json()
+    )  # fmt: skip
+
+    graph_mod.build_backbone(seeded)
+    nodes, edges, _ = graph_mod.load_graph(seeded)
+
+    hw1 = nodes["assignment:machine-learning:hw-01"]  # the folder and both systems: one node
+    assert hw1["label"] == "15.095 - HW 1: Ridge - Fall 2026"
+    assert hw1["attrs"]["folder"] == "Machine Learning/assignments/hw-01"
+    assert hw1["attrs"]["submission_status"] == "graded"
+    assert hw1["attrs"]["submitted_via"] == "gradescope"
+    assert (hw1["attrs"]["score"], hw1["attrs"]["points_possible"]) == (8, 10)
+    assert "https://www.gradescope.com/courses/111/assignments/501" in hw1["src"]
+
+    proposal = nodes["assignment:machine-learning:project-proposal"]
+    assert proposal["attrs"]["submission_status"] == "graded"
+    assert proposal["attrs"]["submitted_via"] == "canvas"
+
+    # sharing a title key joins nothing: each keeps its own full title
+    assert "assignment:machine-learning:homework-2" in nodes
+    assert "assignment:machine-learning:homework-2-extra" in nodes
+    assert "assignment:machine-learning:hw-02" not in nodes
+
+    parents = {e["s"] for e in edges if e["p"] == "assignment_of_course"}
+    assert {n for n, v in nodes.items() if v["type"] == "Assignment"} <= parents
+    assert not [v for v in graph_mod.check(seeded) if v.code == "no_course"]
