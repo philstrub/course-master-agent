@@ -6,12 +6,13 @@ What is due, what the student has already done about it, and when class meets
 
 ## 1. What This Module Does
 
-Merges three sources into one answer: Canvas `planner/items` and per-course
+Merges four sources into one answer: Canvas `planner/items` and per-course
 assignments (both read from the `_meta/*.json` files `sync` already wrote),
-and calendar events. `build_due` writes `_kb/due.json` and returns the same
-document; `homework`, `work_evidence`, `class_meetings`, `submission_status`
-and `last_sync` are the public data functions behind `mitsync due`, `mitsync
-work` and any skill that imports the library directly. Every one of them
+calendar events, and the Gradescope snapshot `gradescope sync` wrote.
+`build_due` writes `_kb/due.json` and returns the same document. `homework`,
+`work_evidence`, `class_meetings`, `submission_status` and `last_sync` are
+the public data functions behind `mitsync due`, `mitsync work` and any skill
+that imports the library directly. Every one of them
 returns dicts and lists -- never markdown -- because deciding what the data
 means, and how to say it, is the agent's job.
 
@@ -36,6 +37,14 @@ Canvas client or `httpx`.
 and `is_submitted` read the `submission` object Canvas attaches for the
 current user. `has_submitted_submissions` is true as soon as *anyone* in the
 course submits, so it is never consulted.
+
+**Gradescope wins on status.** A course that collects work on Gradescope
+leaves a `not_graded` placeholder on Canvas that reads `unsubmitted` forever.
+When exactly one Canvas row of the same course has the Gradescope
+assignment's `title_key`, that row takes Gradescope's status and its source
+becomes `canvas/...+gradescope`. A Gradescope assignment with no Canvas row
+is added as its own `gradescope` row, and one whose key matches several
+Canvas rows is added on its own with a warning rather than guessed.
 
 **Provenance tags.** `work_evidence` tags each file in a course folder as
 `canvas_copy` (its bytes match a mirrored file), `edited` (it shares a mirrored
@@ -83,6 +92,7 @@ from mitsync.core.config import read_json, read_meta
 from mitsync.core.errors import CalendarAccessDenied, MitsyncError
 from mitsync.core.logging import get_logger
 from mitsync.filing.course_map import existing_course_folders, load_course_map
+from mitsync.gradescope import snapshot as gs_snapshot
 
 if TYPE_CHECKING:  # pragma: no cover
     from mitsync.core.config import Settings
@@ -353,6 +363,48 @@ def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(best.values())
 
 
+_GS_DONE = frozenset({"submitted", "late", "graded"})
+
+
+def _gradescope_overlay(
+    settings: Settings, items: list[dict[str, Any]], warnings: list[str]
+) -> list[dict[str, Any]]:
+    snap = gs_snapshot.load(settings)
+    if snap is None:
+        if os.environ.get("GRADESCOPE_COOKIE"):
+            warnings.append("GRADESCOPE_COOKIE is set but `mitsync gradescope sync` never ran")
+        return items
+    added: list[dict[str, Any]] = []
+    for course in snap.courses:
+        if course.folder is None:
+            continue
+        rows = [
+            i for i in items if i["course"] == course.folder and i["source"].startswith("canvas/")
+        ]
+        for a in course.assignments:
+            key = gs_snapshot.title_key(a.title)
+            hits = [r for r in rows if gs_snapshot.title_key(r["title"]) == key]
+            if len(hits) == 1:
+                row = hits[0]
+                row["status"] = gs_snapshot.status_text(a)
+                row["submitted"] = a.status in _GS_DONE
+                row["source"] += "+gradescope"
+                row["due_at"] = row["due_at"] or (a.due_at and _iso(a.due_at.isoformat()))
+                continue
+            if hits:
+                warnings.append(
+                    f"gradescope {course.folder} {a.title!r} matches {len(hits)} Canvas items; "
+                    "listed on its own"
+                )
+            added.append(
+                _item(
+                    course.folder, a.title, a.due_at and a.due_at.isoformat(), "assignment",
+                    a.url, "gradescope", a.status in _GS_DONE, status=gs_snapshot.status_text(a),
+                )
+            )  # fmt: skip
+    return items + added
+
+
 def last_sync(settings: Settings) -> str | None:
     """When `mitsync sync` last finished, per the manifest `runs` table.
 
@@ -385,7 +437,7 @@ def build_due(settings: Settings) -> DueReport:
     items += _calendar_items(settings, report)
     epoch = datetime.min.replace(tzinfo=UTC)
     report.items = sorted(
-        _dedupe(items),
+        _gradescope_overlay(settings, _dedupe(items), report.warnings),
         # By the instant, not the string: calendar events carry local offsets
         # while Canvas speaks UTC, so the spellings do not sort together.
         key=lambda i: (

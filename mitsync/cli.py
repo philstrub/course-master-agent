@@ -95,9 +95,11 @@ app = typer.Typer(
 organize_app = typer.Typer(help="Apply and undo agent-written filing plans.")
 graph_app = typer.Typer(help="Add to, rebuild and query the knowledge graph.")
 kb_app = typer.Typer(help="Build the deterministic parts of the markdown knowledge base.")
+gradescope_app = typer.Typer(help="Read (never write) the student's Gradescope dashboard.")
 app.add_typer(organize_app, name="organize")
 app.add_typer(graph_app, name="graph")
 app.add_typer(kb_app, name="kb")
+app.add_typer(gradescope_app, name="gradescope")
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Print one JSON document to stdout.")]
 
@@ -347,6 +349,33 @@ def organize_undo(
     organize_mod.undo(settings, log_id)
 
 
+@gradescope_app.command("sync")
+def gradescope_sync(as_json: JsonOpt = False) -> None:
+    """Snapshot submission status and scores into `state/gradescope.json` (GRADESCOPE_COOKIE).
+
+    `mitsync due` then shows Gradescope's status on the matching Canvas row.
+    """
+    from mitsync.gradescope import client as gs_client
+
+    settings = _settings()
+    snap = gs_client.sync(settings)
+    if as_json:
+        _emit_json(snap.model_dump(mode="json"))
+        return
+    graph_mod.print_rows(
+        "gradescope",
+        [
+            {"course": c.folder or f"(unmapped) {c.shortname}", "title": a.title,
+             "due": a.due_at, "status": a.status, "score": a.score, "points": a.points}
+            for c in snap.courses
+            for a in c.assignments
+        ],
+    )  # fmt: skip
+    unmapped = [c.shortname for c in snap.courses if c.folder is None]
+    if unmapped:
+        _notes([f"not in courses.yml (add gradescope_id to map): {', '.join(unmapped)}"])
+
+
 # --------------------------------------------------------------------------
 # graph / kb
 # --------------------------------------------------------------------------
@@ -522,6 +551,18 @@ def doctor() -> None:
         else f"${tok_env} is not set{hint}; `mitsync sync` "
         f"will fail. Create a token in Canvas > Account > Settings.",
     )
+
+    for label, key, why in (
+        ("gradescope cookie", "GRADESCOPE_COOKIE", "`gradescope sync` will fail"),
+        ("neo4j uri", "NEO4J_URI", "`graph push` / `graph cypher` will fail"),
+    ):
+        add(
+            "PASS" if os.environ.get(key) else "WARN",
+            label,
+            f"${key} is set (source: {_secret_source(dotenv_sources, key)})"
+            if os.environ.get(key)
+            else f"${key} is not set{hint}; {why}. See .env.example.",
+        )
 
     cal = settings.calendar.cli
     cal_path = shutil.which(cal)

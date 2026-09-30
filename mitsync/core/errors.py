@@ -27,7 +27,7 @@ in Canvas > Account > Settings" rather than "401".
 A leaf: it imports nothing from mitsync and nearly everything imports it.
 `canvas_client` translates HTTP into the `Canvas*` family, `calendar_read`
 raises `CalendarAccessDenied`, `config` raises `ConfigError`, `graph` raises
-`OntologyError`.
+`OntologyError`, `gradescope.client` raises `GradescopeAuthError`.
 
 ## 4. Key Concepts
 
@@ -150,4 +150,18 @@ class CanvasWriteRefused(MitsyncError):
         super().__init__(
             f"refusing {method.upper()} to Canvas ({url}): mitsync is read-only. "
             "Canvas holds graded work; no command may modify it."
+        )
+
+
+class GradescopeAuthError(MitsyncError):
+    """GRADESCOPE_COOKIE is missing or expired (Gradescope redirected to /login)."""
+
+
+class GradescopeWriteRefused(MitsyncError):
+    """A non-read HTTP method was attempted against Gradescope, which holds graded work."""
+
+    def __init__(self, method: str, url: str) -> None:
+        super().__init__(
+            f"refusing {method.upper()} to Gradescope ({url}): mitsync is read-only. "
+            "Gradescope holds graded work; no command may modify it."
         )
