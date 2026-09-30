@@ -123,13 +123,13 @@ the agent writes and a command validates (the existing contract in
   mark the human or agent writes. Option B: scrape Gradescope with the
   student's session cookie (read-only), which needs a secret and is brittle.
   **Decided: B, built** (`mitsync/gradescope/`, tests in
-  `tests/test_gradescope.py`). Live run pending the cookie.
+  `tests/test_gradescope.py`). Live.
 - Store submission state on `Assignment` nodes (`submission_status`,
   `submitted_at`, `score`, `submitted_via`) and mark the submitted file with
   `file_of_assignment {role: submission}`: this is the "memory of submitted
   work" other agents query.
 
-### W5. Neo4j projection and tools (rubric: tool use) — built, live push pending
+### W5. Neo4j projection and tools (rubric: tool use) — built and live
 
 Built as `mitsync/knowledge/neo4j_store.py`, a second projection beside
 DuckDB rather than a `GraphBackend` (the canned queries stay SQL).
@@ -212,11 +212,12 @@ DuckDB rather than a `GraphBackend` (the canned queries stay SQL).
 1. ~~Gradescope~~ Decided 2026-09-30: option B. `mitsync gradescope sync`
    reads the dashboard with `GRADESCOPE_COOKIE` (GET only, enforced), writes
    `state/gradescope.json`, and `due` plus the backbone's `Assignment` nodes
-   take Gradescope's status. Open: the cookie is not in `.env` yet.
+   take Gradescope's status. Live since 2026-09-30: 2 courses (Machine
+   Learning, Optimization), matched on `course_code` (`15.C57_FA26`).
 2. ~~Neo4j~~ Credentials added 2026-09-30. `graph push` / `graph cypher` are
-   built. Open: `NEO4J_URI` is `localhost:7474` (the Browser's HTTP port) and
-   no server is running. It needs `bolt://localhost:7687` after
-   `make neo4j-up`, or an Aura `neo4j+s://` URI.
+   built and live on a local container (`make neo4j-up`, Browser at
+   http://localhost:7474, `NEO4J_URI=bolt://localhost:7687`). First push:
+   292 nodes, 120 relationships (152 JSONL edges, one relationship per fact).
 3. ~~Non-PDF documents~~ Decided 2026-09-30: `File` is any document a
    person reads (PDF, Word, PowerPoint, markdown, LaTeX), `DataFile` is data
    and code. `ontology.DOCUMENT_SUFFIXES` decides, and both models reject a
