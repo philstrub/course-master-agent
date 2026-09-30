@@ -52,7 +52,7 @@ the agent writes and a command validates (the existing contract in
 
 ## 2. Workstreams, in build order
 
-### W1. Ontology as pydantic models (rubric: memory, failure detection)  — IN PROGRESS
+### W1. Ontology as pydantic models (rubric: memory, failure detection)  — DONE
 
 - `mitsync/knowledge/ontology.py` replaces `config/ontology.yml`. Node
   types: `Course`, `Syllabus`, `Lecture`, `Recitation`, `Assignment`,
@@ -74,7 +74,7 @@ the agent writes and a command validates (the existing contract in
 - `mitsync graph schema --json` prints the ontology for any agent (Claude Code
   in `/courses`, OpenClaw) so no one reads the Python.
 
-### W2. Deterministic backbone v2 (rubric: tool use, memory)  — IN PROGRESS
+### W2. Deterministic backbone v2 (rubric: tool use, memory)  — DONE
 
 - Course nodes come from `config/courses.yml`; `_canvas/<Canvas name>/` maps
   back to its workspace folder through the course number. One course, one node.
@@ -87,8 +87,14 @@ the agent writes and a command validates (the existing contract in
   unattached, which `graph check` reports as `unfiled`: that is the agent's
   work list.
 - Walks every document and data extension on disk, not only extractable text.
+- Measured on the real workspace (2026-09-30): 1 Course node per course
+  (was 13), 229 files -> 274 nodes / 127 edges, 166 `unfiled` for the agent
+  (82 of them in `Analytics Edge/Assignment 1/`), 48 `duplicate_content` for
+  the human (a loose pre-existing original beside its filed copy).
+- TODO: `kb.inventory` still groups by `extract.course_of`, so `kb build`
+  reports 13 courses; switch it to `mirror_course_folders`.
 
-### W3. `mitsync graph check` as the loop's stopping oracle (rubric: loop, failure detection)  — IN PROGRESS
+### W3. `mitsync graph check` as the loop's stopping oracle (rubric: loop, failure detection)  — graph check DONE, conventions TODO
 
 - `graph check --json` returns every structural violation with a stable code
   (`unfiled`, `multiple_parents`, `no_course`, `orphan_concept`,
