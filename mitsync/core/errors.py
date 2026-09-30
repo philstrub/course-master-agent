@@ -134,7 +134,7 @@ class CalendarAccessDenied(MitsyncError):
 
 
 class OntologyError(MitsyncError):
-    """A graph record violates config/ontology.yml."""
+    """A graph record violates the ontology in mitsync/knowledge/ontology.py."""
 
 
 class CanvasWriteRefused(MitsyncError):

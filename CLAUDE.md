@@ -26,7 +26,7 @@ command validates**:
 |---|---|---|
 | the morning brief | `_kb/briefings/<date>-morning.json` (schema `email/brief.schema.json`) | `mitsync email` (`--dry-run` first) |
 | where unfiled files go | a plan `{"placements": [{"file_id", "destination", "reason"}]}` | `mitsync organize apply --plan <path>` (the human runs it) |
-| concept facts | a JSONL of nodes/edges per `config/ontology.yml` | `mitsync graph add <file>` |
+| concept facts, unfiled files | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
 | course notes | `_kb/courses/<Course>/NOTES.md` | none; `kb build` never overwrites it |
 
 The facts come from `due --json`, `work --json`, `calendar --json` and

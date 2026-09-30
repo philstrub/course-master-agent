@@ -39,7 +39,7 @@ It says which tools to run and what to judge.
 | **`mit-briefing`** | "morning brief", "am I behind?", cron 07:00 | `sync`, `due`, `work`, then `email` | how far along each homework is (handout parts vs. your drafts), 1–3 things to review, hours left |
 | `mit-canvas-sync` | "anything new on Canvas?" | `sync` | which errors are expected (hidden Files tab, throttling) and which are real (expired token) |
 | `mit-organize` | "file my new material", cron every 2 h 08–22 | `unfiled`, `organize apply --yes` | where each file goes, per `config/naming.md`; files Canvas copies, never your own files |
-| `mit-kb` | "what covers X?" | `extract`, `kb build`, `graph add/query` | course notes and concept facts; parked for the memory homework |
+| `mit-kb` | "where is X taught?" | `extract`, `kb build`, `graph add/query` | course notes and concept facts; parked for the memory homework |
 
 ## OpenClaw vs. Claude Code driving the same tools
 

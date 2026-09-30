@@ -30,8 +30,9 @@ and `due.json`, and writes only into `_kb/`. It imports `organize.BUCKETS`
 rather than restating the filing vocabulary, so the knowledge base and the
 filer can never disagree about what a bucket is.
 
-`build()` first calls `graph.build_backbone`, so that every extracted document
-has `Course` and `Resource` nodes to cite. Concepts and their relations are
+`build()` first calls `graph.build_backbone`, so that every file on disk has
+a `Course` and a file node, and wherever its folder says so a parent item, to
+cite. Concepts and their relations are
 the agent's to add with `mitsync graph add`.
 
 ## 4. Key Concepts
@@ -348,9 +349,9 @@ def _agents_md(
     lines += [f"- `{name}` — {graph_mod.CANNED[name].help}" for name in canned]
     lines += [
         "",
-        "Node types are `Course`, `Session`, `Assignment`, `Resource`, `Concept`, `Person`;",
-        "edge types are `covers`, `requires`, `assesses`, `prerequisite_of`, `authored_by`,",
-        "`part_of` (see `_agent/config/ontology.yml`). If you have no shell, grep",
+        "Node types are `Course`, `Syllabus`, `Lecture`, `Recitation`, `Assignment`,",
+        "`PdfFile`, `DataFile`, `Repo`, `Concept`; `mitsync graph schema` prints every",
+        "edge type, attribute and id format. If you have no shell, grep",
         "`_kb/graph/entities/` — every node has a page listing its edges and its source",
         "documents.",
         "",
@@ -407,7 +408,7 @@ def _agents_md(
         "3. Open `_kb/courses/<course>/NOTES.md` if it exists; if it does not, read the",
         "   extracted text listed in `_kb/courses/<course>/INDEX.md` and write it.",
         "4. Run `mitsync graph query --canned assignments_due`, then",
-        "   `--canned resources_for_concept` for the concepts those assignments assess.",
+        "   `--canned files_for_concept` for the concepts those assignments assess.",
         "5. Cite the workspace-relative source paths from",
         "   `_kb/courses/<course>/INDEX.md` so the student can open the real file.",
         "",
@@ -441,7 +442,7 @@ def build(settings: Settings) -> KBReport:
     """Regenerate every deterministic page under `_kb/`. Never touches NOTES.md."""
     from mitsync.knowledge import graph as graph_mod
 
-    # Give every extracted document Course/Resource nodes to cite.
+    # Give every file on disk its Course and file node to cite.
     graph_mod.build_backbone(settings)
 
     courses = inventory(settings)

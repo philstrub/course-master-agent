@@ -36,6 +36,8 @@ results. A backend swap is therefore a rebuild, never a data migration.
 **Extraction is idempotent.** Every node and edge records its source document
 and extractor version, so a re-run replaces rather than duplicates.
 
-**Ontology-driven.** Node and edge types come from `config/ontology.yml`, not
-from Python. A broken ontology fails the build loudly.
+**Ontology-enforced.** Node and edge types, typed ids and the structural
+rules are pydantic models in `ontology.py`; a record that violates them is
+refused before it is stored, and `graph check` reports a graph that is
+incomplete.
 """
