@@ -50,10 +50,11 @@ writes an undo log to `state/undo/`. `email` sends only to `email.to` in
 2. **Never write to Apple Calendar.** `schedule/calendar.py` is read-only by
    design; do not add, wire up, or invoke any EventKit write API, and don't
    ask the user for calendar write permission.
-2b. **Never write to Canvas.** Canvas holds graded work, so this is enforced,
-   not assumed: `CanvasClient._request` refuses any method outside
-   `READ_ONLY_METHODS` ({GET, HEAD}) with `CanvasWriteRefused`, and
-   `tests/test_canvas_read_only.py` scans every module for HTTP write calls.
+2b. **Never write to Canvas or Gradescope.** Both hold graded work, so this is
+   enforced, not assumed: `CanvasClient._request` and
+   `GradescopeClient._request` refuse any method outside `READ_ONLY_METHODS`
+   ({GET, HEAD}), and `tests/test_canvas_read_only.py` scans every module for
+   HTTP write calls.
    Do not add a submission, upload, comment, or deletion path, and do not
    relax that check.
 3. **Never commit secrets.** API keys, Canvas tokens, and OpenClaw config
@@ -86,6 +87,7 @@ Always trust `mitsync --help` over any prose. A typical cold start:
 ```
 mitsync doctor                     # what is configured and what is missing
 mitsync sync                       # mirror Canvas (needs $CANVAS_TOKEN)
+mitsync gradescope sync            # Gradescope status and scores (needs $GRADESCOPE_COOKIE)
 mitsync due --json                 # deadlines and the student's own status
 mitsync work --json                # the student's files, by provenance
 mitsync extract && mitsync kb build   # text and indexes under _kb/

@@ -12,6 +12,7 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 | command | what it does | touches |
 |---|---|---|
 | `sync` | mirror new Canvas files and metadata (assignments, your own submission status) into `_canvas/` | Canvas **read-only** (GET/HEAD, enforced in code and tests) |
+| `gradescope sync` | snapshot the student's Gradescope status and scores; `due` then shows them on the matching Canvas row (Canvas reports Gradescope work as unsubmitted) | Gradescope **read-only**, `state/gradescope.json` |
 | `due` | deadlines with your status and the assignment text; `_kb/due.json` | reads the mirror |
 | `work` | your files per course, tagged `canvas_copy` / `edited` / `yours` | reads your folders |
 | `calendar` | Apple Calendar events | Calendar **read-only** |
