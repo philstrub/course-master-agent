@@ -33,6 +33,9 @@ ACCOUNT = """
     <a class="courseBox" href="/courses/222">
       <h3 class="courseBox--shortname">6.7900</h3><div class="courseBox--name">Other</div>
     </a>
+    <a class="courseBox" href="/courses/333">
+      <h3 class="courseBox--shortname">15.C57_FA26</h3><div class="courseBox--name">Opt</div>
+    </a>
   </div>
 </div>
 """
@@ -96,7 +99,7 @@ def test_no_cookie_names_the_variable(monkeypatch: pytest.MonkeyPatch) -> None:
 # --------------------------------------------------------------------------
 def test_parse_courses_reads_boxes_and_terms() -> None:
     courses = gs.parse_courses(ACCOUNT)
-    assert [c["gradescope_id"] for c in courses] == ["111", "222"]
+    assert [c["gradescope_id"] for c in courses] == ["111", "222", "333"]
     assert courses[0]["shortname"] == "15.095"
     assert courses[0]["term"] == "Fall 2026"
 
@@ -150,6 +153,7 @@ def test_sync_fetches_mapped_courses_only_and_writes_the_snapshot(seeded: Settin
     by_id = {c.gradescope_id: c for c in snap.courses}
     assert by_id["111"].folder == "Machine Learning"  # matched on course_number
     assert by_id["222"].folder is None and by_id["222"].assignments == []
+    assert by_id["333"].folder is None  # 15.C57_FA26 is not mapped in this fixture
     assert snapshot.load(seeded) == snap
     assert json.loads(snapshot.path(seeded).read_text())["courses"][0]["assignments"]
 
@@ -252,3 +256,36 @@ def test_backbone_assignments_carry_canvas_and_gradescope_status(seeded: Setting
     parents = {e["s"] for e in edges if e["p"] == "assignment_of_course"}
     assert {n for n, v in nodes.items() if v["type"] == "Assignment"} <= parents
     assert not [v for v in graph_mod.check(seeded) if v.code == "no_course"]
+
+
+def test_courses_map_on_course_code_as_gradescope_names_them() -> None:
+    entries = [{"folder": "Optimization", "course_number": "15.C57", "course_code": "15.C57_FA26"}]
+    box = {"gradescope_id": "333", "shortname": "15.C57_FA26"}
+    assert gs._folder_for(box, entries) == "Optimization"
+    assert gs._folder_for({**box, "shortname": "15.C57"}, entries) == "Optimization"
+    assert gs._folder_for({**box, "shortname": "15.C58"}, entries) is None
+
+
+def test_release_notices_and_class_sessions_do_not_block_the_join(seeded: Settings) -> None:  # noqa: F811
+    from tests.test_deadlines import _in, write_meta
+
+    write_meta(
+        seeded.paths.canvas_mirror / "_meta" / "planner.json",
+        None,
+        [{"course_id": 1, "plannable_type": "calendar_event", "plannable_date": _in(1),
+          "plannable": {"title": "Problem Set 1 OUT"}}],
+    )  # fmt: skip
+    snapshot.path(seeded).write_text(
+        snapshot.Snapshot(
+            fetched_at=NOW,
+            courses=[snapshot.GsCourse(
+                gradescope_id="111", shortname="15.095", name="ML", folder="Machine Learning",
+                assignments=[snapshot.GsAssignment(gradescope_id="501", title="PS 1",
+                                                   status="submitted")])],
+        ).model_dump_json()
+    )  # fmt: skip
+    report = deadlines.build_due(seeded)
+    items = {i["title"]: i for i in report.items}
+    assert items["Problem Set 1"]["source"] == "canvas/assignments+gradescope"
+    assert items["Problem Set 1 OUT"]["status"] is None
+    assert not [w for w in report.warnings if "matches" in w]

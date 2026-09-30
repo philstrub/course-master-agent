@@ -365,6 +365,8 @@ def _dedupe(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 _GS_DONE = frozenset({"submitted", "late", "graded"})
+#: planner rows that are class sessions or release notices ("HW3 OUT"), never work
+_NOT_WORK = frozenset({"calendar_event", "announcement", "event"})
 
 
 def _gradescope_overlay(
@@ -380,7 +382,11 @@ def _gradescope_overlay(
         if course.folder is None:
             continue
         rows = [
-            i for i in items if i["course"] == course.folder and i["source"].startswith("canvas/")
+            i
+            for i in items
+            if i["course"] == course.folder
+            and i["source"].startswith("canvas/")
+            and i["type"] not in _NOT_WORK
         ]
         for a in course.assignments:
             key = gs_snapshot.title_key(a.title)

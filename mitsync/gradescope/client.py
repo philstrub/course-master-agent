@@ -35,9 +35,9 @@ redirects to `/login`, and `_request` raises `GradescopeAuthError` saying so.
 
 **Course mapping.** A Gradescope course belongs to a workspace folder when
 `courses.yml` gives that entry a matching `gradescope_id`, or else when the
-course box's short name ("15.C57") is the entry's `course_number` or one of
-its `aliases`. Unmapped courses are kept in the snapshot with `folder: null`
-and not fetched.
+course box's short name ("15.C57", "15.C57_FA26") is the entry's
+`course_number`, its `course_code` or one of its `aliases`. Unmapped courses
+are kept in the snapshot with `folder: null` and not fetched.
 
 **Parsing is strict.** A course page without the student assignment table,
 and without Gradescope's empty-course notice, raises: the layout changed and a
@@ -205,7 +205,8 @@ def _folder_for(course: dict[str, Any], entries: list[dict[str, Any]]) -> str | 
             return entry["folder"]
     short = course["shortname"].lower()
     for entry in entries:
-        names = [entry.get("course_number"), *(entry.get("aliases") or [])]
+        names = [entry.get(k) for k in ("course_number", "course_code")]
+        names += entry.get("aliases") or []
         if any(str(n).lower() == short for n in names if n):
             return entry["folder"]
     return None
