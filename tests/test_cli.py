@@ -180,6 +180,19 @@ def test_organize_apply_exit_codes(settings: Settings, use) -> None:
     assert missing.exit_code != 0  # --plan is required: the agent writes the plan
 
 
+def test_kb_check_json_shape_and_exit_code(settings: Settings, use) -> None:
+    use(settings)
+    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
+    result = runner.invoke(cli.app, ["kb", "check", "--json"])
+    assert result.exit_code == 1  # no COURSE.md yet
+    doc = json.loads(result.stdout)
+    assert set(doc) == {"ok", "courses", "readings"}
+    [course] = doc["courses"]
+    assert set(course) == {"course", "course_file", "exists", "pending", "gone"}
+    quiet = runner.invoke(cli.app, ["kb", "check", "--json", "--exit-zero"])
+    assert quiet.exit_code == 0
+
+
 def test_graph_add_reports_line_numbers(settings: Settings, use, tmp_path: Path) -> None:
     use(settings)
     path = tmp_path / "facts.jsonl"

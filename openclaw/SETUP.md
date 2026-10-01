@@ -219,8 +219,8 @@ bin/mitsync-agent due --days 7 --json | head -40
 bin/mitsync-agent organize undo             # must be REFUSED by the wrapper
 ```
 
-**8. Schedule it.** Four jobs; only two ever wake a model, and one of those
-only when there is something new:
+**8. Schedule it.** Five jobs. Three wake a model, and two of those only
+when there is something new:
 
 | job | when (New York) | what | model |
 |---|---|---|---|
@@ -228,6 +228,7 @@ only when there is something new:
 | `morning-brief` | 07:00 Mon–Fri | `mit-briefing`: judge, write, email | Sonnet 5, low thinking |
 | `canvas-sync` | every 2 h, 08:00–22:00 | `mitsync-agent sync` (command job) | none |
 | `canvas-file` | 10 min after each sync | `mit-organize`: file new Canvas material | Haiku 4.5, low thinking, **only if** `openclaw/triggers/new-to-file.js` sees a file the last check hadn't |
+| `course-notes` | 23:00 daily | `mit-course`: bring each course's master file up to date | Sonnet 5, low thinking, **only if** `openclaw/triggers/course-pending.js` (which runs `extract`, `kb build`, `kb check`) sees a document the last check hadn't |
 
 Every agent job carries a tool allow-list (`--tools exec,read,write`). With
 the Claude CLI runtime that switches off Claude Code's own tools (Skill, Read,
@@ -255,6 +256,12 @@ openclaw cron add --name canvas-file --agent mitsync --cron "10 8-22/2 * * *" \
   --trigger-script ./openclaw/triggers/new-to-file.js \
   --message "Scheduled filing run, nobody is watching. Read skills/mit-organize/SKILL.md and follow it: file the new Canvas material with organize apply --yes." \
   --model anthropic/claude-haiku-4-5 --thinking low --tools exec,read,write --timeout-seconds 600 --no-deliver
+
+openclaw cron add --name course-notes --agent mitsync --cron "0 23 * * *" \
+  --tz America/New_York --exact --session isolated \
+  --trigger-script ./openclaw/triggers/course-pending.js \
+  --message "Scheduled run, nobody is watching. Read skills/mit-course/SKILL.md and follow it: bring the course master files up to date. Stay within its budget of 8 documents." \
+  --thinking low --tools exec,read,write --timeout-seconds 1800 --no-deliver
 
 openclaw cron list                                   # note the ids
 openclaw cron run <id> --wait --wait-timeout 15m     # run one now

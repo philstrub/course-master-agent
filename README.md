@@ -59,13 +59,13 @@ and runs `mitsync email`, which sends the dashboard to the address in
 ~/Desktop/MIT/courses/        the workspace (and OpenClaw's)
   Machine Learning/ …         my folders; never moved without an approved plan
   _canvas/                    verbatim Canvas mirror; source of truth
-  _kb/                        AGENTS.md, graph/, text/, briefings/, courses/<Course>/NOTES.md
+  _kb/                        AGENTS.md, graph/, text/, briefings/, courses/<Course>/{COURSE.md,readings.json}
   _agent/                     this repo
     bin/mitsync-agent         the one binary OpenClaw may execute
     mitsync/                  core · canvas · filing · schedule · knowledge · cli
     email/                    React Email dashboard (shadcn-style components) + brief schema
     calendar-helper/          MitsyncCalendar.app: read-only EventKit, holds the gateway's Calendar grant
-    skills/                   mit-briefing · mit-canvas-sync · mit-organize · mit-kb
+    skills/                   mit-briefing · mit-canvas-sync · mit-organize · mit-graph-query · mit-graph-build · mit-course
     openclaw/                 openclaw.json5 + workspace/{AGENTS,SOUL,USER}.md
 ```
 

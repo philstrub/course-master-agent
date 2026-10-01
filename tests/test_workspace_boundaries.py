@@ -13,8 +13,8 @@ from tests.test_organize import write_course_map
 
 def test_symlink_into_agent_repo_is_not_a_course_root(settings):
     ws = settings.paths.workspace
-    (ws / "_agent" / "skills" / "mit-kb").mkdir(parents=True, exist_ok=True)
-    (ws / "_agent" / "skills" / "mit-kb" / "SKILL.md").write_text("# skill")
+    (ws / "_agent" / "skills" / "mit-graph-build").mkdir(parents=True, exist_ok=True)
+    (ws / "_agent" / "skills" / "mit-graph-build" / "SKILL.md").write_text("# skill")
     (ws / "Machine Learning").mkdir(exist_ok=True)
     (ws / "Machine Learning" / "Lec1.md").write_text("# lecture")
     (ws / "skills").symlink_to(ws / "_agent" / "skills")
@@ -31,7 +31,7 @@ def test_symlink_into_agent_repo_is_not_a_course_root(settings):
 
 
 def test_machinery_paths_are_not_attributed_to_a_course():
-    assert extract.course_of("_agent/skills/mit-kb/SKILL.md") == ""
+    assert extract.course_of("_agent/skills/mit-graph-build/SKILL.md") == ""
     assert extract.course_of("_kb/INDEX.md") == ""
     assert extract.course_of("Machine Learning/Lec1.pdf") == "Machine Learning"
     assert extract.course_of("_canvas/Optimization/HW1.pdf") == "Optimization"

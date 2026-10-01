@@ -1,4 +1,4 @@
-"""The handoff layer: `_kb/AGENTS.md`, no generated index, and NOTES.md left to the agent."""
+"""The handoff layer: `_kb/AGENTS.md`, no generated index, and COURSE.md left to the agent."""
 
 from __future__ import annotations
 
@@ -42,7 +42,7 @@ def test_build_writes_only_agents_md(built: Settings) -> None:
     )
     assert written == ["AGENTS.md"], "no index, manifest or per-course page repeats the graph"
     assert report.courses == ["Analytics Edge", "Machine Learning"]
-    assert report.notes_missing == ["Analytics Edge", "Machine Learning"]
+    assert report.course_files_missing == ["Analytics Edge", "Machine Learning"]
     assert not (kb / "graph" / "entities").exists()
 
 
@@ -70,8 +70,8 @@ def test_build_is_idempotent(built: Settings) -> None:
     assert (page.read_bytes(), page.stat().st_mtime_ns) == before
 
 
-def test_kb_build_never_creates_or_overwrites_notes(built: Settings) -> None:
-    notes = kb_mod.notes_path(built, "Machine Learning")
+def test_kb_build_never_creates_or_overwrites_a_course_file(built: Settings) -> None:
+    notes = kb_mod.course_file_path(built, "Machine Learning")
     notes.parent.mkdir(parents=True, exist_ok=True)
     mine = "# Machine Learning\n\nWritten by the agent. Do not touch.\n"
     notes.write_text(mine)
@@ -83,18 +83,19 @@ def test_kb_build_never_creates_or_overwrites_notes(built: Settings) -> None:
     assert notes.read_text() == mine
     assert notes.stat().st_mtime_ns == stamp
     assert notes not in report.written
-    assert not kb_mod.notes_path(built, "Analytics Edge").exists()
-    assert report.notes_missing == ["Analytics Edge"]
+    assert not kb_mod.course_file_path(built, "Analytics Edge").exists()
+    assert report.course_files_missing == ["Analytics Edge"]
     agents = (built.paths.kb / "AGENTS.md").read_text()
-    assert "| Machine Learning | `_kb/courses/Machine Learning/NOTES.md` |" in agents
+    assert "| Machine Learning | `_kb/courses/Machine Learning/COURSE.md` |" in agents
     assert "| Analytics Edge | not written yet |" in agents
-    assert "never creates or overwrites it" in agents
+    assert "`mitsync kb build` never creates or\noverwrites it" in agents
 
 
 def test_agents_md_points_at_the_graph_and_the_folders(built: Settings) -> None:
     kb_mod.build(built)
     body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "**query the" in body and "**open the course folders**" in body
+    assert "**query the graph**" in body and "mit-graph-query" in body
+    assert "**read its master file**" in body
     assert "mitsync graph cypher" in body and "mitsync graph query" in body
     assert "`path`" in body and "`text`" in body
     for name in graph_mod.CANNED:
@@ -121,3 +122,49 @@ def test_kb_build_survives_an_empty_workspace(settings: Settings) -> None:
     assert report.courses == []
     body = (settings.paths.kb / "AGENTS.md").read_text()
     assert "No course folder is mapped yet" in body
+
+
+# --------------------------------------------------------------------------
+# kb check: what the master files do not cover yet
+# --------------------------------------------------------------------------
+def _sources(settings: Settings, course: str, lines: list[str]) -> Path:
+    path = kb_mod.course_file_path(settings, course)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# {course}\n\nSummary.\n\n## Sources\n" + "".join(f"{x}\n" for x in lines))
+    return path
+
+
+def test_check_lists_documents_the_master_file_does_not_cover(built: Settings) -> None:
+    kb_mod.build(built)
+    doc = kb_mod.check(built)
+    ml = {c["course"]: c for c in doc["courses"]}["Machine Learning"]
+    assert not doc["ok"] and not ml["exists"]
+    # the student's own notebook in assignments/ is their work, not course material
+    assert [d["path"] for d in ml["pending"]] == ["Machine Learning/lectures/lec01.pdf"]
+    [lec] = ml["pending"]
+    assert len(lec["sha256"]) == 12 and lec["text"].startswith("_kb/text/")
+
+    _sources(built, "Machine Learning", [f"- `{lec['path']}` sha256:{lec['sha256']}"])
+    _sources(built, "Analytics Edge", [])
+    assert kb_mod.check(built)["ok"]
+
+
+def test_a_changed_or_deleted_source_is_pending_again(built: Settings) -> None:
+    kb_mod.build(built)
+    _sources(built, "Analytics Edge", [])
+    _sources(built, "Machine Learning", [
+        "- `Machine Learning/lectures/lec01.pdf` sha256:000000000000",
+        "- `Machine Learning/lectures/old.pdf` sha256:111111111111",
+    ])  # fmt: skip
+    ml = {c["course"]: c for c in kb_mod.check(built)["courses"]}["Machine Learning"]
+    assert [d["path"] for d in ml["pending"]] == ["Machine Learning/lectures/lec01.pdf"]
+    assert ml["gone"] == ["Machine Learning/lectures/old.pdf"]
+
+
+def test_only_the_sources_section_counts() -> None:
+    text = (
+        "# X\n\nSee `A/lectures/a.pdf` sha256:aaaaaaaaaaaa in passing.\n\n"
+        "## Sources\n- `A/lectures/b.pdf` sha256:bbbbbbbbbbbb\n\n## After\n"
+        "- `A/lectures/c.pdf` sha256:cccccccccccc\n"
+    )
+    assert kb_mod.listed_sources(text) == {"A/lectures/b.pdf": "bbbbbbbbbbbb"}

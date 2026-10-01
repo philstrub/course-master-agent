@@ -1,12 +1,14 @@
 ---
-name: mit-kb
-description: Build, supervise and query the course knowledge graph. The backbone comes from the student's course folders; the agent works through `graph check` (filing Canvas files, numbering lectures, adding concepts) with `graph add`, and `graph query` / `graph cypher` answer questions such as "where is the simplex method taught" or "what did I submit for HW1". Use when the user asks to rebuild, search or extend the knowledge base.
+name: mit-graph-build
+description: Build and supervise the course knowledge graph, the workspace's knowledge base. The backbone comes from the student's course folders. The agent works through `graph check` (filing Canvas files, numbering lectures, adding concepts) with `graph add` until it is clean. Use when the user asks to rebuild, complete or extend the knowledge base. To answer a question from the graph, use `mit-graph-query` instead.
 user-invocable: true
 metadata:
   { "openclaw": { "requires": { "bins": ["uv"] }, "os": ["darwin"] } }
 ---
 
-# mit-kb
+# mit-graph-build
+
+To **ask** the graph something, follow `mit-graph-query`. This skill builds it.
 
 `M` is `/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent`
 (in Claude Code: `uv run mitsync` from `_agent/`).
@@ -60,32 +62,9 @@ nothing: one bad line rejects the file with every error listed by line number,
 so fix it and re-run. `src` must be a workspace-relative course file. Repeat
 `M graph check --json` until only `human` items are left, and report those.
 
-**Notes.** `_kb/courses/<Course>/NOTES.md` is for what the graph cannot hold
-(grading quirks, how the student works). It is optional and never generated.
-
-## Query
-
-```
-M graph query --canned concepts_by_course
-M graph query --sql "SELECT n.type, count(*) FROM nodes n GROUP BY 1"
-```
-
-`M graph query` with no flag lists the canned queries (`concepts_by_course`,
-`assignments_due`, `files_for_concept`, `files_of`, `submitted`, `orphans`).
-`--param NAME=VALUE` fills a canned query's `$NAME`, for example `--canned
-files_of --param item=lecture:optimization:03` (the files, with `path` and
-`text`), and `--json` prints rows as JSON. Tables: `nodes(id, type, label,
-attrs)` and `edges(s, p, o, conf)`.
-
-The same graph in Neo4j (after `M graph push`), read-only:
-
-```
-M graph cypher "MATCH (c:Concept)-[:CONCEPT_IN_LECTURE]->(l)-[:LECTURE_OF_COURSE]->(k) RETURN c.name, l.label, k.label" --json
-```
-
-Labels are the node types, relationship types are the edge names
-upper-cased, and attrs are plain properties. Writes are refused: facts go in
-through `graph add` only.
+**Course master files.** `_kb/courses/<Course>/COURSE.md` summarises a whole
+course in prose and is kept by the `mit-course` skill (`M kb check`). The
+graph says where things are, the master file says what they say.
 
 ## Rules
 

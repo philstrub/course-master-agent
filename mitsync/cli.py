@@ -30,7 +30,7 @@ this file is where that discipline is paid for.
 deterministically; none asks for judgment. The driving agent reads `due`,
 `work`, `calendar` and `unfiled` output (all `--json`-capable), decides, and
 hands its decisions back as data: a plan file for `organize apply --plan`, a
-JSONL of graph facts for `graph add`, and `NOTES.md` files it writes itself.
+JSONL of graph facts for `graph add`, and the `COURSE.md` files it writes itself.
 
 **`--json` owns stdout.** With `--json` the only thing on stdout is one JSON
 document; notices and logs go to stderr, so an agent can pipe the output
@@ -487,9 +487,39 @@ def graph_cypher(
 
 @kb_app.command("build")
 def kb_build() -> None:
-    """Rebuild `_kb/` indexes, manifest and AGENTS.md. Never touches an agent's NOTES.md."""
+    """Rebuild the graph backbone and `_kb/AGENTS.md`. Never touches a COURSE.md."""
     settings = _settings()
     kb_mod.build(settings)
+
+
+@kb_app.command("check")
+def kb_check(
+    as_json: JsonOpt = False,
+    exit_zero: Annotated[
+        bool, typer.Option("--exit-zero", help="Exit 0 even when something is pending.")
+    ] = False,
+) -> None:
+    """What each course's COURSE.md and readings.json do not cover yet; exit 1 until clean."""
+    settings = _settings()
+    doc = kb_mod.check(settings)
+    if as_json:
+        _emit_json(doc)
+    else:
+        rows = [
+            {"course": c["course"], "state": state, "path": p}
+            for c in doc["courses"]
+            for state, paths in (
+                ("no COURSE.md", [] if c["exists"] else [c["course_file"]]),
+                ("pending", [d["path"] for d in c["pending"]]),
+                ("gone", c["gone"]),
+            )
+            for p in paths
+        ]
+        rows += [{"course": r["course"], "state": r["code"], "path": r["message"]}
+                 for r in doc["readings"]]  # fmt: skip
+        graph_mod.print_rows("course master files", rows)
+    if not doc["ok"] and not exit_zero:
+        raise typer.Exit(1)
 
 
 # --------------------------------------------------------------------------

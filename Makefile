@@ -4,8 +4,9 @@ UV ?= uv
 
 # OpenClaw refuses symlinked bootstrap files ("symlink path component not
 # allowed"), so the workspace gets copies; the originals stay here, in git.
+# CLAUDE.md is for a Claude Code session opened in the workspace.
 WORKSPACE ?= ..
-BOOTSTRAP := AGENTS SOUL USER
+BOOTSTRAP := AGENTS SOUL USER CLAUDE
 
 install:
 	$(UV) sync --extra dev

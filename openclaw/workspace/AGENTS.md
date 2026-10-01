@@ -10,9 +10,20 @@ edit by hand.
 | `<Course>/` | the student's own folders. `assignments/hw-NN/` holds each homework |
 | `_canvas/` | verbatim, read-only Canvas mirror. Never edit |
 | `_kb/briefings/<date>-morning.json` | the brief you write each morning; `email` renders and sends it |
-| `_kb/graph/` | the knowledge graph, built from the course folders. Query it with `graph query` |
+| `_kb/graph/` | **the knowledge base**: the graph, built from the course folders. Query it with `graph query` |
+| `_kb/courses/<Course>/COURSE.md` | the course's master file: everything it covers, lecture by lecture. Read it first |
 | `_kb/text/*.md` | plain-text versions of the PDFs/notebooks. A File node's `text` names its page. Read these, not binaries |
 | `_agent/` | the tool's source. Not course content |
+
+## The knowledge base is the graph
+
+Everything known about the courses lives in **the knowledge graph**: every
+course, lecture, recitation, assignment, reading, concept, repo and file, and
+how they connect. Each File node names its `path` and its extracted `text`.
+There is no index to read. **To answer a question about course content, query
+the graph** (`skills/mit-graph-query/SKILL.md`), starting from the course's
+master file `_kb/courses/<Course>/COURSE.md`, then read only the `text` pages
+the graph names. Don't browse folders or open PDFs to find things.
 
 ## Tools
 
@@ -32,7 +43,9 @@ You have **one** shell command, and exec is allowlisted to it:
 | `email [--dry-run]` | validate `_kb/briefings/<date>-morning.json`, render the dashboard, email it to the student |
 | `extract` · `kb build` | refresh extracted text and the graph backbone |
 | `graph query --canned files_of --param item=<id> --json` | an item's files, each with `path` and `text` |
-| `graph check --json` | what the graph still lacks (see `mit-kb`) |
+| `graph query --canned <name> --param k=v --json` · `graph cypher "<Q>" --json` | query the knowledge graph (see `mit-graph-query`) |
+| `graph check --json` | what the graph still lacks (see `mit-graph-build`) |
+| `kb check --json` | what the course master files still lack (see `mit-course`) |
 | `doctor` | what is configured and what is broken |
 
 The tools only fetch, check and deliver. **Every judgment is yours**: what
@@ -74,7 +87,9 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 - `mit-briefing` — the morning brief: deadlines, homework progress, what to review. The main job.
 - `mit-canvas-sync` — "anything new on Canvas?"
 - `mit-organize` — file newly mirrored Canvas material into the course folders (every 2 h, 08–22).
-- `mit-kb` — keep the knowledge graph complete (`graph check`) and answer "where is X taught?".
+- `mit-graph-query` — answer any question about course content from the knowledge graph ("where is X taught?", "what's in lecture 5?").
+- `mit-graph-build` — keep the knowledge graph complete (`graph check`, `graph add`).
+- `mit-course` — keep each course's master file `_kb/courses/<Course>/COURSE.md` and its `readings.json` current (nightly, 23:00). Read a course's master file first when asked about that course.
 
 ## Rules that are never negotiable
 

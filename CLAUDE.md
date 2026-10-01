@@ -28,7 +28,8 @@ command validates**:
 | where unfiled files go, and what they are called | a plan `{"placements": [{"file_id", "destination", "reason"}], "skips": [{"file_id", "reason"}]}` | `mitsync organize apply --plan <path>` (the human runs it) |
 | concept facts, unfiled files | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
 | lecture numbers, concepts, file parents (what `graph check --json` lists) | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
-| course notes the graph cannot hold | `_kb/courses/<Course>/NOTES.md` | none; `kb build` never overwrites it |
+| each course's master file: everything it covers, lecture by lecture (`skills/mit-course`) | `_kb/courses/<Course>/COURSE.md`, with a `## Sources` list | `mitsync kb check` (lists documents not covered yet). `kb build` never overwrites it |
+| which readings the syllabus requires, before which class | `_kb/courses/<Course>/readings.json` | `mitsync kb check` validates it, then `due` lists each filed required reading as a deadline |
 
 The facts come from `due --json`, `work --json`, `calendar --json` and
 `unfiled --json`. `unfiled --json` carries the path of `config/naming.md`
@@ -99,9 +100,13 @@ mitsync gradescope sync            # Gradescope status and scores (needs $GRADES
 mitsync due --json                 # deadlines and the student's own status
 mitsync work --json                # the student's files, by provenance
 mitsync extract && mitsync kb build   # extracted text, graph backbone from the course folders
-mitsync graph check --json         # what the graph still needs from you (skills/mit-kb)
+mitsync graph check --json         # what the graph still needs from you (skills/mit-graph-build)
+mitsync kb check --json            # what the course master files still lack (skills/mit-course)
 mitsync email --dry-run            # after writing today's brief JSON
 ```
 
-`_kb/AGENTS.md` is the file to read when you are helping with coursework
-rather than running the tool.
+**The knowledge base is the graph.** To answer a question about course
+content, query it (`skills/mit-graph-query/SKILL.md`), starting from the
+course's master file `_kb/courses/<Course>/COURSE.md`. `_kb/AGENTS.md` is the
+file to read when you are helping with coursework rather than running the
+tool.
