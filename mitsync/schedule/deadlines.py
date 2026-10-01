@@ -9,7 +9,7 @@ What is due, what the student has already done about it, and when class meets
 Merges four sources into one answer: Canvas `planner/items` and per-course
 assignments (both read from the `_meta/*.json` files `sync` already wrote),
 calendar events, and the Gradescope snapshot `gradescope sync` wrote.
-`build_due` writes `_kb/due.json` and returns the same document. `homework`,
+`build_due` writes `state/due.json` and returns the same document. `homework`,
 `work_evidence`, `class_meetings`, `submission_status` and `last_sync` are
 the public data functions behind `mitsync due`, `mitsync work` and any skill
 that imports the library directly. Every one of them
@@ -512,7 +512,7 @@ def last_sync(settings: Settings) -> str | None:
 
 
 def build_due(settings: Settings) -> DueReport:
-    """Merge Canvas planner + assignments + calendar into ``_kb/due.json``.
+    """Merge Canvas planner + assignments + calendar into ``state/due.json``.
 
     `due.json` always holds every known item; windowing is the caller's choice
     (see `in_window`), so the knowledge base never loses a deadline because
@@ -539,7 +539,7 @@ def build_due(settings: Settings) -> DueReport:
     if report.last_sync is None:
         report.warnings.append("no successful `mitsync sync` recorded yet")
 
-    path = settings.paths.kb / "due.json"
+    path = settings.paths.due_json
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(
         json.dumps(report.as_dict(), indent=2, ensure_ascii=False) + "\n", encoding="utf-8"
@@ -675,17 +675,7 @@ def work_report(settings: Settings, course: str | None = None) -> dict[str, Any]
             + (", ".join(known) or "none (see config/courses.yml)")
         )
     courses = [course] if course is not None else known
-    ws = settings.paths.workspace
-    out = []
-    for name in courses:
-        index = settings.paths.kb_courses / name / "INDEX.md"
-        out.append(
-            {
-                "course": name,
-                "materials_index": index.relative_to(ws).as_posix() if index.exists() else None,
-                "folders": work_evidence(settings, name),
-            }
-        )
+    out = [{"course": name, "folders": work_evidence(settings, name)} for name in courses]
     return {
         "generated_at": now_iso(),
         "recent_days": RECENT_WORK_DAYS,

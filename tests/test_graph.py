@@ -225,16 +225,6 @@ def test_rebuild_is_idempotent(settings: Settings) -> None:
     assert (first.nodes, first.edges) == (second.nodes, second.edges)
 
 
-def test_entity_pages_are_written_for_every_node(settings: Settings) -> None:
-    seed_graph(settings)
-    entities = settings.paths.kb_graph / "entities"
-    body = (entities / graph_mod.entity_filename("concept:cart")).read_text()
-    assert "type: Concept" in body
-    assert "## Incoming edges" in body and "## Outgoing edges" in body
-    assert "`concept_in_lecture`" in body
-    assert "## Source documents" in body
-
-
 # --------------------------------------------------------------------------
 # canned queries
 # --------------------------------------------------------------------------
@@ -472,8 +462,6 @@ def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
     blob = json.dumps([graph_mod.load_nodes(seeded), graph_mod.load_edges(seeded)], default=str)
     assert "nandatown" not in blob
     assert "site-packages" not in blob
-    entities = seeded.paths.kb_graph / "entities"
-    assert not [p for p in entities.glob("*.md") if "nandatown" in p.read_text()]
 
 
 # --------------------------------------------------------------------------
@@ -488,7 +476,6 @@ def test_graph_add_appends_valid_agent_facts(seeded: Settings, tmp_path: Path) -
     assert nodes["concept:ridge-regression"]["src"] == [LEC]
     rows = graph_mod.query(seeded, canned="files_for_concept", params={"concept": "ridge%"})
     assert {r["path"] for r in rows} == {HW, f"{ML}/assignments/hw-01/data.zip"}
-    assert (seeded.paths.kb_graph / "entities" / "concept-regularization.md").exists()
 
 
 def test_graph_add_is_idempotent(seeded: Settings, tmp_path: Path) -> None:

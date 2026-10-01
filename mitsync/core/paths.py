@@ -155,6 +155,10 @@ class Paths:
     def graph_db(self) -> Path:
         return self.state_dir / "graph.duckdb"
 
+    @property
+    def due_json(self) -> Path:
+        return self.state_dir / "due.json"
+
     def writable_dirs(self) -> list[Path]:
         return [
             self.canvas_mirror,

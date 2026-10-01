@@ -6,8 +6,8 @@ DuckDB projection, and the ontology (`ontology.py`) every record must satisfy.
 
 ## 1. What This Module Does
 
-Stores nodes and edges, projects them into a queryable database, and renders
-one greppable markdown page per node. `build_backbone` regenerates the
+Stores nodes and edges and projects them into a queryable database.
+`build_backbone` regenerates the
 deterministic part of the graph from the files on disk; `add_records`
 validates and appends the nodes and edges the driving agent wrote itself;
 `rebuild` re-derives everything downstream from the JSONL; `query` runs a
@@ -27,8 +27,7 @@ the ONLY source of agent-written truth. `_kb/graph/backbone.jsonl` is derived
 state: `build_backbone` overwrites it from the disk on every run, so a deleted
 or re-filed file leaves no ghost behind. `state/graph.duckdb` is a cache: deleting it and
 running `rebuild()` must reproduce identical query results, and a test asserts
-exactly that. The markdown entity pages exist for the same reason in the other
-direction -- an agent with nothing but `grep` can still read the graph.
+exactly that.
 
 ## 3. How It Fits in the Architecture
 
@@ -524,88 +523,14 @@ def get_backend(settings: Settings) -> GraphBackend:
 
 
 # --------------------------------------------------------------------------
-# entity pages
-# --------------------------------------------------------------------------
-def entity_filename(node_id: str) -> str:
-    return f"{slug(node_id)}.md"
-
-
-def write_entity_pages(settings: Settings) -> int:
-    """One greppable markdown page per node under `_kb/graph/entities/`."""
-    nodes, edges, _ = load_graph(settings)
-    out_dir = settings.paths.kb_graph / "entities"
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    outgoing: dict[str, list[dict[str, Any]]] = {}
-    incoming: dict[str, list[dict[str, Any]]] = {}
-    for edge in edges:
-        outgoing.setdefault(edge["s"], []).append(edge)
-        incoming.setdefault(edge["o"], []).append(edge)
-
-    def link(node_id: str) -> str:
-        # `load_graph` left stale edges out, so every id reaching here is in `nodes`.
-        return f"[{nodes[node_id]['label']}]({entity_filename(node_id)})"
-
-    keep: set[str] = set()
-    for node_id, node in nodes.items():
-        name = entity_filename(node_id)
-        keep.add(name)
-        lines = [
-            "---",
-            f"id: {json.dumps(node_id)}",
-            f"type: {node['type']}",
-            f"label: {json.dumps(node['label'])}",
-            "---",
-            "",
-            f"# {node['label']}",
-            "",
-            f"**Type:** {node['type']}  ",
-            f"**Node id:** `{node_id}`",
-            "",
-        ]
-        if node["attrs"]:
-            lines.append("## Attributes")
-            lines.append("")
-            for key in sorted(node["attrs"]):
-                lines.append(f"- **{key}**: {node['attrs'][key]}")
-            lines.append("")
-        lines.append("## Outgoing edges")
-        lines.append("")
-        rows = sorted(outgoing.get(node_id, []), key=lambda e: (e["p"], e["o"]))
-        lines += [f"- `{e['p']}` -> {link(e['o'])} (conf {e['conf']:.2f})" for e in rows] or [
-            "- none"
-        ]
-        lines.append("")
-        lines.append("## Incoming edges")
-        lines.append("")
-        rows = sorted(incoming.get(node_id, []), key=lambda e: (e["p"], e["s"]))
-        lines += [f"- {link(e['s'])} `{e['p']}` -> this (conf {e['conf']:.2f})" for e in rows] or [
-            "- none"
-        ]
-        lines.append("")
-        lines.append("## Source documents")
-        lines.append("")
-        srcs = sorted({*node["src"], *(e["src"] for e in rows if e["src"])})
-        lines += [f"- `{s}`" for s in srcs] or ["- none"]
-        lines.append("")
-        write_if_changed(out_dir / name, "\n".join(lines))
-
-    for stale in out_dir.glob("*.md"):
-        if stale.name not in keep:
-            stale.unlink()
-    return len(nodes)
-
-
-# --------------------------------------------------------------------------
 # rebuild / query
 # --------------------------------------------------------------------------
 def rebuild(settings: Settings) -> GraphReport:
-    """Re-derive the DuckDB projection and the entity pages from JSONL."""
+    """Re-derive the DuckDB projection from JSONL."""
     backend = get_backend(settings)
     backend.rebuild()
     nodes, edges, _ = load_graph(settings)
     report = GraphReport(nodes=len(nodes), edges=len(edges), db=settings.paths.graph_db)
-    write_entity_pages(settings)
     log.info("graph rebuild: %s", report.summary())
     print(f"graph rebuild: {report.summary()} -> {report.db}")
     return report
@@ -1026,7 +951,6 @@ def _add_assignments(
 
 def _project(settings: Settings, report: GraphReport) -> None:
     get_backend(settings).rebuild()
-    write_entity_pages(settings)
     nodes, edges, _ = load_graph(settings)
     report.nodes, report.edges = len(nodes), len(edges)
     report.db = settings.paths.graph_db

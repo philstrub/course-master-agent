@@ -97,7 +97,7 @@ def test_work_json_shape(seeded: Settings, use) -> None:  # noqa: F811 -- fixtur
 
     assert set(doc) == {"generated_at", "recent_days", "files_per_folder", "tags", "courses"}
     [course] = doc["courses"]
-    assert set(course) == {"course", "materials_index", "folders"}
+    assert set(course) == {"course", "folders"}
     [folder] = course["folders"]
     assert set(folder) == {"folder", "files", "omitted"}
     assert folder["folder"] == "Machine Learning/assignments/hw-01"

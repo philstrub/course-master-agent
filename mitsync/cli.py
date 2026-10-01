@@ -168,9 +168,9 @@ def due(
     ] = deadlines.DEFAULT_WINDOW_DAYS,
     as_json: JsonOpt = False,
 ) -> None:
-    """Upcoming deadlines with the student's own submission status; writes `_kb/due.json`.
+    """Upcoming deadlines with the student's own submission status; writes `state/due.json`.
 
-    `_kb/due.json` always holds every known item; `--days` only narrows what
+    `state/due.json` always holds every known item; `--days` only narrows what
     is printed.
     """
     settings = _settings()

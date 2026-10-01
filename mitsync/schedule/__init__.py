@@ -7,7 +7,7 @@ What is due and what is happening -- the time-shaped view of the workspace.
 
 `calendar` shells out to `ical-guy` (EventKit) and normalises its JSON into
 events tagged to courses. `deadlines` merges Canvas planner items and
-assignments with those events into `_kb/due.json`, and returns the student's
+assignments with those events into `state/due.json`, and returns the student's
 own submission status and the provenance-tagged files in each course folder as
 plain data for the agent to read.
 

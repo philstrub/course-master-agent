@@ -9,19 +9,20 @@ opening a single PDF.
 `extract` renders PDFs, notebooks and spreadsheets to text under `_kb/text/`.
 `graph` keeps ontology-typed nodes and edges in the append-only
 `_kb/graph/*.jsonl` -- a deterministic backbone plus whatever the agent adds
-with `graph add` -- and projects them into DuckDB. `kb` assembles the indexes,
-`_kb/manifest.json` and `_kb/AGENTS.md`.
+with `graph add` -- and projects them into DuckDB (and, on `graph push`,
+Neo4j). `kb` writes `_kb/AGENTS.md`.
 
 ## 2. Why This Module Exists
 
 The primary consumer of this repo's output is not a human -- it is another
 agent helping with coursework. Everything here is written to be pointed at:
-one entry file (`_kb/AGENTS.md`), one machine-readable inventory
-(`_kb/manifest.json`), and a graph that can be traversed instead of grepped.
+one entry file (`_kb/AGENTS.md`) and a graph that can be traversed instead of
+grepped. There is no generated index: the graph and the course folders are
+the index, and each File node names its `path` and its extracted `text`.
 
 ## 3. How It Fits in the Architecture
 
-Reads the mirror and the filed folders; writes only inside `_kb/` and
+Reads the course folders (and, for extraction, the mirror); writes only inside `_kb/` and
 `state/`. Nothing here judges: every command is deterministic, and the facts
 that need reading comprehension -- concepts, topic notes -- are written by the
 driving agent, validated here, never generated here. `kb build` never touches

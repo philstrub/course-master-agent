@@ -128,7 +128,7 @@ def seed_manifest(settings: Settings, *, run: bool = True) -> None:
 def test_build_due_merges_planner_and_assignments(seeded: Settings) -> None:
     report = deadlines.build_due(seeded)
 
-    path = seeded.paths.kb / "due.json"
+    path = seeded.paths.due_json
     assert path.exists()
     doc = json.loads(path.read_text())
     titles = [i["title"] for i in doc["items"]]
@@ -174,7 +174,7 @@ def test_build_due_survives_missing_meta_files(
     report = deadlines.build_due(settings)
     assert report.items == []
     assert any("planner" in w for w in report.warnings)
-    assert (settings.paths.kb / "due.json").exists()
+    assert (settings.paths.due_json).exists()
 
 
 def test_build_due_notes_a_missing_sync(seeded: Settings) -> None:
