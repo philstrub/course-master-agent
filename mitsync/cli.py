@@ -352,13 +352,16 @@ def organize_apply(
 ) -> None:
     """Validate a plan, report every rejected placement, and apply the rest (undoable).
 
-    Exits 1 if any placement was rejected or failed, or if nothing was confirmed,
-    so a caller can never mistake a partial apply for a clean one.
+    Whatever was filed is in the graph when it returns (`graph refresh`). Exits 1
+    if any placement was rejected or failed, or if nothing was confirmed, so a
+    caller can never mistake a partial apply for a clean one.
     """
     settings = _settings()
     report = organize_mod.apply_plan(
         settings, plan_path, yes=yes, include_existing=include_existing
     )
+    if report.applied:
+        _refresh_graph(settings)
     if report.errors or report.rejected or not report.confirmed:
         raise typer.Exit(1)
 

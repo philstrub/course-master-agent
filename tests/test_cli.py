@@ -176,6 +176,7 @@ def test_organize_apply_exit_codes(settings: Settings, use) -> None:
     result = runner.invoke(cli.app, ["organize", "apply", "--plan", str(good), "--yes"])
     assert result.exit_code == 0, result.output
     assert (settings.paths.workspace / "Machine Learning/lectures/b.pdf").exists()
+    assert "graph backbone:" in result.stdout  # filed files are in the graph at once
 
     missing = runner.invoke(cli.app, ["organize", "apply"])
     assert missing.exit_code != 0  # --plan is required: the agent writes the plan
