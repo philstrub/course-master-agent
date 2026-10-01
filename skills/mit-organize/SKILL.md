@@ -78,6 +78,12 @@ Only these keys. Anything else is rejected. Then:
 M organize apply --plan <path> --yes
 ```
 
+**A case or reading you filed into `case studies/`:** set that reading's
+`file` to the destination in `_kb/courses/<Course>/readings.json` (write the
+whole file again). That is what makes a required case appear in `due` and in
+the morning brief. If the syllabus has no such reading, or the course has no
+`readings.json` yet, leave it: the `mit-course` run adds it.
+
 It prints each rejection with its reason and exits 1 if any placement was
 rejected. Fix only the rejected placements (or drop them) in a new plan and
 apply once more; don't loop beyond that. Reply with one line: how many files

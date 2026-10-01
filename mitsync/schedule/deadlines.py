@@ -6,9 +6,10 @@ What is due, what the student has already done about it, and when class meets
 
 ## 1. What This Module Does
 
-Merges four sources into one answer: Canvas `planner/items` and per-course
+Merges five sources into one answer: Canvas `planner/items` and per-course
 assignments (both read from the `_meta/*.json` files `sync` already wrote),
-calendar events, and the Gradescope snapshot `gradescope sync` wrote.
+calendar events, the Gradescope snapshot `gradescope sync` wrote, and the
+required readings the agent recorded from each syllabus (`readings`).
 `build_due` writes `state/due.json` and returns the same document. `homework`,
 `work_evidence`, `class_meetings`, `submission_status` and `last_sync` are
 the public data functions behind `mitsync due`, `mitsync work` and any skill
@@ -93,6 +94,7 @@ from mitsync.core.errors import CalendarAccessDenied, MitsyncError
 from mitsync.core.logging import get_logger
 from mitsync.filing.course_map import existing_course_folders, load_course_map
 from mitsync.gradescope import snapshot as gs_snapshot
+from mitsync.schedule.readings import reading_items
 
 if TYPE_CHECKING:  # pragma: no cover
     from mitsync.core.config import Settings
@@ -512,7 +514,8 @@ def last_sync(settings: Settings) -> str | None:
 
 
 def build_due(settings: Settings) -> DueReport:
-    """Merge Canvas planner + assignments + calendar into ``state/due.json``.
+    """Merge Canvas planner + assignments + calendar + required readings into
+    ``state/due.json``.
 
     `due.json` always holds every known item; windowing is the caller's choice
     (see `in_window`), so the knowledge base never loses a deadline because
@@ -522,6 +525,7 @@ def build_due(settings: Settings) -> DueReport:
     items = _planner_items(settings, report.warnings)
     items += _assignment_items(settings, report.warnings)
     items += _calendar_items(settings, report)
+    items += reading_items(settings, report.warnings)
     epoch = datetime.min.replace(tzinfo=UTC)
     report.items = sorted(
         _gradescope_overlay(settings, _dedupe(items), report.warnings),

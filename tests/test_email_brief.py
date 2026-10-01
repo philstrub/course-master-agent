@@ -104,6 +104,58 @@ def test_enrich_flags_a_stale_sync_and_an_unavailable_calendar(ready: Settings) 
     assert any("calendar unavailable" in g for g in doc["gaps"])
 
 
+def _mirrored(settings: Settings, uuid: str, name: str, first_seen: str, **kw) -> None:
+    from mitsync.canvas.manifest import FileRecord, Manifest
+
+    with Manifest(settings.paths.manifest_db) as man:
+        man.upsert_file(
+            FileRecord(
+                uuid=uuid, canvas_id=1, course_folder="Optimization", course_canvas_id=1,
+                display_name=name, filename=name, content_type="application/pdf", size=1,
+                canvas_folder=None, module_name="Week 5", module_position=1, updated_at="",
+                sha256="x", mirror_path=f"_canvas/Optimization/{name}",
+                filed_path=kw.get("filed"), first_seen=first_seen, last_synced=first_seen,
+                skip_reason=kw.get("skip"),
+            )
+        )  # fmt: skip
+
+
+def test_new_files_are_those_mirrored_since_the_last_brief_went_out(ready: Settings) -> None:
+    sent = ready.paths.state_dir / "sent"
+    sent.mkdir(parents=True)
+    (sent / "2026-09-18.json").write_text(json.dumps({"sent_at": "2026-09-18T11:00:00+00:00"}))
+    _mirrored(ready, "old", "L4.pdf", "2026-09-17T10:00:00+00:00")
+    filed = "Optimization/lectures/L5.pdf"
+    _mirrored(ready, "new", "L5.pdf", "2026-09-20T10:00:00+00:00", filed=filed)
+    _mirrored(ready, "pre", "Pre.pdf", "2026-09-21T10:00:00+00:00", skip="PostClass filed")
+    _mirrored(ready, "hw", "HW3.pdf", "2026-09-23T10:00:00+00:00")
+
+    doc = email_brief.enrich(ready, _brief(), now=datetime(2026, 9, 23, 11, 30, tzinfo=UTC))
+
+    new = doc["new_files"]
+    assert new["since"] == "2026-09-18T11:00:00+00:00"  # Friday's brief, on a Monday-like gap
+    assert [(f["title"], f["filed"]) for f in new["items"]] == [
+        ("HW3.pdf", None),
+        ("L5.pdf", "Optimization/lectures/L5.pdf"),
+    ]
+    assert new["items"][0] == {**new["items"][0], "course": "Optimization", "module": "Week 5"}
+    assert new["more"] == 0
+
+
+def test_with_no_brief_sent_new_files_cover_the_last_day(ready: Settings) -> None:
+    _mirrored(ready, "a", "old.pdf", "2026-09-21T10:00:00+00:00")
+    _mirrored(ready, "b", "fresh.pdf", "2026-09-23T01:00:00+00:00")
+    doc = email_brief.enrich(ready, _brief(), now=datetime(2026, 9, 23, 11, 30, tzinfo=UTC))
+    assert [f["title"] for f in doc["new_files"]["items"]] == ["fresh.pdf"]
+
+
+def test_a_reading_card_validates(ready: Settings) -> None:
+    hw = {**_brief()["homework"][0], "kind": "reading", "title": "Read: Moderna (A)"}
+    email_brief.validate_brief(ready, _brief(homework=[hw]))
+    with pytest.raises(email_brief.EmailError, match="kind"):
+        email_brief.validate_brief(ready, _brief(homework=[{**hw, "kind": "quiz"}]))
+
+
 def test_schedule_is_today_only(ready: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     """Regression: the inclusive `--to` once merged Thursday into Wednesday."""
     from mitsync.schedule import calendar as calendar_read
@@ -189,10 +241,31 @@ def test_missing_brief_file_is_a_clear_error(settings: Settings) -> None:
 def test_real_render_produces_the_dashboard(settings: Settings, tmp_path: Path) -> None:
     (settings.paths.repo / "email").symlink_to(REAL_EMAIL_DIR, target_is_directory=True)
     settings.email.node = shutil.which("node")
-    doc = email_brief.enrich(settings, _brief(), now=datetime(2026, 9, 23, 11, 30, tzinfo=UTC))
+    reading = {
+        **_brief()["homework"][0], "kind": "reading", "course": "From Anaytics to Action",
+        "title": "Read: Moderna (A)", "status": "not_started", "progress": None,
+    }  # fmt: skip
+    brief = _brief(homework=[*_brief()["homework"], reading])
+    doc = email_brief.enrich(settings, brief, now=datetime(2026, 9, 23, 11, 30, tzinfo=UTC))
+    doc["new_files"] = {
+        "since": "2026-09-22T11:00:00+00:00",
+        "items": [
+            {"course": "Optimization", "title": "Fall_2026_15_C57-L7.pdf",
+             "filed": "Optimization/lectures/L7.pdf", "module": "Week 5"},
+            {"course": "From Anaytics to Action", "title": "Moderna (A)",
+             "filed": None, "module": "Class 4"},
+        ],
+        "more": 3,
+    }  # fmt: skip
     html, text = tmp_path / "b.html", tmp_path / "b.txt"
     email_brief.render(settings, doc, html, text)
     body = html.read_text()
     assert "Submit Analytics Edge A1 first." in body
     assert "Ready to submit" in body
     assert "Ready to submit" in text.read_text()
+    assert "Required reading" in body and "To read" in body
+    plain = text.read_text()
+    assert "New on Canvas" in plain
+    assert "L7.pdf" in plain and "lectures" in plain
+    assert "Moderna (A)" in plain and "not filed yet · Class 4" in plain
+    assert "and 3 more" in plain

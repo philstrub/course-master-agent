@@ -3,8 +3,9 @@
 // `mitsync email` added. No judgment happens here.
 //
 // Dark by design (zinc + emerald). A fixed title, then sections: Homework
-// (one banner card per homework, two per row), Today's schedule (an hour
-// grid that keeps the gaps between events) and Heads up. The agent's
+// (one banner card per homework or required reading, two per row), Today's
+// schedule (an hour grid that keeps the gaps between events), New on Canvas
+// (files that arrived since the last brief, by course) and Heads up. The agent's
 // `headline` is the inbox preview and subject, and `summary` stays in the
 // JSON for tomorrow's run; neither is drawn.
 import {
@@ -29,6 +30,7 @@ import { shadcnTheme } from "./components/ui/theme";
 export type Homework = {
   course: string;
   title: string;
+  kind?: "assignment" | "reading";
   due_at: string;
   urgency: "now" | "soon" | "later";
   status: "ready_to_submit" | "in_progress" | "not_started" | "submitted" | "unknown";
@@ -50,12 +52,20 @@ export type ScheduleItem = {
   ends_next_day: boolean;
 };
 
+export type NewFile = {
+  course: string;
+  title: string; // Canvas's name
+  filed: string | null; // workspace path once filed
+  module: string | null;
+};
+
 export type Brief = {
   date: string;
   headline: string;
   homework: Homework[];
   gaps: string[];
   schedule: ScheduleItem[];
+  new_files?: { since: string; items: NewFile[]; more: number };
   sync: { last: string | null; fresh: boolean };
   generated_at: string;
 };
@@ -146,7 +156,8 @@ function SectionTitle({ children }: { children: ReactNode }) {
 }
 
 function HomeworkCard({ hw, now }: { hw: Homework; now: Date }) {
-  const s = status[hw.status];
+  const reading = hw.kind === "reading";
+  const s = reading && hw.status === "not_started" ? { label: "To read", variant: "outline" as BadgeVariant } : status[hw.status];
   const d = due(hw.due_at, now);
   const numbers = [hw.progress === null ? null : `${hw.progress}%`, hw.effort_hours ? `~${hw.effort_hours} h` : null]
     .filter(Boolean)
@@ -154,6 +165,11 @@ function HomeworkCard({ hw, now }: { hw: Homework; now: Date }) {
   return (
     <>
       <Section className="rounded-t-2xl bg-primary-soft px-5 pb-4 pt-5">
+        {reading && (
+          <Text className="m-0 mb-1 text-[12px] font-medium uppercase leading-4 tracking-[0.08em] text-primary">
+            Required reading
+          </Text>
+        )}
         <Text className="m-0 text-[22px] font-bold leading-7 tracking-[-0.01em] text-foreground">
           {hw.course.replace(/_/g, " ")}
         </Text>
@@ -350,6 +366,44 @@ function DayCalendar({ items }: { items: ScheduleItem[] }) {
   );
 }
 
+// -- new on Canvas ------------------------------------------------------------
+
+// One block per course. The filed name is what the student finds on disk, so
+// it leads. Canvas's own name only stands in until the file is filed.
+function NewFiles({ items, more }: { items: NewFile[]; more: number }) {
+  const courses = [...new Set(items.map((f) => f.course))];
+  return (
+    <Card>
+      <CardContent className="pt-4">
+        {courses.map((course, i) => (
+          <Section key={course}>
+            {i > 0 && <Separator className="my-2" />}
+            <Text className="m-0 pb-1 pt-1 text-[15px] font-semibold leading-6 text-foreground">
+              {course.replace(/_/g, " ")}
+            </Text>
+            {items
+              .filter((f) => f.course === course)
+              .map((f) => {
+                const parts = f.filed?.split("/") ?? [];
+                const name = f.filed ? parts[parts.length - 1] : f.title;
+                const where = f.filed ? parts.slice(1, -1).join("/") : `not filed yet${f.module ? ` · ${f.module}` : ""}`;
+                return (
+                  <Text key={(f.filed ?? "") + f.title} className="m-0 py-[2px] text-[14px] leading-5 text-muted-foreground">
+                    <span className="text-secondary-foreground">{name}</span>
+                    <span className="text-subtle"> · {where}</span>
+                  </Text>
+                );
+              })}
+          </Section>
+        ))}
+        {more > 0 && (
+          <Text className="m-0 pt-2 text-[13px] leading-5 text-subtle">and {more} more</Text>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 // -- the email ----------------------------------------------------------------
 
 export function MorningBrief({ brief }: { brief: Brief }) {
@@ -391,6 +445,13 @@ export function MorningBrief({ brief }: { brief: Brief }) {
 
             <SectionTitle>Today's schedule</SectionTitle>
             <DayCalendar items={brief.schedule} />
+
+            {(brief.new_files?.items.length ?? 0) > 0 && (
+              <>
+                <SectionTitle>New on Canvas</SectionTitle>
+                <NewFiles items={brief.new_files!.items} more={brief.new_files!.more} />
+              </>
+            )}
 
             {brief.gaps.length > 0 && (
               <>

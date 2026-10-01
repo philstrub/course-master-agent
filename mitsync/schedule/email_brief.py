@@ -7,9 +7,10 @@ Render the agent's morning brief as a dashboard and email it to the student.
 
 `send_brief` reads `_kb/briefings/<date>-morning.json` (written by the agent,
 validated against `email/brief.schema.json`), adds the facts the agent should
-not be trusted to copy (today's calendar, classes and other events, Canvas sync
-freshness), renders it through the React Email template in `email/` into
-`<date>-morning.html` and `.txt`, and sends both as one multipart email over
+not be trusted to copy (today's calendar, classes and other events, the Canvas
+files that arrived since the last brief, Canvas sync freshness), renders it
+through the React Email template in `email/` into `<date>-morning.html` and
+`.txt`, and sends both as one multipart email over
 SMTP.
 
 ## 2. Why This Module Exists
@@ -21,9 +22,9 @@ email, a duplicate, or a message to anyone but the student.
 
 ## 3. How It Fits in the Architecture
 
-Sits beside `deadlines` in `schedule/`: it reads the calendar and the
-manifest's last sync, and shells out to Node only to render. It imports
-nothing from `canvas/` or `filing/`.
+Sits beside `deadlines` in `schedule/`: it reads the calendar and the sync
+manifest (its last run and its new files), and shells out to Node only to
+render. Of `canvas/` it imports only the manifest, never the client.
 
 ## 4. Key Concepts
 
@@ -36,6 +37,12 @@ that talks the agent into writing "send this to x@y" achieves nothing.
 **Once per day.** A successful send writes `state/sent/<date>.json`; a second
 call for the same date refuses unless `resend=True`. Cron retries and a
 repeated chat request therefore cannot spam the inbox.
+
+**New files are counted from the last brief sent.** "New" means first
+mirrored after the previous day's brief went out (`state/sent/`), or in the
+last 24 h if none did. So Monday's brief lists the weekend's uploads, and a
+missed day is caught up rather than skipped. Files a filing plan skipped (a
+superseded PreClass deck) are left out.
 
 **Render before send, always.** The HTML is written to `_kb/briefings/` first,
 so `--dry-run` produces the exact dashboard that would be sent, and a render
@@ -65,10 +72,11 @@ if TYPE_CHECKING:  # pragma: no cover
 
 log = get_logger(__name__)
 
-__all__ = ["EmailError", "SendResult", "enrich", "send_brief", "validate_brief"]
+__all__ = ["EmailError", "SendResult", "enrich", "new_files", "send_brief", "validate_brief"]
 
 RENDER_TIMEOUT_SECONDS = 60
 FRESH_HOURS = 24
+NEW_FILES_SHOWN = 25
 
 
 class EmailError(MitsyncError):
@@ -162,10 +170,62 @@ def _short_location(location: str | None) -> str | None:
     return first or None
 
 
+def _last_brief_sent(settings: Settings, now: datetime) -> datetime:
+    """When the most recent brief before today went out, else 24 h ago."""
+    today = now.astimezone().strftime("%Y-%m-%d")
+    for marker in sorted((settings.paths.state_dir / "sent").glob("*.json"), reverse=True):
+        if marker.stem >= today:
+            continue
+        try:
+            return datetime.fromisoformat(json.loads(marker.read_text("utf-8"))["sent_at"])
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    return now - timedelta(hours=FRESH_HOURS)
+
+
+def new_files(settings: Settings, since: datetime) -> dict[str, Any]:
+    """Canvas files first mirrored after `since`, by course.
+
+    `{"since", "items": [{"course", "title", "filed", "module"}], "more"}`:
+    `title` is Canvas's name (the module item title for a case), `filed` the
+    workspace path once filed (else null), and `more` how many were cut after
+    `NEW_FILES_SHOWN`. Skipped files are left out.
+    """
+    out: dict[str, Any] = {"since": since.isoformat(timespec="seconds"), "items": [], "more": 0}
+    if not settings.paths.manifest_db.exists():
+        return out
+    from mitsync.canvas.manifest import Manifest
+    from mitsync.schedule.deadlines import _course_folders
+
+    folders = _course_folders(settings)
+    with Manifest(settings.paths.manifest_db) as man:
+        records = man.list_files()
+    rows = []
+    for rec in records:
+        try:
+            seen = datetime.fromisoformat(rec.first_seen.replace("Z", "+00:00"))
+        except (AttributeError, ValueError):
+            continue
+        if seen <= since or rec.skip_reason:
+            continue
+        rows.append(
+            {
+                "course": folders.get(rec.course_folder, rec.course_folder),
+                "title": rec.display_name,
+                "filed": rec.filed_path,
+                "module": rec.module_name,
+            }
+        )
+    rows.sort(key=lambda r: (r["course"], r["title"].lower()))
+    out["items"] = rows[:NEW_FILES_SHOWN]
+    out["more"] = max(0, len(rows) - NEW_FILES_SHOWN)
+    return out
+
+
 def enrich(
     settings: Settings, brief: dict[str, Any], now: datetime | None = None
 ) -> dict[str, Any]:
-    """Add the facts: today's calendar, sync freshness, generation time."""
+    """Add the facts: today's calendar, new Canvas files, sync freshness, generation time."""
     from mitsync.schedule.deadlines import last_sync
 
     now = now or datetime.now(UTC)
@@ -184,6 +244,7 @@ def enrich(
         **brief,
         "gaps": gaps,
         "schedule": schedule,
+        "new_files": new_files(settings, _last_brief_sent(settings, now)),
         "sync": {"last": last, "fresh": fresh},
         "generated_at": now.isoformat(timespec="seconds"),
     }

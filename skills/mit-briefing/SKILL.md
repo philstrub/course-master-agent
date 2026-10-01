@@ -21,7 +21,7 @@ whole conversation, so don't open a file whose answer you already have.
 ## 1. Gather the facts
 
 ```
-M due --days 7 --json           # deadlines, YOUR Canvas status, assignment text
+M due --days 7 --json           # deadlines, YOUR Canvas status, assignment text, required readings
 M work --json                   # your files per course: canvas_copy / edited / yours, with mtimes
 ```
 
@@ -33,8 +33,16 @@ Then read yesterday's `_kb/briefings/<yesterday>-morning.json` if it exists
 
 ## 2. Judge each homework due in the next 7 days (and anything overdue)
 
-Soonest first. Skip items that Canvas says are `submitted` or `graded`; list
+Soonest first. Skip items that Canvas says are `submitted` or `graded`. List
 them only if something is off (e.g. `late`).
+
+**Required readings are homework too.** A `due` item with `type: "reading"`
+is a case or article the syllabus requires before a class (its `description`
+names the file). Give it a card with `"kind": "reading"`, `status`
+`not_started` (you cannot see whether it was read), `progress` null, an honest
+`effort_hours` (a case is 1 to 2 h), and as `next_step` what to look for,
+taken from the course's `_kb/courses/<Course>/COURSE.md` if it has the
+reading. No `review`. Reuse yesterday's card as for any homework.
 
 **Reuse before you read.** If yesterday's brief has this homework, and `work`
 shows no `edited`/`yours` file in that course newer than 07:00 yesterday, and
@@ -93,8 +101,8 @@ M email
 
 It validates, renders `_kb/briefings/<date>-morning.html` and sends it, and a
 validation error stops it before anything is sent: fix the field it names
-and run it again. The calendar and sync freshness are added by `email` itself;
-don't write them. Reply with one line: the headline and "brief emailed".
+and run it again. The calendar, the list of files new on Canvas since the last brief, and sync
+freshness are added by `email` itself. Don't write them. Reply with one line: the headline and "brief emailed".
 
 ## Rules
 
