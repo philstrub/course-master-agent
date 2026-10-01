@@ -32,8 +32,9 @@ direction -- an agent with nothing but `grep` can still read the graph.
 
 ## 3. How It Fits in the Architecture
 
-Walks the course folders and the Canvas mirror with `extract.iter_sources`;
-is read by `kb`, which lists each file's node ids in `_kb/manifest.json`.
+Walks the course folders (never the Canvas mirror) with `extract.iter_sources`.
+`check` also reads `organize.unfiled`, so Canvas files waiting to be filed
+block the sync loop.
 Nothing here judges anything: the backbone is derived from paths and content
 hashes, and every other fact arrives through `graph add` from an agent that
 read the documents itself.
@@ -48,16 +49,23 @@ typed ids and structural rules as pydantic models. Every node and edge is
 validated against it before it is stored or projected, and a violation raises
 `OntologyError` naming the offending record.
 
-**The deterministic backbone.** One `Course` node per mapped folder; one
-`File` (document) / `DataFile` (data, code) node per distinct content, so a filed hardlink and its
-`_canvas/` original are one node (`path` + `mirror_path`) and the mirror's
-Canvas-named folder is the same course as the student's; and, wherever the
-folder a file is filed in says so unambiguously, its parent item
-(`assignments/<item>/`, `recitations/<item>/`, `syllabus/`, a numbered file in
-`lectures/`, `other/` / `notes/`). Everything else is left unattached for the
-agent, and `check` lists it as `unfiled`. Every Canvas and Gradescope
-assignment of a mapped course is an `Assignment` node carrying the student's
-submission status, joined to its `assignments/<item>/` node by title key.
+**The deterministic backbone, from the course folders.** The graph mirrors
+what the student keeps, not what Canvas dumped: one `Course` node per mapped
+folder; one `File` (document) / `DataFile` (data, code) node per file in it,
+carrying its `path` and, once extracted, the path of its `text`; and, wherever
+the folder a file is filed in says so unambiguously, its parent item
+(`assignments/<item>/`, `recitations/<item>/`, `syllabus/`, a file in
+`lectures/` whose name states its number, `other/` / `notes/`). Every Canvas
+and Gradescope assignment of a mapped course is an `Assignment` node carrying
+the student's submission status, joined to its `assignments/<item>/` node by
+title key, and every repo `courses.yml` declares is a `Repo` node.
+
+**The agent supervises the rest.** `check` lists what needs judgment:
+`lecture_unattached` (a lecture file with no number in its name),
+`no_concepts` (an item whose files have text but no concept yet), `unfiled`,
+and `canvas_unfiled` (a Canvas file not yet in a course folder). The agent
+fixes the first three with `graph add`, and puts the last in a filing plan
+the student applies. The loop stops when nothing blocking is left.
 
 **Stale edges.** An agent edge whose endpoint the backbone no longer produces
 (the file was deleted or re-filed) is kept in the append-only file, left out of
@@ -112,7 +120,6 @@ from mitsync.core.logging import get_logger
 from mitsync.filing.course_map import (
     existing_course_folders,
     load_course_map,
-    mirror_course_folders,
 )
 from mitsync.knowledge.extract import DOCUMENT_EXTENSIONS, iter_sources, sha256_of
 from mitsync.knowledge.ontology import (
@@ -771,9 +778,24 @@ GRAPH_EXTENSIONS = DOCUMENT_EXTENSIONS | frozenset(
     {".zip", ".py", ".jl", ".r", ".rmd", ".tex", ".tsv", ".parquet", ".dat", ".mod", ".sql"}
 )
 
-# `Lec03_2026`, `Lecture-04`, `Fall_2026_15_C57-L5`, `lecture 7 - trees`
-_LECTURE_RX = re.compile(r"(?:^|[^a-z])(?:lec(?:ture)?|l)[\s_-]*0*(\d{1,2})(?!\d)")
+# A lecture number the filename states outright: `Lec03_2026`, `Lecture-04`,
+# `Fall_2026_15_C57-L5`, `Class_2`, `3_sparse_linear_regression`. Names like
+# `Week 1 - 2 - What Is an AI Agent` or `LinearAlgebra1` state none, so the
+# agent numbers those (`graph check` lists them as `lecture_unattached`).
+_LECTURE_RX = re.compile(
+    r"^0*(\d{1,2})[\s_.-]+(.*)$|(?:^|[^a-z])(?:lec(?:ture)?|l|class|session)[\s_-]*0*(\d{1,2})(?!\d)"
+)
 _NUMBER_RX = re.compile(r"(\d+)$")
+
+
+def lecture_number(stem: str) -> tuple[int, str | None] | None:
+    """`(number, title)` when a file name in `lectures/` states its lecture number."""
+    m = _LECTURE_RX.search(stem.lower())
+    if m is None:
+        return None
+    if m.group(1):
+        return int(m.group(1)), " ".join(m.group(2).replace("_", " ").split()) or None
+    return int(m.group(3)), None
 
 
 def file_id(rel: str) -> str:
@@ -786,21 +808,24 @@ def _iso(mtime: float) -> str:
 
 
 def build_backbone(settings: Settings) -> GraphReport:
-    """Regenerate `_kb/graph/backbone.jsonl` from the course folders and the mirror.
+    """Regenerate `_kb/graph/backbone.jsonl` from the student's course folders.
 
-    Files are grouped by content hash, so the filed copy and its `_canvas/`
-    original are one node; the canonical path is the copy filed in a bucket,
-    else any course-folder copy, else the mirror copy. Mirror files of a Canvas
-    course that `config/courses.yml` does not map belong to no course and are
-    left out: that is the documented skip below. No judgment is involved, so
+    Only the folders `config/courses.yml` maps are walked. The `_canvas/`
+    mirror is the raw dump, not the student's material: a Canvas file enters
+    the graph once it is filed into a course folder, and `graph check` lists
+    the rest as `canvas_unfiled`. Files are grouped by content hash: every copy
+    filed in a bucket is its own node, and a loose copy of the same bytes is
+    recorded on it as a duplicate for the human. No judgment is involved, so
     this is safe to run unattended from `kb build`.
     """
+    from mitsync.knowledge.extract import course_roots, text_path_for
+
+    ws = settings.paths.workspace
     folders = existing_course_folders(settings)
-    mirror = mirror_course_folders(settings)
     groups: dict[str, list[str]] = defaultdict(list)
     digests: dict[str, str | None] = {}
     mtimes: dict[str, float] = {}
-    for path in iter_sources(settings, GRAPH_EXTENSIONS):
+    for path in iter_sources(settings, GRAPH_EXTENSIONS, roots=course_roots(settings)):
         rel = settings.paths.safe_relative(path).as_posix()
         digest = sha256_of(path)
         key = digest or rel  # too large to hash: a group of its own
@@ -810,9 +835,8 @@ def build_backbone(settings: Settings) -> GraphReport:
 
     nodes: dict[str, dict[str, Any]] = {}
     edges: list[dict[str, Any]] = []
-    for entry in load_course_map(settings):
-        if entry.get("folder") not in folders:
-            continue  # mapped but not on disk: `doctor` reports it
+    entries = [e for e in load_course_map(settings) if e.get("folder") in folders]
+    for entry in entries:  # mapped but not on disk: `doctor` reports it
         attrs = {"folder": entry["folder"]}
         attrs |= {k: entry[k] for k in ("course_number", "canvas_id") if entry.get(k)}
         cid = course_id(entry["folder"])
@@ -829,30 +853,28 @@ def build_backbone(settings: Settings) -> GraphReport:
         node["ts"] = max(node["ts"], ts)
 
     for key, rels in sorted(groups.items()):
-        on_disk = sorted(r for r in rels if not r.startswith("_canvas/"))
-        mirrored = sorted(r for r in rels if r.startswith("_canvas/"))
-        filed = [r for r in on_disk if len(r.split("/")) > 2 and r.split("/")[1] in BUCKET_EDGES]
-        loose = [r for r in on_disk if r not in filed]
+        rels = sorted(rels)
+        filed = [r for r in rels if len(r.split("/")) > 2 and r.split("/")[1] in BUCKET_EDGES]
+        loose = [r for r in rels if r not in filed]
         # Each filed copy is its own node: one dataset legitimately filed under two
-        # recitations belongs to both. Mirror copies and loose copies merge into
-        # the first; a loose copy of filed content is a duplicate for the human.
-        heads = filed or [(loose or mirrored)[0]]
+        # recitations belongs to both. A loose copy of filed content is a duplicate
+        # for the human, and merges into the first.
+        heads = filed or [loose[0]]
         extras = [r for r in loose if r not in heads]
         for n, canonical in enumerate(heads):
-            folder = canonical.split("/")[0] if on_disk else mirror[mirrored[0].split("/")[1]]
-            if folder is None:
-                continue  # a Canvas course courses.yml does not map: not the student's course
-            copies = sorted({canonical, *mirrored, *extras} if n == 0 else {canonical})
+            folder = canonical.split("/")[0]
+            copies = sorted({canonical, *extras} if n == 0 else {canonical})
             ts = _iso(max(mtimes[r] for r in copies))
             suffix = Path(canonical).suffix.lower()
             fid = file_id(canonical)
-            attrs = {
+            attrs: dict[str, Any] = {
                 "path": canonical,
                 "title": " ".join(Path(canonical).stem.replace("_", " ").replace("-", " ").split()),
                 "content_type": suffix.lstrip("."),
             }
-            if n == 0 and mirrored and canonical not in mirrored:
-                attrs["mirror_path"] = mirrored[0]
+            text = text_path_for(settings, canonical)
+            if text.is_file():
+                attrs["text"] = text.relative_to(ws).as_posix()
             if n == 0 and extras:
                 attrs["duplicates"] = extras
             if digests[key]:
@@ -865,7 +887,7 @@ def build_backbone(settings: Settings) -> GraphReport:
 
             cid = course_id(folder)
             parts = canonical.split("/")
-            bucket = parts[1] if on_disk and len(parts) > 2 else ""
+            bucket = parts[1] if len(parts) > 2 else ""
             parent: tuple[str, str, dict[str, Any]] | None = None
             if bucket in ("assignments", "recitations") and len(parts) > 3:
                 kind = Assignment if bucket == "assignments" else Recitation
@@ -887,10 +909,11 @@ def build_backbone(settings: Settings) -> GraphReport:
                 edges.append({"s": cid, "p": "course_follows_syllabus", "o": sid,
                               "src": canonical, "ts": ts})  # fmt: skip
                 parent = ("file_of_syllabus", sid, {})
-            elif bucket == "lectures" and (m := _LECTURE_RX.search(Path(canonical).stem.lower())):
-                number = int(m.group(1))
+            elif bucket == "lectures" and (found := lecture_number(Path(canonical).stem)):
+                number, title = found
                 lid = item_id(Lecture, folder, f"{number:02d}")
-                item(lid, "Lecture", f"Lecture {number}", {"number": number}, canonical, ts)
+                lattrs: dict[str, Any] = {"number": number} | ({"title": title} if title else {})
+                item(lid, "Lecture", f"Lecture {number}", lattrs, canonical, ts)
                 edges.append({"s": lid, "p": "lecture_of_course", "o": cid,
                               "src": canonical, "ts": ts})  # fmt: skip
                 parent = ("file_of_lecture", lid, {})
@@ -902,6 +925,7 @@ def build_backbone(settings: Settings) -> GraphReport:
                               "src": canonical, "ts": ts})  # fmt: skip
 
     _add_assignments(settings, nodes, edges)
+    _add_repos(settings, entries, nodes, edges)
     records = [normalize_node(n) for n in nodes.values()]
     for node in records:
         validate_node(node)
@@ -921,6 +945,39 @@ def build_backbone(settings: Settings) -> GraphReport:
     _project(settings, report)
     log.info("graph backbone: %s", report.summary())
     return report
+
+
+def _add_repos(
+    settings: Settings,
+    entries: list[dict[str, Any]],
+    nodes: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> None:
+    """The repos a course entry in `config/courses.yml` declares, metadata only.
+
+    Guardrail 5: nothing reads inside a repo. Name, remote and assignment come
+    from the entry (`repos: [{path, remote_url, description, assignment}]`,
+    `path` relative to the course folder), and the checkout is only checked to
+    exist. A repo declared without `assignment` gets no parent: `graph check`
+    lists it, and the agent writes `repo_of_assignment` or `repo_of_course`.
+    """
+    for entry in entries:
+        folder = entry["folder"]
+        for repo in entry.get("repos") or []:
+            rel = f"{folder}/{repo['path']}"
+            if not (settings.paths.workspace / rel).is_dir():
+                continue  # declared but not checked out
+            name = Path(repo["path"]).name
+            rid = f"repo:{slug(name)}"
+            attrs = {"name": name, "path": rel}
+            attrs |= {k: repo[k] for k in ("remote_url", "description") if repo.get(k)}
+            nodes[rid] = {
+                "id": rid, "type": "Repo", "label": name, "attrs": attrs,
+                "src": [rel], "ts": _iso(0),
+            }  # fmt: skip
+            if repo.get("assignment"):
+                edges.append({"s": rid, "p": "repo_of_assignment", "src": rel, "ts": _iso(0),
+                              "o": item_id(Assignment, folder, repo["assignment"])})  # fmt: skip
 
 
 def _add_assignments(
@@ -976,17 +1033,39 @@ def _project(settings: Settings, report: GraphReport) -> None:
 
 
 def check(settings: Settings) -> list[Violation]:
-    """Every structural violation of the projected graph, plus its stale edges."""
+    """Every structural violation of the projected graph, its stale edges, and
+    every Canvas file of a mapped course that is neither filed nor skipped.
+
+    The last is what makes the sync supervised: the graph is built from the
+    course folders, so a Canvas file is missing from it until the agent writes
+    a filing plan (or a skip, with its reason) and the student applies it.
+    """
+    from mitsync.filing.organize import unfiled
+
     nodes, edges, stale = load_graph(settings)
-    return structure_violations(nodes, edges) + [
-        Violation(
-            code="stale_edge",
-            severity="info",
-            node=e["s"],
-            message=f"{e['s']} -{e['p']}-> {e['o']} names a node that no longer exists",
-        )
-        for e in stale
-    ]
+    return (
+        structure_violations(nodes, edges)
+        + [
+            Violation(
+                code="stale_edge",
+                severity="info",
+                node=e["s"],
+                message=f"{e['s']} -{e['p']}-> {e['o']} names a node that no longer exists",
+            )
+            for e in stale
+        ]
+        + [
+            Violation(
+                code="canvas_unfiled",
+                severity="human",
+                node=f"canvas:{f['file_id']}",
+                message=f"{f['mirror_path']} is not filed in {f['course']!r}: put it in a "
+                "filing plan or a skip (`mitsync unfiled --json`); the student applies it",
+            )
+            for f in unfiled(settings)["files"]
+            if f["course"]
+        ]
+    )
 
 
 # --------------------------------------------------------------------------
@@ -1015,7 +1094,7 @@ def _check_src(value: Any, many: bool) -> None:
 
 
 # Only the backbone mints these: an agent may enrich an existing one, never invent one.
-BACKBONE_ONLY_TYPES = frozenset({"Course", "File", "DataFile"})
+BACKBONE_ONLY_TYPES = frozenset({"Course", "File", "DataFile", "Repo"})
 
 
 def _check_record(record: Any, existing: dict[str, dict[str, Any]]) -> tuple[str, dict[str, Any]]:

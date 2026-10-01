@@ -218,6 +218,14 @@ class CanvasClient:
             log.info("download url for file %s went stale; re-resolving once", file_id)
             return self._stream_to(self._resolve_url(file_id), dest)
 
+    def download_url(self, url: str, dest: Path) -> str:
+        """Stream a URL outside Canvas (a shared Google Slides deck exported as
+        PDF) to ``dest`` and return its sha256. The Canvas token is never sent.
+        """
+        dest = Path(dest)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        return self._stream_to(url, dest)
+
     # -- internals ---------------------------------------------------------
     def _resolve_url(self, file_id: int) -> str:
         record = self.get(f"/files/{file_id}")
@@ -240,7 +248,7 @@ class CanvasClient:
                 if response.status_code == 403:
                     response.read()
                     raise StalePresignedURL(f"403 streaming {dest.name}")
-                if response.status_code == 401:
+                if response.status_code == 401 and urlparse(url).netloc == self._host:
                     response.read()
                     raise CanvasAuthError("Canvas rejected the token (401) during download")
                 try:

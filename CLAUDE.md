@@ -25,20 +25,24 @@ command validates**:
 | you decide | you write | the command that checks and applies it |
 |---|---|---|
 | the morning brief | `_kb/briefings/<date>-morning.json` (schema `email/brief.schema.json`) | `mitsync email` (`--dry-run` first) |
-| where unfiled files go | a plan `{"placements": [{"file_id", "destination", "reason"}]}` | `mitsync organize apply --plan <path>` (the human runs it) |
+| where unfiled files go, and what they are called | a plan `{"placements": [{"file_id", "destination", "reason"}], "skips": [{"file_id", "reason"}]}` | `mitsync organize apply --plan <path>` (the human runs it) |
 | concept facts, unfiled files | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
 | course notes | `_kb/courses/<Course>/NOTES.md` | none; `kb build` never overwrites it |
 
 The facts come from `due --json`, `work --json`, `calendar --json` and
-`unfiled --json`. `unfiled --json` carries the verbatim text of
-`config/naming.md`, the allowed buckets and the plan schema; filing rules are
-never in Python, so read them from there rather than from memory.
+`unfiled --json`. `unfiled --json` carries the path of `config/naming.md`
+(which names filed files per course), the allowed buckets, the plan schema,
+each file's module item title, and the HBS case links mitsync cannot
+download. Filing rules are never in Python, so read them from there rather
+than from memory.
 
 Validation errors name the failing field or line. Fix your file and re-run;
 never work around a check. `organize apply` rejects extra keys (no
 `confidence`), a destination outside a mapped course or bucket, and a
-different file already at the destination; it asks for confirmation and
-writes an undo log to `state/undo/`. `email` sends only to `email.to` in
+different file already at the destination, unless that file is mitsync's own
+unchanged filed copy (a PostClass deck replacing its PreClass deck). Renaming a
+copy mitsync already filed needs `--include-existing`. It asks for
+confirmation and writes an undo log to `state/undo/`. `email` sends only to `email.to` in
 `config/settings.yml`, at most once per date unless `--resend`.
 
 ## Hard guardrails — do not violate these

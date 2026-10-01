@@ -140,6 +140,7 @@ def test_unfiled_json_shape(settings: Settings, use) -> None:
         "plans_dir",
         "plan_schema",
         "files",
+        "links",
     }
     [f] = doc["files"]
     assert set(f) == {
@@ -153,6 +154,8 @@ def test_unfiled_json_shape(settings: Settings, use) -> None:
         "module_position",
         "content_type",
         "size",
+        "module_item_title",
+        "module_subheader",
     }
     assert f["file_id"] == "101" and f["course"] == "Machine Learning"
 

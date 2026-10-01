@@ -8,6 +8,11 @@
 # `folder` must match the workspace folder name on disk byte-for-byte.
 # `aliases` are the course-number spellings actually seen in filenames and
 # calendar events; the organizer and `calendar_read.tag_course` match on them.
+# `repos` are code checkouts inside the course folder. The graph gets a Repo
+# node for each from this file alone, because nothing reads inside a repo
+# (guardrail 5): `path` is relative to the course folder, and `remote_url`,
+# `description` and `assignment` (the assignment folder, e.g. hw-02) are
+# optional. Without `assignment` the agent attaches the repo itself.
 
 courses:
   - canvas_id: 38494
@@ -85,3 +90,5 @@ courses:
       - MAS665
       - AI Studio
       - AI Ventures
+    repos:
+      - path: nandatown

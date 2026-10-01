@@ -67,6 +67,17 @@ explicit start and end dates always sent, because Canvas's default window is
 only -14d/+28d. `_canvas/_meta/planner.json` holds planner items across every
 course, fetched once per run.
 
+**Shared Google Slides links are mirrored too.** Some courses post their
+decks as `ExternalUrl` module items pointing at Google Slides rather than as
+Canvas files. Each one whose deck is shared by link is exported as PDF into
+`<Course Folder>/<module name>/<item title>.pdf` and recorded like a file,
+keyed `link-<module item id>` with `canvas_id` 0 (it is not a Canvas file).
+Google gives no version signal, so a deck is fetched once and again only on
+`--full`. A deck that is not shared comes back as a sign-in page, not a PDF;
+that is a notice, not an error. Every other link (publisher cases launched
+through an LTI tool, forms, websites) needs the student's own login and is
+never fetched; `organize.unfiled` lists the case links for the agent.
+
 **Catch-up safety.** Work is derived from manifest state versus Canvas state
 -- never from time since the last run -- so a skipped or late scheduled run
 costs nothing.
@@ -151,6 +162,7 @@ __all__ = [
 _STAGE_FAILURES = (CanvasHTTPError, CanvasNotFound, CanvasRateLimited, httpx.HTTPError)
 
 _META_DIR = "_meta"
+_GOOGLE_SLIDES = re.compile(r"^https://docs\.google\.com/presentation/d/([\w-]+)")
 _TERM_PAD_DAYS = 200
 
 
@@ -386,6 +398,22 @@ def _sync_course(
         _sync_file(
             settings, client, manifest, report, entry, raw, folder_names, dry_run=dry_run, full=full
         )
+    for module in modules:
+        for item in module.get("items") or []:
+            match = _GOOGLE_SLIDES.match(str(item.get("external_url") or ""))
+            if item.get("type") == "ExternalUrl" and match:
+                _sync_slides_link(
+                    settings,
+                    client,
+                    manifest,
+                    report,
+                    entry,
+                    module,
+                    item,
+                    match.group(1),
+                    dry_run=dry_run,
+                    full=full,
+                )
 
     _write_course_meta(
         settings, client, report, entry, modules, term_start, term_end, dry_run=dry_run
@@ -715,6 +743,86 @@ def _sync_file(
             module_name=raw.get("_module_name"),
             module_position=raw.get("_module_position"),
             updated_at=updated_at,
+            sha256=sha,
+            mirror_path=rel_path,
+            filed_path=None,
+            first_seen=existing.first_seen if existing else now,
+            last_synced=now,
+        )
+    )
+
+
+def _sync_slides_link(
+    settings: Any,
+    client: CanvasClient,
+    manifest: Manifest,
+    report: SyncReport,
+    entry: dict[str, Any],
+    module: dict[str, Any],
+    item: dict[str, Any],
+    deck_id: str,
+    *,
+    dry_run: bool,
+    full: bool,
+) -> None:
+    """Mirror one Google Slides module link as a PDF (see "Shared Google Slides")."""
+    course_folder = entry["folder"]
+    uuid = f"link-{item['id']}"
+    title = str(item.get("title") or f"slides-{item['id']}")
+    filename = _sanitize_component(title) + ".pdf"
+    rel_path = "/".join(
+        ["_canvas", course_folder, _sanitize_component(str(module.get("name"))), filename]
+    )
+    dest = settings.paths.workspace / Path(rel_path)
+    existing = manifest.get_file(uuid)
+    if not full and existing is not None and dest.exists():
+        report.unchanged += 1
+        return
+    if dry_run:
+        report.new += 1
+        log.info("would export %s", rel_path)
+        return
+
+    staging = dest.with_name(dest.name + ".download")
+    url = f"https://docs.google.com/presentation/d/{deck_id}/export/pdf"
+    try:
+        sha = client.download_url(url, staging)
+    except (MitsyncError, httpx.HTTPError) as exc:
+        staging.unlink(missing_ok=True)
+        report.add_error(course_folder, "slides-link", f"{title}: {type(exc).__name__}: {exc}")
+        return
+    with open(staging, "rb") as fh:
+        is_pdf = fh.read(5) == b"%PDF-"
+    if not is_pdf:
+        staging.unlink()
+        report.add_notice(course_folder, "slides-link", f"{title}: not shared by link; skipped")
+        return
+
+    size = staging.stat().st_size
+    report.bytes_downloaded += size
+    if dest.exists() and not (existing is not None and existing.sha256 == sha):
+        _keep_previous_version(dest)
+    staging.replace(dest)
+    if existing is None:
+        report.new += 1
+    else:
+        report.updated += 1
+
+    now = now_iso()
+    manifest.upsert_file(
+        FileRecord(
+            uuid=uuid,
+            canvas_id=0,
+            course_folder=course_folder,
+            course_canvas_id=entry["canvas_id"],
+            display_name=title,
+            filename=filename,
+            content_type="application/pdf",
+            size=size,
+            canvas_folder=None,
+            module_name=module.get("name"),
+            module_position=module.get("position"),
+            updated_at="",
             sha256=sha,
             mirror_path=rel_path,
             filed_path=None,

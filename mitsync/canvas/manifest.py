@@ -12,7 +12,9 @@ Owns `state/manifest.duckdb` and the three tables in it:
     `canvas-<id>` key is used when Canvas omits one). `mirror_path` is where
     `sync` put the bytes; `filed_path` is where `organize` later copied or
     linked them, and is `NULL` until then. Both are workspace-relative POSIX
-    strings.
+    strings. `skip_reason` is set when the agent decided a file is deliberately
+    not filed (a pre-class deck once the post-class one exists), so it is not
+    offered for filing again.
 `courses`
     One row per Canvas course seen, keyed by `canvas_id`. `folder` is the
     sanitized mirror folder name under `_canvas/`; the mapping to the
@@ -46,9 +48,13 @@ always be re-synced -- but it is the authority on when a command last ran.
 **Idempotent open.** The schema is created if absent and left alone if
 present; upserts are `INSERT OR REPLACE`.
 
-**`first_seen` and `filed_path` are protected on upsert.** A re-sync must not
-reset when a file was first seen, and `sync` (which knows nothing about
-filing) must not blank a `filed_path` that `organize` owns.
+**`first_seen`, `filed_path` and `skip_reason` are protected on upsert.** A
+re-sync must not reset when a file was first seen, and `sync` (which knows
+nothing about filing) must not blank the filing state that `organize` owns.
+
+**Columns added later are added in place.** `skip_reason` arrived after the
+first manifests were written, so opening one adds it with `ADD COLUMN IF NOT
+EXISTS` rather than asking for a rebuild.
 
 **Runs are append-only.** `last_run` answers sync-freshness questions for
 `mitsync due` and for `_kb/AGENTS.md`, so both read the same authority and can
@@ -92,6 +98,7 @@ class FileRecord:
     filed_path: str | None
     first_seen: str
     last_synced: str
+    skip_reason: str | None = None
 
 
 @dataclass
@@ -133,8 +140,11 @@ CREATE TABLE IF NOT EXISTS files (
     mirror_path      VARCHAR,
     filed_path       VARCHAR,
     first_seen       VARCHAR,
-    last_synced      VARCHAR
+    last_synced      VARCHAR,
+    skip_reason      VARCHAR
 );
+
+ALTER TABLE files ADD COLUMN IF NOT EXISTS skip_reason VARCHAR;
 
 CREATE TABLE IF NOT EXISTS courses (
     canvas_id   BIGINT PRIMARY KEY,
@@ -179,8 +189,8 @@ class Manifest:
     def upsert_file(self, rec: FileRecord) -> None:
         """Insert or replace a file row, preserving its original ``first_seen``.
 
-        ``filed_path`` is owned by ``organize.py``; a record carrying ``None``
-        never clobbers a path already stored.
+        ``filed_path`` and ``skip_reason`` are owned by ``organize.py``; a
+        record carrying ``None`` never clobbers a value already stored.
         """
         existing = self.get_file(rec.uuid)
         if existing is not None:
@@ -188,6 +198,8 @@ class Manifest:
                 rec.first_seen = existing.first_seen
             if rec.filed_path is None:
                 rec.filed_path = existing.filed_path
+            if rec.skip_reason is None:
+                rec.skip_reason = existing.skip_reason
         values = [getattr(rec, c) for c in _FILE_COLUMNS]
         placeholders = ", ".join("?" for _ in _FILE_COLUMNS)
         self._con.execute(
@@ -207,7 +219,7 @@ class Manifest:
         """All file rows, newest-first by ``last_synced``.
 
         ``course`` matches the mirror folder name; ``unfiled_only`` restricts to
-        rows ``organize.py`` has not filed yet.
+        rows ``organize.py`` has neither filed nor skipped.
         """
         sql = f"SELECT {', '.join(_FILE_COLUMNS)} FROM files"
         clauses: list[str] = []
@@ -216,7 +228,7 @@ class Manifest:
             clauses.append("course_folder = ?")
             params.append(course)
         if unfiled_only:
-            clauses.append("filed_path IS NULL")
+            clauses.append("filed_path IS NULL AND skip_reason IS NULL")
         if clauses:
             sql += " WHERE " + " AND ".join(clauses)
         sql += " ORDER BY last_synced DESC, mirror_path"
@@ -224,6 +236,9 @@ class Manifest:
 
     def set_filed_path(self, uuid: str, filed_path: str | None) -> None:
         self._con.execute("UPDATE files SET filed_path = ? WHERE uuid = ?", [filed_path, uuid])
+
+    def set_skip_reason(self, uuid: str, skip_reason: str | None) -> None:
+        self._con.execute("UPDATE files SET skip_reason = ? WHERE uuid = ?", [skip_reason, uuid])
 
     # -- courses -----------------------------------------------------------
     def upsert_course(self, rec: CourseRecord) -> None:

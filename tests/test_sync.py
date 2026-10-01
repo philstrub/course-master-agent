@@ -636,3 +636,76 @@ def test_a_sync_that_recorded_errors_exits_nonzero(monkeypatch, workspace):
 
     result = CliRunner().invoke(cli.app, ["sync", "--dry-run"])
     assert result.exit_code == 1
+
+
+# --------------------------------------------------------------------------
+# Google Slides module links
+# --------------------------------------------------------------------------
+def slides_item(item_id: int, title: str, deck: str) -> dict:
+    return {
+        "id": item_id,
+        "type": "ExternalUrl",
+        "title": title,
+        "external_url": f"https://docs.google.com/presentation/d/{deck}/edit?usp=sharing",
+    }
+
+
+class SlidesCanvas(FakeCanvas):
+    """FakeCanvas plus a module of Google Slides links: one shared, one private."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "docs.google.com":
+            self.paths.append(request.url.path)
+            if "/shared-deck/" in request.url.path:
+                return httpx.Response(200, content=b"%PDF-1.4 week one deck\n")
+            return httpx.Response(200, content=b"<html>Sign in</html>")
+        if request.url.path.endswith("/courses/28451/modules"):
+            module = {
+                "id": 9,
+                "position": 9,
+                "name": "Week 1 — Sep 10",
+                "items": [
+                    slides_item(
+                        71, "Slides: 2026-09-10 - Week 1 - 3 - Course Logistics", "shared-deck"
+                    ),
+                    slides_item(72, "Slides: private", "private-deck"),
+                    {
+                        "id": 73,
+                        "type": "ExternalUrl",
+                        "title": "Site",
+                        "external_url": "https://x.org",
+                    },
+                ],
+            }
+            return httpx.Response(200, json=[*fixture("modules"), module])
+        return super().handler(request)
+
+
+def test_shared_google_slides_links_are_mirrored_as_pdf(settings):
+    fake = SlidesCanvas()
+    report = sync(settings, fake)
+
+    with Manifest(settings.paths.manifest_db) as m:
+        rec = m.get_file("link-71")
+        assert m.get_file("link-72") is None
+    assert rec is not None and rec.canvas_id == 0 and rec.module_name == "Week 1 — Sep 10"
+    assert rec.mirror_path == (
+        "_canvas/Machine Learning/Week 1 — Sep 10/"
+        "Slides- 2026-09-10 - Week 1 - 3 - Course Logistics.pdf"
+    )
+    assert (settings.paths.workspace / rec.mirror_path).read_bytes().startswith(b"%PDF-")
+    assert not report.errors
+    assert [n["message"] for n in report.notices if n["stage"] == "slides-link"] == [
+        "Slides: private: not shared by link; skipped"
+    ]
+    assert not [p for p in mirrored_files(settings) if "private" in p or ".download" in p]
+
+
+def test_a_mirrored_deck_is_not_fetched_again(settings):
+    fake = SlidesCanvas()
+    sync(settings, fake)
+    fake.paths.clear()
+
+    sync(settings, fake)
+
+    assert "/presentation/d/shared-deck/export/pdf" not in fake.paths

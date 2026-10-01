@@ -12,8 +12,9 @@
 #   organize apply --include-existing     would MOVE the student's own files
 #
 # Plain `organize apply --plan P --yes` is allowed: it only hardlinks or
-# copies newly mirrored Canvas files into the course folders, rejects any
-# placement that touches a pre-existing file, and writes an undo log.
+# copies newly mirrored Canvas files into the course folders (replacing at most
+# mitsync's own unchanged copy of an older deck), rejects any placement that
+# touches a pre-existing file, and writes an undo log.
 #
 # A LaunchAgent has no shell profile, so uv is looked up by absolute path.
 

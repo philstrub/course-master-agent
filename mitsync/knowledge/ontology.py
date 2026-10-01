@@ -81,10 +81,14 @@ no lecture, recitation, assignment or syllabus.
 
 **Disk agrees with the graph.** A file stored under a per-item folder
 (`<Course>/assignments/hw-01/`) must hang off that item, and a file in
-`lectures/`, `syllabus/`, `other/` or `notes/` off an item of that kind. Files
-outside those buckets (loose pre-existing files, the `_canvas/` mirror) can be
-attached anywhere in their own course: the graph can file what guardrail 1
-forbids moving on disk.
+`lectures/`, `syllabus/`, `other/` or `notes/` off an item of that kind. Loose
+pre-existing files outside those buckets can be attached anywhere in their own
+course: the graph can file what guardrail 1 forbids moving on disk. Only
+course-folder files are nodes; the `_canvas/` mirror is not.
+
+**Items carry their concepts.** A lecture, recitation or assignment with a
+file whose text was extracted needs at least one `concept_in_*` edge, so the
+graph answers "where is CART taught?" without anyone re-reading the PDFs.
 """
 
 from __future__ import annotations
@@ -242,11 +246,9 @@ class Assignment(NodeAttrs):
 
 class _File(NodeAttrs):
     id_prefix: ClassVar[str] = "file"
-    path: str = Field(
-        description="Canonical workspace-relative path (the filed copy when one exists)"
-    )
-    mirror_path: str | None = Field(
-        default=None, description="Same content in the `_canvas/` mirror"
+    path: str = Field(description="Workspace-relative path in the student's course folder")
+    text: str | None = Field(
+        default=None, description="Workspace-relative path of the extracted text in `_kb/text/`"
     )
     duplicates: list[str] = Field(
         default_factory=list, description="Other course-folder paths holding identical content"
@@ -290,7 +292,9 @@ class DataFile(_File):
 class Repo(NodeAttrs):
     """A code repository the student works in (e.g. `AI_Studio/nandatown`).
 
-    Metadata only: nothing walks inside a repo (guardrail 5).
+    Declared under the course's `repos:` in `config/courses.yml` and written by
+    the backbone. Metadata only: nothing reads inside a repo (guardrail 5).
+    When the entry names no assignment, the agent writes the parent edge.
     """
 
     id_prefix: ClassVar[str] = "repo"
@@ -646,6 +650,9 @@ class Violation(BaseModel):
 
     code: Literal[
         "unfiled",
+        "lecture_unattached",
+        "canvas_unfiled",
+        "no_concepts",
         "multiple_parents",
         "no_course",
         "orphan_concept",
@@ -660,12 +667,23 @@ class Violation(BaseModel):
     severity: Literal["error", "human", "info"] = "error"
 
 
-def _missing_code(ntype: str) -> str:
-    if ntype in ("File", "DataFile"):
-        return "unfiled"
-    if ntype == "Concept":
-        return "orphan_concept"
-    return "no_course"
+_CONCEPT_EDGES = CARDINALITY["Concept"][0]
+
+
+def _missing(node: dict[str, Any], kinds: frozenset[str]) -> tuple[str, str]:
+    """The violation code and message for a node missing its parent edge."""
+    what = f"{node['type']} {node['label']!r} has no {' / '.join(sorted(kinds))}"
+    if node["type"] == "Concept":
+        return "orphan_concept", what
+    if node["type"] not in ("File", "DataFile"):
+        return "no_course", what
+    parts = node["attrs"]["path"].split("/")
+    if len(parts) > 2 and parts[1] == "lectures":
+        return "lecture_unattached", (
+            f"{node['attrs']['path']} names no lecture number: read it, then write its "
+            "Lecture node (`Lecture N`, by the Canvas module order) and file_of_lecture edge"
+        )
+    return "unfiled", what
 
 
 def structure_violations(
@@ -691,13 +709,8 @@ def structure_violations(
         kinds, direction, low, high = rule
         found = [(p, other) for p, other in by_node[(nid, direction)] if p in kinds]
         if len(found) < low:
-            out.append(
-                Violation(
-                    code=_missing_code(node["type"]),
-                    node=nid,
-                    message=f"{node['type']} {node['label']!r} has no {' / '.join(sorted(kinds))}",
-                )
-            )
+            code, message = _missing(node, kinds)
+            out.append(Violation(code=code, node=nid, message=message))
         if high is not None and len(found) > high:
             out.append(
                 Violation(
@@ -710,6 +723,7 @@ def structure_violations(
 
     files_per_course: dict[str, int] = defaultdict(int)
     misc_per_course: dict[str, list[str]] = defaultdict(list)
+    readable: dict[str, list[str]] = defaultdict(list)  # item -> its files with text
     for nid, node in nodes.items():
         if node["type"] not in ("File", "DataFile"):
             continue
@@ -724,15 +738,15 @@ def structure_violations(
                 )
             )
         parts = attrs["path"].split("/")
-        on_disk = parts[0] != "_canvas"
-        if on_disk:
-            files_per_course[slug(parts[0])] += 1
+        files_per_course[slug(parts[0])] += 1
         for p, target in by_node[(nid, "out")]:
             if p not in FILE_PARENT_EDGES:
                 continue
             if p == "file_of_course":
                 misc_per_course[course_slug_of(target)].append(nid)
-            if on_disk and course_slug_of(target) != slug(parts[0]):
+            if attrs.get("text"):
+                readable[target].append(nid)
+            if course_slug_of(target) != slug(parts[0]):
                 out.append(
                     Violation(
                         code="course_mismatch",
@@ -740,10 +754,10 @@ def structure_violations(
                         message=f"{attrs['path']} is in {parts[0]!r} but {p} -> {target}",
                     )
                 )
-            bucket = parts[1] if on_disk and len(parts) > 2 else None
+            bucket = parts[1] if len(parts) > 2 else None
             want = BUCKET_EDGES.get(bucket or "")
             if want is None:
-                continue  # loose or mirror-only file: the folder says nothing
+                continue  # a loose file: the folder says nothing
             per_item = bucket in ("recitations", "assignments") and len(parts) > 3
             expected = (
                 item_id(Recitation if bucket == "recitations" else Assignment, parts[0], parts[2])
@@ -776,6 +790,19 @@ def structure_violations(
                 )
         if p == "course_follows_syllabus" and course_slug_of(s) != course_slug_of(o):
             out.append(Violation(code="course_mismatch", node=o, message=f"{s} follows {o}"))
+
+    for nid, node in nodes.items():
+        if node["type"] in ("Lecture", "Recitation", "Assignment") and readable[nid]:
+            if not any(p in _CONCEPT_EDGES for p, _ in by_node[(nid, "in")]):
+                out.append(
+                    Violation(
+                        code="no_concepts",
+                        node=nid,
+                        message=f"{node['type']} {node['label']!r} has {len(readable[nid])} "
+                        "file(s) with extracted text and no concept: read them (the File "
+                        "nodes' `text`) and write its Concept nodes and concept_in_* edges",
+                    )
+                )
 
     for course, misc in sorted(misc_per_course.items()):
         allowed = max(MISC_FLOOR, math.floor(MISC_SHARE * files_per_course[course]))

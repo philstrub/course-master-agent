@@ -150,12 +150,22 @@ def source_roots(settings: Settings) -> list[Path]:
     return roots
 
 
+def course_roots(settings: Settings) -> list[Path]:
+    """The course folders alone: what the graph is built from (the mirror is not)."""
+    from mitsync.filing.course_map import existing_course_folders
+
+    return [settings.paths.workspace / f for f in existing_course_folders(settings)]
+
+
 def iter_sources(
-    settings: Settings, extensions: Collection[str] = DOCUMENT_EXTENSIONS
+    settings: Settings,
+    extensions: Collection[str] = DOCUMENT_EXTENSIONS,
+    roots: list[Path] | None = None,
 ) -> Iterator[Path]:
-    """Yield every file with one of `extensions`, with ignored subtrees pruned."""
+    """Yield every file with one of `extensions` under `roots` (default
+    `source_roots`), with ignored subtrees pruned."""
     paths = settings.paths
-    for root in source_roots(settings):
+    for root in source_roots(settings) if roots is None else roots:
         for dirpath, dirnames, filenames in os.walk(root):
             here = Path(dirpath)
             dirnames[:] = sorted(

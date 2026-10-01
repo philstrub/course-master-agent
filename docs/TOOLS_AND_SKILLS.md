@@ -16,7 +16,7 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 | `due` | deadlines with your status and the assignment text; `_kb/due.json` | reads the mirror |
 | `work` | your files per course, tagged `canvas_copy` / `edited` / `yours` | reads your folders |
 | `calendar` | Apple Calendar events | Calendar **read-only** |
-| `unfiled` | mirror files not yet filed, plus the rules and schema a plan must follow | reads |
+| `unfiled` | mirror files neither filed nor skipped, plus the rules and schema a plan must follow and the case links to download by hand | reads |
 | `organize apply --plan P` · `undo` | validate an agent-written plan, confirm, file by hardlink, keep an undo log | your folders: the agent may apply Canvas copies (`--yes`); `--include-existing` and `undo` are **human only** |
 | `extract` | PDFs/notebooks → text in `_kb/text/` (incremental, by sha256) | `_kb/` |
 | `kb build` | per-course `INDEX.md`, `manifest.json`, `_kb/AGENTS.md`; never `NOTES.md` | `_kb/` |
@@ -40,7 +40,7 @@ It says which tools to run and what to judge.
 |---|---|---|---|
 | **`mit-briefing`** | "morning brief", "am I behind?", cron 07:00 | `sync`, `due`, `work`, then `email` | how far along each homework is (handout parts vs. your drafts), 1–3 things to review, hours left |
 | `mit-canvas-sync` | "anything new on Canvas?" | `sync` | which errors are expected (hidden Files tab, throttling) and which are real (expired token) |
-| `mit-organize` | "file my new material", cron every 2 h 08–22 | `unfiled`, `organize apply --yes` | where each file goes, per `config/naming.md`; files Canvas copies, never your own files |
+| `mit-organize` | "file my new material", cron every 2 h 08–22 | `unfiled`, `organize apply --yes` | where each file goes and its per-course name, per `config/naming.md`; files Canvas copies, never your own files |
 | `mit-kb` | "where is X taught?" | `extract`, `kb build`, `graph add/query` | course notes and concept facts; parked for the memory homework |
 
 ## OpenClaw vs. Claude Code driving the same tools

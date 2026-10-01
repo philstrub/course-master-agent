@@ -13,9 +13,9 @@ the driving agent wrote, applied only on confirmation, and always undoable.
     **Deciding the destination is the agent's job, not this module's.**
 `validate_plan`
     Check an agent-written plan -- `{"placements": [{"file_id", "destination",
-    "reason"}]}` -- against its JSON schema and against the structural filing
-    rules below, splitting it into accepted and rejected placements, each
-    rejection with its reason.
+    "reason"}], "skips": [{"file_id", "reason"}]}` -- against its JSON schema
+    and against the structural filing rules below, splitting it into accepted
+    placements, skips and rejections, each rejection with its reason.
 `apply_plan` / `undo`
     Execute the accepted placements after confirmation and reverse them.
     Canvas-mirrored files are *linked or copied* into the curated folder;
@@ -58,9 +58,24 @@ outside the workspace, the reserved `_canvas`/`_agent`/`_kb` trees, ignored
 paths, and directory-only destinations -- at validation time *and* again at
 apply time, because the disk can change between the two.
 
-**A name collision never overwrites.** An identical file already at the
-destination is a skip that still records the file as filed; a different one
-rejects the placement.
+**A name collision never overwrites the student's work.** An identical file
+already at the destination is a skip that still records the file as filed. A
+different one rejects the placement, with one exception: mitsync's own filed
+copy of another Canvas file, byte-for-byte as filed, is replaced (a post-class
+deck taking the pre-class deck's name). The displaced file is marked skipped,
+and undo puts it back.
+
+**Skips are decisions, not gaps.** A skipped file (`skip_reason` in the
+manifest) is one naming.md says the student does not want. `unfiled` stops
+listing it, and placing it later clears the skip. Skipping a file that is
+already filed removes its unchanged filed copy, and needs `--include-existing`.
+
+**Renaming a filed copy is a move of the student's folder.** Placing an
+already-filed Canvas file again by its `file_id` moves its filed copy to the
+new name and updates the manifest. Like any change to what is already in the
+course folders, it needs `--include-existing`, and it is refused if the copy
+changed since it was filed. An `existing:` placement may not name a filed
+copy, or the manifest would lose track of it.
 
 **Buckets.** `BUCKETS` is the wider display vocabulary the knowledge base
 groups by, including `data/` for course folders that predate naming.md's
@@ -106,7 +121,7 @@ from rich.console import Console
 from rich.table import Table
 
 from mitsync.core.clock import now_iso
-from mitsync.core.config import read_json
+from mitsync.core.config import read_json, read_meta
 from mitsync.core.errors import MitsyncError
 from mitsync.core.logging import get_logger
 from mitsync.core.paths import unique_path
@@ -142,10 +157,27 @@ __all__ = [
 #: Every bucket the knowledge base may group a file under, in display order.
 #: Wider than `FILING_BUCKETS`: folders filed before naming.md dropped `data/`
 #: still exist and must still be shown.
-BUCKETS = ("lectures", "recitations", "assignments", "data", "syllabus", "notes", "other")
+BUCKETS = (
+    "lectures",
+    "case studies",
+    "recitations",
+    "assignments",
+    "data",
+    "syllabus",
+    "notes",
+    "other",
+)
 
 #: The subfolders a *new* placement may target (config/naming.md §2).
-FILING_BUCKETS = ("lectures", "recitations", "assignments", "syllabus", "notes", "other")
+FILING_BUCKETS = (
+    "lectures",
+    "case studies",
+    "recitations",
+    "assignments",
+    "syllabus",
+    "notes",
+    "other",
+)
 
 #: Buckets that hold only per-item folders, never loose files (naming.md §2).
 PER_ITEM_BUCKETS = ("assignments", "recitations")
@@ -176,7 +208,19 @@ PLAN_SCHEMA: dict[str, Any] = {
                     "reason": {"type": "string"},
                 },
             },
-        }
+        },
+        "skips": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["file_id", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "file_id": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        },
     },
 }
 
@@ -246,14 +290,19 @@ def classify_bucket(filename: str, *grouping: str | None) -> str:
 # --------------------------------------------------------------------------
 @dataclass
 class PlanEntry:
-    """One accepted placement. ``uuid`` is empty for pre-existing files."""
+    """One accepted placement. ``uuid`` is empty for pre-existing files.
+
+    ``replaces`` is the uuid of the Canvas file whose filed copy this placement
+    displaces (a post-class deck taking over the pre-class deck's name).
+    """
 
     file_id: str
     uuid: str
     source: str
     destination: str
     reason: str
-    kind: str = "canvas"  # canvas | existing
+    kind: str = "canvas"  # canvas | refile | existing
+    replaces: str = ""
 
 
 @dataclass
@@ -262,6 +311,7 @@ class Plan:
 
     plan_id: str
     entries: list[PlanEntry] = field(default_factory=list)
+    skips: list[dict[str, str]] = field(default_factory=list)
     rejected: list[dict[str, str]] = field(default_factory=list)
     path: Path | None = None
 
@@ -386,6 +436,7 @@ def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
                 "file_id": file_id,
                 "uuid": rec.uuid,
                 "source": rec.mirror_path,
+                "sha256": rec.sha256,
                 "display_name": rec.display_name or rec.filename,
                 "course": folder_for_canvas_id(settings, rec.course_canvas_id),
                 "mirror_course": rec.course_folder,
@@ -395,23 +446,69 @@ def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
                 "content_type": rec.content_type,
                 "size": rec.size,
                 "filed_path": rec.filed_path,
+                "skip_reason": rec.skip_reason,
             }
     return out
 
 
-def unfiled(settings: Settings) -> dict[str, Any]:
-    """Every mirrored file not filed yet, plus the rules the agent files by.
+def _module_items(settings: Settings) -> list[dict[str, Any]]:
+    """Every module item in the mirror, with the course folder and the nearest
+    `SubHeader` above it -- the text that says "PostClass" or "Lecture 5" when
+    the filename does not."""
+    out: list[dict[str, Any]] = []
+    for meta in sorted(settings.paths.canvas_mirror.glob("*/_meta/modules.json")):
+        course = folder_for_canvas_id(settings, read_json(meta)["course_canvas_id"])
+        for module in read_meta(meta):
+            subheader = None
+            for item in module.get("items") or []:
+                if item.get("type") == "SubHeader":
+                    subheader = item.get("title")
+                    continue
+                out.append({"course": course, "module": module, "subheader": subheader, **item})
+    return out
 
-    The agent reads `naming_rules` itself and writes a plan matching
+
+def unfiled(settings: Settings) -> dict[str, Any]:
+    """Every mirrored file neither filed nor skipped, plus the rules the agent
+    files by, and the case links in modules that mitsync cannot download.
+
+    Each file carries its module item's title and subheader: the course's own
+    label ("PostClass CART Regression Slides") often says more than the
+    filename. The agent reads `naming_rules` itself and writes a plan matching
     `plan_schema`; `organize apply --plan` validates and applies it.
     """
-    files = [
-        {k: v for k, v in c.items() if k not in ("uuid", "source", "filed_path")}
-        | {"mirror_path": c["source"]}
-        for c in _canvas_candidates(settings).values()
-        if not c["filed_path"]
-    ]
+    items = _module_items(settings)
+    by_file_id = {
+        str(i["content_id"]) if i["type"] == "File" else f"link-{i['id']}": i for i in items
+    }
+    files = []
+    for c in _canvas_candidates(settings).values():
+        if c["filed_path"] or c["skip_reason"]:
+            continue
+        item = by_file_id.get(c["file_id"], {})
+        files.append(
+            {
+                k: v
+                for k, v in c.items()
+                if k not in ("uuid", "source", "sha256", "filed_path", "skip_reason")
+            }
+            | {
+                "mirror_path": c["source"],
+                "module_item_title": item.get("title"),
+                "module_subheader": item.get("subheader"),
+            }
+        )
     files.sort(key=lambda f: (f["course"] or "", f["mirror_path"]))
+    links = [
+        {
+            "course": i["course"],
+            "title": i["title"],
+            "module_name": i["module"].get("name"),
+            "canvas_url": i.get("html_url"),
+        }
+        for i in items
+        if i["type"] == "ExternalTool" and i["course"]
+    ]
     return {
         "naming_rules": str(naming_rules_path(settings)),
         "course_folders": existing_course_folders(settings),
@@ -421,6 +518,7 @@ def unfiled(settings: Settings) -> dict[str, Any]:
         "plans_dir": str(settings.paths.plans_dir),
         "plan_schema": PLAN_SCHEMA,
         "files": files,
+        "links": links,
     }
 
 
@@ -443,7 +541,9 @@ def load_plan_document(path: Path | str) -> dict[str, Any]:
     return doc
 
 
-def _existing_source(settings: Settings, rel: str, courses: list[str]) -> str:
+def _existing_source(
+    settings: Settings, rel: str, courses: list[str], candidates: dict[str, dict[str, Any]]
+) -> str:
     """Validate the source of an `existing:` placement; returns it cleaned."""
     raw = rel.strip()
     parts = [p for p in PurePosixPath(raw).parts if p != "."]
@@ -457,32 +557,45 @@ def _existing_source(settings: Settings, rel: str, courses: list[str]) -> str:
     path = settings.paths.workspace / clean
     if not path.is_file() or not settings.paths.is_inside_workspace(path):
         raise ValueError(f"existing source '{clean}' does not exist")
+    for candidate in candidates.values():
+        if candidate["filed_path"] == clean:
+            raise ValueError(
+                f"'{clean}' is mitsync's filed copy of file_id {candidate['file_id']}: "
+                "place it by that file_id so the manifest follows it"
+            )
     return clean
 
 
 def validate_plan(
     settings: Settings, plan_path: Path | str, *, include_existing: bool = False
 ) -> Plan:
-    """Split an agent-written plan into accepted entries and rejections.
+    """Split an agent-written plan into accepted entries, skips and rejections.
 
     Touches nothing on disk. Each rejection carries the placement's
-    ``file_id``, its ``destination`` and the ``reason``.
+    ``file_id``, its ``destination`` (``-`` for a skip) and the ``reason``.
+
+    A file already filed may be placed again -- a rename -- only with
+    ``include_existing``, and only while its filed copy is byte-for-byte what
+    was filed. A destination holding another file is rejected unless that file
+    is mitsync's own unchanged filed copy of a Canvas file, which the placement
+    then replaces (`PlanEntry.replaces`).
     """
     path = Path(plan_path)
     doc = load_plan_document(path)
     the_plan = Plan(plan_id=path.stem, path=path)
     courses = existing_course_folders(settings)
     candidates = _canvas_candidates(settings)
+    by_filed_path = {c["filed_path"]: c for c in candidates.values() if c["filed_path"]}
     ws = settings.paths.workspace
 
     seen_ids: set[str] = set()
     seen_dests: set[str] = set()
 
-    def reject(placement: dict[str, Any], reason: str) -> None:
+    def reject(entry: dict[str, Any], reason: str) -> None:
         the_plan.rejected.append(
             {
-                "file_id": placement["file_id"],
-                "destination": placement["destination"],
+                "file_id": entry["file_id"],
+                "destination": entry.get("destination", "-"),
                 "reason": reason,
             }
         )
@@ -501,7 +614,9 @@ def validate_plan(
                         "pre-existing student file: refused without --include-existing"
                     )
                 source, uuid, kind = (
-                    _existing_source(settings, file_id[len(EXISTING_PREFIX) :], courses),
+                    _existing_source(
+                        settings, file_id[len(EXISTING_PREFIX) :], courses, candidates
+                    ),
                     "",
                     "existing",
                 )
@@ -510,10 +625,20 @@ def validate_plan(
                 if candidate is None:
                     raise ValueError("no mirrored file with this file_id in the manifest")
                 if candidate["filed_path"]:
-                    raise ValueError(f"already filed at {candidate['filed_path']}")
-                if not (ws / candidate["source"]).is_file():
-                    raise ValueError(f"source missing from the mirror: {candidate['source']}")
-                source, uuid, kind = candidate["source"], candidate["uuid"], "canvas"
+                    filed = candidate["filed_path"]
+                    if not include_existing:
+                        raise ValueError(
+                            f"already filed at {filed}; moving it needs --include-existing"
+                        )
+                    if not (ws / filed).is_file():
+                        raise ValueError(f"the filed copy at {filed} is gone")
+                    if sha256_file(ws / filed) != candidate["sha256"]:
+                        raise ValueError(f"the filed copy at {filed} changed since it was filed")
+                    source, uuid, kind = filed, candidate["uuid"], "refile"
+                else:
+                    if not (ws / candidate["source"]).is_file():
+                        raise ValueError(f"source missing from the mirror: {candidate['source']}")
+                    source, uuid, kind = candidate["source"], candidate["uuid"], "canvas"
 
             dest = validate_destination(settings, placement["destination"])
             validate_structure(settings, dest, courses)
@@ -522,8 +647,17 @@ def validate_plan(
             if dest in seen_dests:
                 raise ValueError("another placement in this plan targets the same destination")
             target = ws / dest
+            replaces = ""
             if target.exists() and sha256_file(target) != sha256_file(ws / source):
-                raise ValueError("a different file already exists at the destination")
+                occupant = by_filed_path.get(dest)
+                if occupant is None or kind == "existing":
+                    raise ValueError("a different file already exists at the destination")
+                if sha256_file(target) != occupant["sha256"]:
+                    raise ValueError(
+                        f"the filed copy of {occupant['file_id']} at the destination "
+                        "changed since it was filed"
+                    )
+                replaces = occupant["uuid"]
         except ValueError as exc:
             reject(placement, str(exc))
             continue
@@ -537,8 +671,39 @@ def validate_plan(
                 destination=dest,
                 reason=placement["reason"],
                 kind=kind,
+                replaces=replaces,
             )
         )
+
+    for skip in doc.get("skips", []):
+        file_id = skip["file_id"]
+        candidate = candidates.get(file_id)
+        if file_id in seen_ids:
+            reject(skip, "this file_id is already placed or skipped in this plan")
+        elif candidate is None:
+            reject(skip, "no mirrored file with this file_id in the manifest")
+        elif candidate["filed_path"] and not include_existing:
+            reject(
+                skip,
+                f"already filed at {candidate['filed_path']}; "
+                "removing a filed copy needs --include-existing",
+            )
+        elif candidate["filed_path"] and (
+            not (ws / candidate["filed_path"]).is_file()
+            or sha256_file(ws / candidate["filed_path"]) != candidate["sha256"]
+        ):
+            reject(skip, f"the filed copy at {candidate['filed_path']} is gone or changed")
+        else:
+            the_plan.skips.append(
+                {
+                    "file_id": file_id,
+                    "uuid": candidate["uuid"],
+                    "reason": skip["reason"],
+                    "source": candidate["source"],
+                    "filed_path": candidate["filed_path"] or "",
+                }
+            )
+        seen_ids.add(file_id)
     return the_plan
 
 
@@ -554,9 +719,18 @@ def _confirm(the_plan: Plan, *, yes: bool) -> bool:
     if yes:
         return True
     moves = sum(1 for e in the_plan.entries if e.kind == "existing")
+    renames = sum(1 for e in the_plan.entries if e.kind == "refile")
+    replaced = sum(1 for e in the_plan.entries if e.replaces)
     what = f"{len(the_plan.entries)} placement(s)"
     if moves:
         what += f", {moves} of them MOVING a pre-existing file"
+    if renames:
+        what += f", {renames} of them moving a filed copy"
+    if replaced:
+        what += f", {replaced} of them replacing a filed copy"
+    if the_plan.skips:
+        removed = sum(1 for s in the_plan.skips if s["filed_path"])
+        what += f", and {len(the_plan.skips)} skip(s) ({removed} removing a filed copy)"
     if not sys.stdin.isatty():
         console.print(
             f"[yellow]{what}. Refusing without --yes (no terminal to confirm on).[/yellow]"
@@ -599,7 +773,7 @@ def apply_plan(
     report = ApplyReport(plan_id=the_plan.plan_id, link_mode=mode, rejected=the_plan.rejected)
     ws = settings.paths.workspace
 
-    if not the_plan.entries:
+    if not the_plan.entries and not the_plan.skips:
         report.confirmed = True  # nothing to confirm
         _print_report(report)
         return report
@@ -611,7 +785,9 @@ def apply_plan(
         return report
 
     operations: list[dict[str, Any]] = []
-    filed: list[tuple[str, str]] = []
+    # (uuid, filed_path, skip_reason) per Canvas file whose filing state changed.
+    filing: list[tuple[str, str | None, str | None]] = []
+    occupants = {c["uuid"]: c for c in _canvas_candidates(settings).values()}
 
     for entry in the_plan.entries:
         source = ws / entry.source
@@ -629,19 +805,37 @@ def apply_plan(
             if sha256_file(dest) == sha256_file(source):
                 report.skipped.append({**asdict(entry), "status": "identical file already there"})
                 if entry.uuid:
-                    filed.append((entry.uuid, dest_rel))
+                    filing.append((entry.uuid, dest_rel, None))
                 continue
-            report.errors.append(
-                {"file_id": entry.file_id, "error": "a different file appeared at the destination"}
+            occupant = occupants.get(entry.replaces)
+            if occupant is None or sha256_file(dest) != occupant["sha256"]:
+                report.errors.append(
+                    {
+                        "file_id": entry.file_id,
+                        "error": "a different file appeared at the destination",
+                    }
+                )
+                continue
+            # The pre-class deck's filed copy, unchanged: its bytes stay in the mirror.
+            dest.unlink()
+            operations.append(
+                {
+                    "file_id": occupant["file_id"],
+                    "uuid": occupant["uuid"],
+                    "kind": "canvas",
+                    "mode": "displace",
+                    "source": occupant["source"],
+                    "destination": dest_rel,
+                }
             )
-            continue
+            filing.append((occupant["uuid"], None, f"replaced by {entry.file_id} at {dest_rel}"))
 
         src_sha = sha256_file(source)
         try:
-            if entry.kind == "existing":
+            if entry.kind in ("existing", "refile"):
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(source), str(dest))
-                used = "move"
+                used = "move" if entry.kind == "existing" else "refile"
             else:
                 used = _place(source, dest, mode)
         except OSError as exc:
@@ -664,24 +858,47 @@ def apply_plan(
         )
         report.applied.append({**asdict(entry), "destination": dest_rel, "mode": used})
         if entry.uuid:
-            filed.append((entry.uuid, dest_rel))
+            filing.append((entry.uuid, dest_rel, None))
+        if entry.kind == "refile":
+            _prune_empty(source.parent, ws)
+
+    for skip in the_plan.skips:
+        if skip["filed_path"]:
+            # A filed copy the rules no longer want: its bytes stay in the mirror.
+            (ws / skip["filed_path"]).unlink()
+            _prune_empty((ws / skip["filed_path"]).parent, ws)
+            operations.append(
+                {
+                    "file_id": skip["file_id"],
+                    "uuid": skip["uuid"],
+                    "kind": "canvas",
+                    "mode": "displace",
+                    "source": skip["source"],
+                    "destination": skip["filed_path"],
+                }
+            )
+        operations.append({**skip, "kind": "canvas", "mode": "skip"})
+        filing.append((skip["uuid"], None, skip["reason"]))
 
     report.undo_log = _write_undo_log(settings, the_plan, mode, operations)
-    _record_filed(settings, filed)
+    _record_filing(settings, filing)
     _print_report(report)
+    if the_plan.skips:
+        console.print(f"skipped on purpose: {len(the_plan.skips)} file(s)")
     if report.undo_log is not None:
         console.print(f"undo log: [bold]{report.undo_log}[/bold]")
     return report
 
 
-def _record_filed(settings: Settings, filed: list[tuple[str, str]]) -> None:
-    if not filed:
+def _record_filing(settings: Settings, filing: list[tuple[str, str | None, str | None]]) -> None:
+    if not filing:
         return
     from mitsync.canvas.manifest import Manifest
 
     with Manifest(settings.paths.manifest_db) as man:
-        for uuid, dest in filed:
-            man.set_filed_path(uuid, dest)
+        for uuid, filed_path, skip_reason in filing:
+            man.set_filed_path(uuid, filed_path)
+            man.set_skip_reason(uuid, skip_reason)
 
 
 def _write_undo_log(
@@ -760,10 +977,25 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
         console.print(f"[yellow]{path.name} was already undone at {doc['undone_at']}.[/yellow]")
         return report
 
-    cleared: list[str] = []
+    # (uuid, filed_path, skip_reason) to write back, as in `apply_plan`.
+    filing: list[tuple[str, str | None, str | None]] = []
     for op in reversed(doc.get("operations", [])):
+        if op["mode"] == "skip":
+            filing.append((op["uuid"], None, None))
+            continue
         dest = ws / op["destination"]
         source = ws / op["source"]
+        if op["mode"] == "displace":
+            # Runs after the replacement was removed: put the displaced copy back.
+            if dest.exists():
+                report.refused.append(
+                    {"path": op["destination"], "reason": "occupied; not restoring the old copy"}
+                )
+                continue
+            _place(source, dest, doc["link_mode"])
+            report.restored.append(op["destination"])
+            filing.append((op["uuid"], op["destination"], None))
+            continue
         if not dest.exists() and not dest.is_symlink():
             report.refused.append(
                 {"path": op["destination"], "reason": "already gone; leaving the rest alone"}
@@ -780,7 +1012,7 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
                 )
                 continue
         try:
-            if op["mode"] == "move":
+            if op["mode"] in ("move", "refile"):
                 if source.exists():
                     report.refused.append(
                         {"path": op["source"], "reason": "original path is occupied again"}
@@ -797,14 +1029,9 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
             continue
         _prune_empty(dest.parent, ws)
         if op.get("uuid"):
-            cleared.append(op["uuid"])
+            filing.append((op["uuid"], op["source"] if op["mode"] == "refile" else None, None))
 
-    if cleared:
-        from mitsync.canvas.manifest import Manifest
-
-        with Manifest(settings.paths.manifest_db) as man:
-            for uuid in cleared:
-                man.set_filed_path(uuid, None)
+    _record_filing(settings, filing)
 
     if not report.errors and not report.refused:
         doc["undone_at"] = now_iso()

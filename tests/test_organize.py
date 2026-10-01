@@ -470,3 +470,163 @@ def test_ignored_paths_cover_the_directory_itself(prepared: Settings) -> None:
     assert organize.is_ignored(prepared, "AI_Studio/nandatown")
     assert organize.is_ignored(prepared, "AI_Studio/nandatown/src/app.py")
     assert not organize.is_ignored(prepared, "AI_Studio/notes.pdf")
+
+
+# --------------------------------------------------------------------------
+# skips, replacing a filed copy, refiling under a new name
+# --------------------------------------------------------------------------
+def write_plan_doc(settings: Settings, doc: dict[str, Any], name: str = "plan") -> Path:
+    path = settings.paths.plans_dir / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def skip_reason_of(settings: Settings, uuid: str) -> str | None:
+    with Manifest(settings.paths.manifest_db) as man:
+        rec = man.get_file(uuid)
+    return rec.skip_reason if rec else None
+
+
+REG = "Machine Learning/lectures/Regression.pdf"
+
+
+def test_a_skipped_file_is_not_offered_again_and_undo_brings_it_back(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="PreClass_Regression.pdf")
+    plan = write_plan_doc(
+        prepared, {"placements": [], "skips": [{"file_id": "101", "reason": "pre-class deck"}]}
+    )
+
+    report = organize.apply_plan(prepared, plan, yes=True)
+
+    assert not report.rejected
+    assert skip_reason_of(prepared, "u1") == "pre-class deck"
+    assert organize.unfiled(prepared)["files"] == []
+
+    organize.undo(prepared, "latest")
+    assert skip_reason_of(prepared, "u1") is None
+    assert [f["file_id"] for f in organize.unfiled(prepared)["files"]] == ["101"]
+
+
+def test_skipping_a_filed_file_removes_its_copy_only_with_include_existing(
+    prepared: Settings,
+) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="a.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+    plan = write_plan_doc(
+        prepared, {"placements": [], "skips": [{"file_id": "101", "reason": "x"}]}, "p2"
+    )
+
+    refused = organize.validate_plan(prepared, plan)
+    assert not refused.skips and refused.rejected[0]["destination"] == "-"
+    assert "needs --include-existing" in refused.rejected[0]["reason"]
+
+    organize.apply_plan(prepared, plan, yes=True, include_existing=True)
+    dest = prepared.paths.workspace / REG
+    assert not dest.exists()
+    assert filed_path_of(prepared, "u1") is None and skip_reason_of(prepared, "u1") == "x"
+
+    undone = organize.undo(prepared, "latest")
+    assert not undone.refused and not undone.errors
+    assert dest.exists()
+    assert filed_path_of(prepared, "u1") == REG and skip_reason_of(prepared, "u1") is None
+
+
+def test_a_post_class_deck_replaces_the_filed_pre_class_copy(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="pre", canvas_id=101, name="Pre.pdf", body=b"pre deck")
+    add_mirror_file(prepared, uuid="post", canvas_id=102, name="Post.pdf", body=b"post deck")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+
+    report = organize.apply_plan(
+        prepared, write_plan(prepared, [place("102", REG)], "p2"), yes=True
+    )
+
+    dest = prepared.paths.workspace / REG
+    assert not report.rejected and dest.read_bytes() == b"post deck"
+    assert filed_path_of(prepared, "post") == REG
+    assert filed_path_of(prepared, "pre") is None
+    assert skip_reason_of(prepared, "pre") == f"replaced by 102 at {REG}"
+    assert organize.unfiled(prepared)["files"] == []
+
+    undone = organize.undo(prepared, "latest")
+
+    assert not undone.refused and not undone.errors
+    assert dest.read_bytes() == b"pre deck"
+    assert filed_path_of(prepared, "pre") == REG and skip_reason_of(prepared, "pre") is None
+    assert filed_path_of(prepared, "post") is None
+
+
+def test_a_filed_copy_the_student_changed_is_never_replaced(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="pre", canvas_id=101, name="Pre.pdf", body=b"pre deck")
+    add_mirror_file(prepared, uuid="post", canvas_id=102, name="Post.pdf", body=b"post deck")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+    (prepared.paths.workspace / REG).write_bytes(b"pre deck + my annotations")
+
+    report = organize.validate_plan(prepared, write_plan(prepared, [place("102", REG)], "p2"))
+
+    assert not report.entries
+    assert "changed since it was filed" in report.rejected[0]["reason"]
+
+
+def test_renaming_a_filed_copy_needs_include_existing_and_undoes(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)], "p1"), yes=True)
+    plan = write_plan(prepared, [place("101", REG)], "p2")
+
+    refused = organize.validate_plan(prepared, plan)
+    assert "needs --include-existing" in refused.rejected[0]["reason"]
+
+    report = organize.apply_plan(prepared, plan, yes=True, include_existing=True)
+
+    ws = prepared.paths.workspace
+    assert report.applied[0]["mode"] == "refile"
+    assert (ws / REG).exists() and not (ws / LEC).exists()
+    assert filed_path_of(prepared, "u1") == REG
+
+    organize.undo(prepared, "latest")
+    assert (ws / LEC).exists() and not (ws / REG).exists()
+    assert filed_path_of(prepared, "u1") == LEC
+
+
+def test_a_filed_copy_cannot_be_moved_as_an_existing_file(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)], "p1"), yes=True)
+
+    plan = write_plan(prepared, [place(f"existing:{LEC}", REG)], "p2")
+    report = organize.validate_plan(prepared, plan, include_existing=True)
+
+    assert "place it by that file_id" in report.rejected[0]["reason"]
+
+
+def test_unfiled_carries_module_item_titles_and_case_links(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="InClass_Trees.pdf")
+    meta = prepared.paths.canvas_mirror / "ML Mirror" / "_meta" / "modules.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    items = [
+        {"id": 1, "type": "SubHeader", "title": "Lecture 5 - Regression Trees"},
+        {"id": 2, "type": "File", "content_id": 101, "title": "PostClass CART Regression Slides"},
+        {"id": 3, "type": "ExternalTool", "title": "OCP Group", "html_url": "https://c/items/3"},
+    ]
+    meta.write_text(
+        json.dumps(
+            {
+                "fetched_at": "x",
+                "course_canvas_id": 1,
+                "items": [{"name": "Lectures 5 and 6", "items": items}],
+            }
+        )
+    )
+
+    doc = organize.unfiled(prepared)
+
+    [f] = doc["files"]
+    assert f["module_item_title"] == "PostClass CART Regression Slides"
+    assert f["module_subheader"] == "Lecture 5 - Regression Trees"
+    assert doc["links"] == [
+        {
+            "course": "Machine Learning",
+            "title": "OCP Group",
+            "module_name": "Lectures 5 and 6",
+            "canvas_url": "https://c/items/3",
+        }
+    ]

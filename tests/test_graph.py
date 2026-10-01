@@ -23,6 +23,7 @@ ML = "Machine Learning"
 LEC = f"{ML}/lectures/lec01.pdf"
 HW = f"{ML}/assignments/hw-01/hw1.ipynb"
 LOOSE = f"{ML}/Lec1.pdf"
+CART = f"{ML}/lectures/CART_trees.pdf"
 
 
 # --------------------------------------------------------------------------
@@ -30,9 +31,11 @@ LOOSE = f"{ML}/Lec1.pdf"
 # --------------------------------------------------------------------------
 @pytest.fixture
 def seeded(workspace: Path, settings: Settings) -> Settings:
-    """A filed lecture, a filed assignment, a loose duplicate, a mirror copy, nandatown."""
+    """A filed lecture, an unnumbered lecture, a filed assignment, a loose duplicate,
+    a mirror copy, nandatown."""
     ml = workspace / ML
     make_pdf(ml / "lectures" / "lec01.pdf", ("regularization and ridge regression",))
+    make_pdf(ml / "lectures" / "CART_trees.pdf", ("classification trees",))
     make_notebook(ml / "assignments" / "hw-01" / "hw1.ipynb")
     (ml / "assignments" / "hw-01" / "data.zip").write_bytes(b"PK\x03\x04 not really")
     (ml / "Lec1.pdf").write_bytes((ml / "lectures" / "lec01.pdf").read_bytes())
@@ -317,15 +320,46 @@ def test_one_course_node_for_the_folder_and_its_canvas_mirror(seeded: Settings) 
     assert courses[1]["attrs"] == {"folder": ML, "canvas_id": 38524, "course_number": "15.095"}
 
 
-def test_a_filed_hardlink_and_its_mirror_original_are_one_file_node(seeded: Settings) -> None:
+def test_the_graph_is_built_from_the_course_folders_not_the_mirror(seeded: Settings) -> None:
     graph_mod.build_backbone(seeded)
     files = by_path(seeded)
     lec = files[LEC]
     assert lec["id"] == graph_mod.file_id(LEC)
     assert lec["type"] == "File"
-    assert lec["attrs"]["mirror_path"].endswith("/Lectures/lec01.pdf")
     assert lec["attrs"]["duplicates"] == [LOOSE]  # same bytes, pre-existing, not the filed copy
-    assert LOOSE not in files and lec["attrs"]["mirror_path"] not in files
+    assert LOOSE not in files
+    assert not [p for p in files if p.startswith("_canvas/")]
+    assert lec["src"] == sorted([LEC, LOOSE])
+
+
+def test_a_file_node_carries_its_path_and_its_extracted_text(seeded: Settings) -> None:
+    graph_mod.build_backbone(seeded)
+    lec = by_path(seeded)[LEC]["attrs"]
+    assert lec["path"] == LEC
+    text = seeded.paths.workspace / lec["text"]
+    assert lec["text"].startswith("_kb/text/") and "regularization" in text.read_text()
+    assert "text" not in by_path(seeded)[f"{ML}/assignments/hw-01/data.zip"]["attrs"]
+
+
+@pytest.mark.parametrize(
+    ("stem", "found"),
+    [
+        ("lec01", (1, None)),
+        ("Lecture-04", (4, None)),
+        ("Fall_2026_15_C57-L5", (5, None)),
+        ("L7", (7, None)),
+        ("Class_2", (2, None)),
+        ("3_sparse_linear_regression", (3, "sparse linear regression")),
+        ("Week 1 - 2 - What Is an AI Agent", None),
+        ("15003_FA26_LinearAlgebra1", None),
+        ("CART_classification", None),
+        ("Random_forests", None),
+    ],
+)
+def test_lecture_numbers_are_read_only_where_the_name_states_them(
+    stem: str, found: tuple[int, str | None] | None
+) -> None:
+    assert graph_mod.lecture_number(stem) == found
 
 
 def test_the_folder_decides_the_parent_when_it_is_unambiguous(seeded: Settings) -> None:
@@ -360,12 +394,38 @@ def test_one_dataset_filed_under_two_items_belongs_to_both(seeded: Settings) -> 
     assert not [v for v in graph_mod.check(seeded) if "loans" in v.message]
 
 
-def test_what_the_folder_does_not_decide_is_left_for_the_agent(seeded: Settings) -> None:
+def test_an_unnumbered_lecture_is_left_for_the_agent(seeded: Settings) -> None:
     graph_mod.build_backbone(seeded)
-    unfiled = [v for v in graph_mod.check(seeded) if v.code == "unfiled"]
-    mirror_only = by_path(seeded)
-    [path] = [p for p in mirror_only if p.endswith("Lecture05.pdf")]
-    assert [v.node for v in unfiled] == [mirror_only[path]["id"]]
+    found = [v for v in graph_mod.check(seeded) if v.code == "lecture_unattached"]
+    assert [v.node for v in found] == [by_path(seeded)[CART]["id"]]
+    assert "Lecture N" in found[0].message
+    assert not [v for v in graph_mod.check(seeded) if v.code == "unfiled"]
+
+
+def test_an_item_with_readable_files_and_no_concept_is_flagged(
+    seeded: Settings, tmp_path: Path
+) -> None:
+    graph_mod.build_backbone(seeded)
+    flagged = {v.node for v in graph_mod.check(seeded) if v.code == "no_concepts"}
+    assert flagged == {LEC01, HW01}
+    graph_mod.add_records(seeded, agent_facts(tmp_path))
+    assert not [v for v in graph_mod.check(seeded) if v.code == "no_concepts"]
+
+
+def test_check_blocks_on_canvas_files_not_yet_filed(
+    seeded: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mitsync.filing import organize
+
+    pending = [
+        {"file_id": "901", "course": ML, "mirror_path": "_canvas/x/Lecture05.pdf"},
+        {"file_id": "902", "course": None, "mirror_path": "_canvas/unmapped/a.pdf"},
+    ]
+    monkeypatch.setattr(organize, "unfiled", lambda _s: {"files": pending})
+    graph_mod.build_backbone(seeded)
+    [v] = [v for v in graph_mod.check(seeded) if v.code == "canvas_unfiled"]
+    assert (v.node, v.severity) == ("canvas:901", "human")
+    assert "Lecture05.pdf" in v.message
 
 
 def test_check_escalates_duplicates_to_the_human(seeded: Settings) -> None:
@@ -385,6 +445,26 @@ def test_backbone_is_regenerated_not_appended(seeded: Settings) -> None:
     third = graph_mod.build_backbone(seeded)
     assert third.changed and third.nodes == first.nodes - 1
     assert f"{ML}/other/textbook.pdf" not in by_path(seeded)
+
+
+def test_a_declared_repo_is_a_node_from_config_alone(seeded: Settings) -> None:
+    (seeded.paths.config_dir / "courses.yml").write_text(
+        f"courses:\n  - folder: {ML}\n    canvas_id: 38524\n"
+        "  - folder: AI_Studio\n    repos:\n"
+        "      - path: nandatown\n        remote_url: https://github.com/x/nandatown\n"
+        "      - path: not-cloned\n"
+    )
+    graph_mod.build_backbone(seeded)
+    nodes = graph_mod.load_nodes(seeded)
+    repo = nodes["repo:nandatown"]
+    assert repo["attrs"] == {
+        "name": "nandatown", "path": "AI_Studio/nandatown",
+        "remote_url": "https://github.com/x/nandatown",
+    }  # fmt: skip
+    assert "repo:not-cloned" not in nodes
+    assert not [p for p in by_path(seeded) if "nandatown" in p], "nothing inside is read"
+    [v] = [v for v in graph_mod.check(seeded) if v.node == "repo:nandatown"]
+    assert v.code == "no_course"  # no assignment declared: the agent attaches it
 
 
 def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
@@ -423,7 +503,7 @@ def test_an_agent_attaching_an_unfiled_file_closes_the_violation(
     seeded: Settings, tmp_path: Path
 ) -> None:
     graph_mod.build_backbone(seeded)
-    [path] = [p for p in by_path(seeded) if p.endswith("Lecture05.pdf")]
+    path = CART
     fid = by_path(seeded)[path]["id"]
     lec5 = "lecture:machine-learning:05"
     graph_mod.add_records(
@@ -438,7 +518,7 @@ def test_an_agent_attaching_an_unfiled_file_closes_the_violation(
             ],
         ),
     )  # fmt: skip
-    assert "unfiled" not in {v.code for v in graph_mod.check(seeded)}
+    assert "lecture_unattached" not in {v.code for v in graph_mod.check(seeded)}
 
 
 def test_an_edge_to_a_vanished_file_is_stale_not_fatal(seeded: Settings, tmp_path: Path) -> None:
