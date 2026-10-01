@@ -48,6 +48,12 @@ the picture shows one line per fact.
 `REMOVE`, `DROP`, `LOAD CSV` and procedure calls outside `db.*` before it
 sends anything, and runs in a read transaction, so the server refuses a write
 the regex missed.
+
+**The one boundary.** `_driver` turns Neo4j's own `ServiceUnavailable` and
+`AuthError` into a `MitsyncError` naming the fix. Every `sync` ends with a
+push when `NEO4J_URI` is set, so a stopped container must read as one line in
+the scheduled run's log, not a traceback. The JSONL and DuckDB are already
+refreshed by then.
 """
 
 from __future__ import annotations
@@ -85,6 +91,7 @@ _WRITE_RX = re.compile(
 @contextmanager
 def _driver() -> Iterator[Driver]:
     from neo4j import GraphDatabase
+    from neo4j.exceptions import AuthError, ServiceUnavailable
 
     missing = [
         k for k in ("NEO4J_URI", "NEO4J_USERNAME", "NEO4J_PASSWORD") if not os.environ.get(k)
@@ -102,7 +109,15 @@ def _driver() -> Iterator[Driver]:
         uri, auth=(os.environ["NEO4J_USERNAME"], os.environ["NEO4J_PASSWORD"])
     )
     try:
-        driver.verify_connectivity()
+        try:
+            driver.verify_connectivity()
+        except ServiceUnavailable as exc:
+            raise MitsyncError(
+                f"neo4j: nothing answers at {uri}. Start it with `make neo4j-up`, "
+                "or unset NEO4J_URI to skip the push"
+            ) from exc
+        except AuthError as exc:
+            raise MitsyncError("neo4j: NEO4J_USERNAME / NEO4J_PASSWORD were refused") from exc
         yield driver
     finally:
         driver.close()

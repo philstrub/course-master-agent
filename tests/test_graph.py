@@ -488,6 +488,14 @@ def test_backbone_never_touches_nandatown(seeded: Settings) -> None:
 # --------------------------------------------------------------------------
 # graph add: facts the agent wrote
 # --------------------------------------------------------------------------
+def test_validate_records_is_a_dry_run_of_graph_add(seeded: Settings, tmp_path: Path) -> None:
+    graph_mod.build_backbone(seeded)
+    before = graph_mod.load_graph(seeded)[:2]
+    nodes, edges = graph_mod.validate_records(seeded, agent_facts(tmp_path))
+    assert (len(nodes), len(edges)) == (2, 2)
+    assert graph_mod.load_graph(seeded)[:2] == before
+
+
 def test_graph_add_appends_valid_agent_facts(seeded: Settings, tmp_path: Path) -> None:
     graph_mod.build_backbone(seeded)
     report = graph_mod.add_records(seeded, agent_facts(tmp_path))

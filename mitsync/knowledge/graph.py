@@ -1104,13 +1104,16 @@ def _check_record(record: Any, existing: dict[str, dict[str, Any]]) -> tuple[str
     return kind, normalize_edge(record)
 
 
-def add_records(settings: Settings, path: Path | str) -> GraphReport:
-    """Validate an agent-written JSONL file of nodes and edges, then append it.
+def validate_records(
+    settings: Settings, path: Path | str
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Check an agent-written JSONL file of nodes and edges; returns them, cleaned.
 
     Every line must be a node or an edge that satisfies `ontology.py`,
     and every edge endpoint must be a node already in the graph or defined in
-    the same file. Any error rejects the **whole file** -- nothing is appended
-    -- and the `MitsyncError` lists every failing line by number.
+    the same file. Any error rejects the **whole file**, and the `MitsyncError`
+    lists every failing line by number. `graph add --dry-run` stops here, which
+    is how a subagent checks its facts file without touching the graph.
     """
     path = Path(path)
     if not path.is_file():
@@ -1151,10 +1154,15 @@ def add_records(settings: Settings, path: Path | str) -> GraphReport:
             f"{path}: rejected, nothing was added ({len(errors)} error(s)):\n  "
             + "\n  ".join(errors)
         )
+    return nodes, [e for _, e in edges]
 
+
+def add_records(settings: Settings, path: Path | str) -> GraphReport:
+    """Validate an agent-written JSONL file (`validate_records`), then append it."""
+    nodes, edges = validate_records(settings, path)
     report = GraphReport()
     report.appended_nodes = append_nodes(settings, nodes)
-    report.appended_edges = append_edges(settings, [e for _, e in edges])
+    report.appended_edges = append_edges(settings, edges)
     _project(settings, report)
     log.info("graph add: %s", report.summary())
     return report

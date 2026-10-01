@@ -82,3 +82,11 @@ def test_missing_credentials_are_named(monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.delenv(key, raising=False)
     with pytest.raises(MitsyncError, match="NEO4J_URI, NEO4J_USERNAME, NEO4J_PASSWORD"):
         neo4j_store.cypher("MATCH (n) RETURN n")
+
+
+def test_a_stopped_server_is_one_line_with_the_fix(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("NEO4J_URI", "bolt://127.0.0.1:1")  # nothing listens on port 1
+    monkeypatch.setenv("NEO4J_USERNAME", "neo4j")
+    monkeypatch.setenv("NEO4J_PASSWORD", "x")
+    with pytest.raises(MitsyncError, match="make neo4j-up"):
+        neo4j_store.cypher("MATCH (n) RETURN n")

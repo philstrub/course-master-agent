@@ -95,7 +95,7 @@ Always trust `mitsync --help` over any prose. A typical cold start:
 
 ```
 mitsync doctor                     # what is configured and what is missing
-mitsync sync                       # mirror Canvas (needs $CANVAS_TOKEN)
+mitsync sync                       # mirror Canvas (needs $CANVAS_TOKEN), then refresh the graph
 mitsync gradescope sync            # Gradescope status and scores (needs $GRADESCOPE_COOKIE)
 mitsync due --json                 # deadlines and the student's own status
 mitsync work --json                # the student's files, by provenance

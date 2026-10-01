@@ -11,7 +11,7 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 
 | command | what it does | touches |
 |---|---|---|
-| `sync` | mirror new Canvas files and metadata (assignments, your own submission status) into `_canvas/`, plus the Google Slides decks and HBS cases that modules link to | Canvas **read-only** (GET/HEAD, enforced in code and tests). HBS cases: the LTI launch POST to HBS only |
+| `sync` | mirror new Canvas files and metadata (assignments, your own submission status) into `_canvas/`, plus the Google Slides decks and HBS cases that modules link to, then `graph refresh` (`--no-graph` skips it) | Canvas **read-only** (GET/HEAD, enforced in code and tests). HBS cases: the LTI launch POST to HBS only |
 | `gradescope sync` | snapshot the student's Gradescope status and scores; `due` then shows them on the matching Canvas row (Canvas reports Gradescope work as unsubmitted) | Gradescope **read-only**, `state/gradescope.json` |
 | `due` | deadlines with your status and the assignment text, plus each required reading once it is filed (from `readings.json`); cached in `state/due.json` | reads the mirror |
 | `work` | your files per course, tagged `canvas_copy` / `edited` / `yours` | reads your folders |
@@ -21,7 +21,8 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 | `extract` | PDFs/notebooks → text in `_kb/text/` (incremental, by sha256) | `_kb/` |
 | `kb build` | graph backbone from the course folders, and `_kb/AGENTS.md`. Never writes a `COURSE.md` | `_kb/` |
 | `kb check` | per course: documents the master file `COURSE.md` does not cover yet (new or changed), sources gone, and `readings.json` problems | reads |
-| `graph add F` · `rebuild` · `query` | append agent-written facts (checked against the ontology, all or nothing), rebuild the DuckDB cache, query it (`--param NAME=VALUE`, `--json`) | `_kb/graph/` |
+| `graph refresh` | the graph's deterministic half: `extract`, backbone, DuckDB, Neo4j push when `NEO4J_URI` is set, then the `graph check` counts. Every `sync` ends with it | `_kb/`, Neo4j |
+| `graph add F [--dry-run]` · `rebuild` · `query` | append agent-written facts (checked against the ontology, all or nothing; `--dry-run` checks and adds nothing), rebuild the DuckDB cache, query it (`--param NAME=VALUE`, `--json`) | `_kb/graph/` |
 | `graph check` | what the graph still lacks: Canvas files not yet filed, lectures to number, items without concepts, files without a parent | reads |
 | `graph push` · `cypher Q` | replace the Neo4j projection with the live graph, run read-only Cypher on it | Neo4j (`NEO4J_*` in `.env`) |
 | `email [--dry-run]` | validate the agent's brief JSON, add today's calendar, the files new on Canvas since the last brief, and sync freshness, render the dashboard, send it **once per day** to the address in config | Gmail SMTP |
@@ -44,14 +45,14 @@ It says which tools to run and what to judge.
 | `mit-canvas-sync` | "anything new on Canvas?" | `sync` | which errors are expected (hidden Files tab, throttling) and which are real (expired token) |
 | `mit-organize` | "file my new material", cron every 2 h 08–22 | `unfiled`, `organize apply --yes` | where each file goes and its per-course name, per `config/naming.md`; files Canvas copies, never your own files |
 | `mit-graph-query` | "where is X taught?", "what's in lecture 5?", "what did I submit?" | `graph query`, `graph cypher` (read-only) | which query answers the question, and what the returned `text` pages say |
-| `mit-graph-build` | "rebuild / complete the knowledge base" | `extract`, `kb build`, `graph check/add` | lecture numbers, concepts and file parents, until `graph check` is clean |
+| `mit-graph-build` | "rebuild / complete the knowledge base", cron 20 min after each sync when `graph check` has new items | `graph refresh`, `graph check`, `graph add --dry-run`, `graph add`, subagents | lecture numbers, concepts and file parents, one subagent per reading-heavy course, until `graph check` is clean |
 | `mit-course` | "update the course notes", cron nightly | `extract`, `kb build`, `kb check` | each course's master file `COURSE.md` (what every lecture, recitation, assignment and reading says) and its `readings.json`, until `kb check` is clean |
 
 ## OpenClaw vs. Claude Code driving the same tools
 
 | | **OpenClaw** (autonomous) | **Claude Code** (interactive) |
 |---|---|---|
-| starts a turn | cron (brief 07:00, filing every 2 h 08–22, master files 23:00), or a dashboard chat message | you, in the terminal |
+| starts a turn | cron (brief 07:00, filing and graph every 2 h 08–22, master files 23:00), or a dashboard chat message | you, in the terminal |
 | instructions | workspace `AGENTS.md` + `SOUL.md` + `USER.md` (copied from `_agent/openclaw/workspace/` by `make openclaw-workspace`) | `_agent/CLAUDE.md` |
 | skills | discovered from `<workspace>/skills`, also slash commands | the same files, read on request |
 | shell | allowlisted to **one binary**, `mitsync-agent`, which refuses `organize undo` and `--include-existing` | any command, behind Claude Code's permission prompts |

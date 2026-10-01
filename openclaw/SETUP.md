@@ -219,15 +219,19 @@ bin/mitsync-agent due --days 7 --json | head -40
 bin/mitsync-agent organize undo             # must be REFUSED by the wrapper
 ```
 
-**8. Schedule it.** Five jobs. Three wake a model, and two of those only
-when there is something new:
+**8. Schedule it.** Eight jobs. Four wake a model, and three of those only
+when there is something new. Every sync also refreshes the knowledge graph
+(`extract`, backbone, DuckDB, Neo4j), so the graph is never older than the
+last sync, and `graph-build` adds the judgment the folders cannot give:
 
 | job | when (New York) | what | model |
 |---|---|---|---|
-| `canvas-sync-morning` | 06:45 Mon–Fri | `mitsync-agent sync` (command job) | none |
+| `gradescope-sync`, `-morning` | 5 min before each sync | `mitsync-agent gradescope sync` (command job), so the backbone's Assignment nodes carry Gradescope's status | none |
+| `canvas-sync-morning` | 06:45 Mon–Fri | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
 | `morning-brief` | 07:00 Mon–Fri | `mit-briefing`: judge, write, email | Sonnet 5, low thinking |
-| `canvas-sync` | every 2 h, 08:00–22:00 | `mitsync-agent sync` (command job) | none |
+| `canvas-sync` | every 2 h, 08:00–22:00 | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
 | `canvas-file` | 10 min after each sync | `mit-organize`: file new Canvas material | Haiku 4.5, low thinking, **only if** `openclaw/triggers/new-to-file.js` sees a file the last check hadn't |
+| `graph-build` | 20 min after each sync | `mit-graph-build`: close what `graph check` lists, one subagent per reading-heavy course | Sonnet 5, low thinking, **only if** `openclaw/triggers/graph-pending.js` (which runs `graph refresh`, then `graph check`) sees an item the last check hadn't |
 | `course-notes` | 23:00 daily | `mit-course`: bring each course's master file up to date | Sonnet 5, low thinking, **only if** `openclaw/triggers/course-pending.js` (which runs `extract`, `kb build`, `kb check`) sees a document the last check hadn't |
 
 Every agent job carries a tool allow-list (`--tools exec,read,write`). With
@@ -240,6 +244,11 @@ instead of backgrounding it after 10 s.
 W=~/Desktop/MIT/courses/_agent/bin/mitsync-agent
 openclaw config set agents.defaults.models \
   '{"anthropic/claude-haiku-4-5":{"agentRuntime":{"id":"claude-cli"},"alias":"haiku"}}' --strict-json --merge
+
+openclaw cron add --name gradescope-sync-morning --agent mitsync --cron "40 6 * * 1-5" \
+  --tz America/New_York --exact --command-argv "[\"$W\",\"gradescope\",\"sync\"]" --timeout-seconds 120 --no-deliver
+openclaw cron add --name gradescope-sync --agent mitsync --cron "55 7-21/2 * * *" \
+  --tz America/New_York --exact --command-argv "[\"$W\",\"gradescope\",\"sync\"]" --timeout-seconds 120 --no-deliver
 
 openclaw cron add --name canvas-sync-morning --agent mitsync --cron "45 6 * * 1-5" \
   --tz America/New_York --exact --command-argv "[\"$W\",\"sync\"]" --timeout-seconds 600 --no-deliver
@@ -256,6 +265,12 @@ openclaw cron add --name canvas-file --agent mitsync --cron "10 8-22/2 * * *" \
   --trigger-script ./openclaw/triggers/new-to-file.js \
   --message "Scheduled filing run, nobody is watching. Read skills/mit-organize/SKILL.md and follow it: file the new Canvas material with organize apply --yes." \
   --model anthropic/claude-haiku-4-5 --thinking low --tools exec,read,write --timeout-seconds 600 --no-deliver
+
+openclaw cron add --name graph-build --agent mitsync --cron "20 8-22/2 * * *" \
+  --tz America/New_York --exact --session isolated \
+  --trigger-script ./openclaw/triggers/graph-pending.js \
+  --message "Scheduled run, nobody is watching. Read skills/mit-graph-build/SKILL.md and follow its scheduled run: close what graph check lists, delegating reading-heavy courses to subagents, and check every facts file before you add it." \
+  --thinking low --tools exec,read,write,sessions_spawn,sessions_yield --timeout-seconds 1800 --no-deliver
 
 openclaw cron add --name course-notes --agent mitsync --cron "0 23 * * *" \
   --tz America/New_York --exact --session isolated \

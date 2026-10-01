@@ -16,6 +16,7 @@ from typer.testing import CliRunner
 
 from mitsync import cli
 from mitsync.core.config import Settings
+from mitsync.knowledge import graph as graph_mod
 from tests.test_deadlines import seeded  # noqa: F401 -- fixture
 from tests.test_organize import add_mirror_file, place, write_course_map, write_plan
 
@@ -222,6 +223,35 @@ def test_graph_check_json_and_exit_code(use, settings: Settings) -> None:
     (ml / "Lec1.pdf").unlink()
     runner.invoke(cli.app, ["graph", "backbone"])
     assert run_json("graph", "check")["ok"] is True
+
+
+def test_graph_check_exit_zero_is_for_trigger_scripts(use, settings: Settings) -> None:
+    use(settings)
+    (settings.paths.workspace / "Machine Learning" / "Lec1.pdf").write_bytes(b"%PDF-1.4 loose")
+    runner.invoke(cli.app, ["graph", "backbone"])
+    result = runner.invoke(cli.app, ["graph", "check", "--json", "--exit-zero"])
+    assert result.exit_code == 0 and json.loads(result.stdout)["counts"]["error"] == 1
+
+
+def test_sync_ends_by_refreshing_the_graph(
+    use, settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mitsync.canvas.sync import SyncReport
+
+    use(settings)
+    monkeypatch.delenv("NEO4J_URI", raising=False)
+    monkeypatch.setattr(cli.sync_mod, "run_sync", lambda *a, **k: SyncReport())
+    (settings.paths.workspace / "Machine Learning" / "Lec1.pdf").write_bytes(b"%PDF-1.4 new")
+
+    skipped = runner.invoke(cli.app, ["sync", "--no-graph"])
+    assert skipped.exit_code == 0 and "graph" not in skipped.stdout
+    assert not graph_mod.backbone_jsonl(settings).exists()
+
+    result = runner.invoke(cli.app, ["sync"])
+    assert result.exit_code == 0, result.output
+    assert "graph backbone:" in result.stdout and "graph push" not in result.stdout
+    assert "graph check: 1 error, 0 human, 0 info" in result.stdout  # the new file, unattached
+    assert "Machine Learning/Lec1.pdf" in graph_mod.backbone_jsonl(settings).read_text()
 
 
 def test_graph_query_takes_params_and_prints_json(use, settings: Settings) -> None:

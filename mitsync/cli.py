@@ -138,15 +138,40 @@ def sync(
     full: Annotated[
         bool, typer.Option("--full", help="Ignore the manifest; re-check everything.")
     ] = False,
+    graph: Annotated[
+        bool, typer.Option("--graph/--no-graph", help="Refresh the knowledge graph afterwards.")
+    ] = True,
 ) -> None:
-    """Mirror Canvas files into the workspace `_canvas/` tree (read-only on Canvas)."""
+    """Mirror Canvas files into `_canvas/` (read-only on Canvas), then refresh the graph."""
     settings = _settings()
     report = sync_mod.run_sync(settings, course=course, dry_run=dry_run, full=full)
+    if graph and not dry_run:
+        _refresh_graph(settings)
     # A sync that recorded errors must not look like success. scripts/mitsync-cron.sh
     # branches on the exit code, so exiting 0 here would report a revoked token as
     # "Completed with no errors" on every scheduled run.
     if report.errors:
         raise SystemExit(1)
+
+
+def _refresh_graph(settings: Settings) -> None:
+    """The graph's deterministic half, run after every sync so it never lags the disk.
+
+    New text first, then the backbone (which re-projects DuckDB), then Neo4j when
+    `NEO4J_URI` is set. What is left needs judgment: the closing `graph check`
+    line is what `openclaw/triggers/graph-pending.js` wakes the agent for.
+    """
+    extract_mod.extract_all(settings)  # prints its own summary
+    print(f"graph backbone: {graph_mod.build_backbone(settings).summary()}")
+    if os.environ.get("NEO4J_URI"):
+        from mitsync.knowledge import neo4j_store
+
+        counts = neo4j_store.push(settings)
+        print(f"graph push: {counts['nodes']} nodes, {counts['edges']} edges -> neo4j")
+    violations = graph_mod.check(settings)
+    print("graph check: " + ", ".join(
+        f"{sum(v.severity == sev for v in violations)} {sev}" for sev in ("error", "human", "info")
+    ))  # fmt: skip
 
 
 @app.command()
@@ -382,11 +407,22 @@ def gradescope_sync(as_json: JsonOpt = False) -> None:
 @graph_app.command("add")
 def graph_add(
     records: Annotated[Path, typer.Argument(help="JSONL of nodes and edges the agent wrote.")],
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Validate only; add nothing.")] = False,
 ) -> None:
     """Validate agent-written nodes/edges against the ontology and append them (all or nothing)."""
     settings = _settings()
+    if dry_run:
+        nodes, edges = graph_mod.validate_records(settings, records)
+        print(f"graph add --dry-run: OK, {len(nodes)} nodes and {len(edges)} edges, nothing added")
+        return
     report = graph_mod.add_records(settings, records)
     print(f"graph add: {report.summary()}")
+
+
+@graph_app.command("refresh")
+def graph_refresh() -> None:
+    """Extract new text, rebuild the backbone, push to Neo4j: what every `sync` ends with."""
+    _refresh_graph(_settings())
 
 
 @graph_app.command("backbone")
@@ -403,7 +439,12 @@ def graph_backbone(as_json: JsonOpt = False) -> None:
 
 
 @graph_app.command("check")
-def graph_check(as_json: JsonOpt = False) -> None:
+def graph_check(
+    as_json: JsonOpt = False,
+    exit_zero: Annotated[
+        bool, typer.Option("--exit-zero", help="Exit 0 even when something is open.")
+    ] = False,
+) -> None:
     """Every structural violation; exit 1 while any `error` or `human` one remains.
 
     This is the sync loop's stopping condition: `error` violations are the
@@ -418,7 +459,7 @@ def graph_check(as_json: JsonOpt = False) -> None:
     else:
         graph_mod.print_rows("graph check", [v.model_dump() for v in violations])
         print("graph check: " + ", ".join(f"{n} {sev}" for sev, n in counts.items()))
-    if counts["error"] or counts["human"]:
+    if (counts["error"] or counts["human"]) and not exit_zero:
         raise typer.Exit(1)
 
 

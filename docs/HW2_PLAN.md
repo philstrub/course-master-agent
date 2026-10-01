@@ -1,6 +1,6 @@
 # HW2 engineering plan: a knowledge-graph memory with a verified sync loop
 
-Homework 2 ("Engineer a Reliable Agent", `assignment2.md`) asks for tool use,
+Homework 2 ("Engineer a Reliable Agent", `AI_Studio/assignments/hw-02/assignment2.md`) asks for tool use,
 persistent memory, an observable loop with a stopping condition and an
 escalation, a bounded subagent handoff, one failure-and-recovery, and a 3-5
 case baseline-vs-improved evaluation. This plan maps each rubric line onto
@@ -147,7 +147,16 @@ DuckDB rather than a `GraphBackend` (the canned queries stay SQL).
   `concept <name>` (where it is taught / assessed), `submitted` (what the
   student turned in), `unfiled`.
 
-### W6. The observable loop (rubric: loop, escalation)
+### W6. The observable loop (rubric: loop, escalation) — scheduled loop DONE, loop trace file TODO
+
+- Built 2026-09-30: every `sync` ends with `graph refresh` (extract, backbone,
+  DuckDB, Neo4j), so the graph is never older than the last sync. The
+  `graph-build` OpenClaw job runs 20 min after each sync, gated by
+  `openclaw/triggers/graph-pending.js` (fires only on `error` items the last
+  check had not seen), and follows the skill's scheduled run: delegate
+  reading-heavy courses to `sessions_spawn` subagents, `graph add --dry-run`
+  each facts file, add, re-check, stop at no `error` or after two rounds.
+  First live run: 1 item -> 0 in 49 s, 14 tool calls, no subagent needed.
 
 - Skill `skills/mit-graph-sync/SKILL.md`: goal -> `sync` -> `extract` ->
   `graph backbone` -> `graph check --json` -> for each violation decide
