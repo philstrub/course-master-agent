@@ -11,12 +11,12 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 
 | command | what it does | touches |
 |---|---|---|
-| `sync` | mirror new Canvas files and metadata (assignments, your own submission status) into `_canvas/` | Canvas **read-only** (GET/HEAD, enforced in code and tests) |
+| `sync` | mirror new Canvas files and metadata (assignments, your own submission status) into `_canvas/`, plus the Google Slides decks and HBS cases that modules link to | Canvas **read-only** (GET/HEAD, enforced in code and tests). HBS cases: the LTI launch POST to HBS only |
 | `gradescope sync` | snapshot the student's Gradescope status and scores; `due` then shows them on the matching Canvas row (Canvas reports Gradescope work as unsubmitted) | Gradescope **read-only**, `state/gradescope.json` |
 | `due` | deadlines with your status and the assignment text; cached in `state/due.json` | reads the mirror |
 | `work` | your files per course, tagged `canvas_copy` / `edited` / `yours` | reads your folders |
 | `calendar` | Apple Calendar events | Calendar **read-only** |
-| `unfiled` | mirror files neither filed nor skipped, plus the rules and schema a plan must follow and the case links to download by hand | reads |
+| `unfiled` | mirror files neither filed nor skipped, plus the rules and schema a plan must follow and any case link sync could not download | reads |
 | `organize apply --plan P` · `undo` | validate an agent-written plan, confirm, file by hardlink, keep an undo log | your folders: the agent may apply Canvas copies (`--yes`); `--include-existing` and `undo` are **human only** |
 | `extract` | PDFs/notebooks → text in `_kb/text/` (incremental, by sha256) | `_kb/` |
 | `kb build` | graph backbone from the course folders, and `_kb/AGENTS.md`; never `NOTES.md` | `_kb/` |

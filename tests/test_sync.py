@@ -695,8 +695,8 @@ def test_shared_google_slides_links_are_mirrored_as_pdf(settings):
     )
     assert (settings.paths.workspace / rec.mirror_path).read_bytes().startswith(b"%PDF-")
     assert not report.errors
-    assert [n["message"] for n in report.notices if n["stage"] == "slides-link"] == [
-        "Slides: private: not shared by link; skipped"
+    assert [n["message"] for n in report.notices if n["stage"] == "module-link"] == [
+        "Slides: private: not a PDF (not shared?); skipped"
     ]
     assert not [p for p in mirrored_files(settings) if "private" in p or ".download" in p]
 
@@ -709,3 +709,82 @@ def test_a_mirrored_deck_is_not_fetched_again(settings):
     sync(settings, fake)
 
     assert "/presentation/d/shared-deck/export/pdf" not in fake.paths
+
+
+# --------------------------------------------------------------------------
+# HBS Publishing case links
+# --------------------------------------------------------------------------
+HBSP = "https://services.hbsp.harvard.edu/lti/links/615007-PDF-ENG"
+
+
+class CaseCanvas(FakeCanvas):
+    """FakeCanvas plus one HBS case link, served through the whole LTI launch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[str] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.host == "services.hbsp.harvard.edu":
+            self.posts.append(f"{request.method} {request.url.path}")
+            if url == f"{HBSP}/rich-text" and b"oauth_signature=sig" in request.content:
+                return httpx.Response(
+                    200,
+                    html=f'<form id="pdfLaunch" action="{HBSP}/pdf-downloads" method="POST">'
+                    '<input type="hidden" name="availabilityId" value="615007-PDF-ENG"></form>',
+                )
+            if url == f"{HBSP}/pdf-downloads" and b"availabilityId=615007" in request.content:
+                return httpx.Response(200, content=b"%PDF-1.7 netflix case\n")
+            return httpx.Response(403)
+        if request.url.path == "/api/v1/courses/28451/external_tools/sessionless_launch":
+            assert request.url.params["url"] == f"{HBSP}/rich-text"
+            return httpx.Response(
+                200, json={"url": "https://canvas.mit.edu/launch?session_token=t"}
+            )
+        if request.url.path == "/launch":
+            return httpx.Response(
+                200,
+                html=f'<form action="{HBSP}/rich-text" method="POST">'
+                '<input name="oauth_signature" type="hidden" value="sig"></form>',
+            )
+        if request.url.path.endswith("/courses/28451/modules"):
+            module = {
+                "id": 9,
+                "position": 9,
+                "name": "Class 1",
+                "items": [
+                    {
+                        "id": 81,
+                        "type": "ExternalTool",
+                        "title": "Neflix in 2011",
+                        "external_url": f"{HBSP}/rich-text",
+                        "url": f"{BASE}/courses/28451/external_tools/sessionless_launch"
+                        "?id=170&url=https%3A%2F%2Fservices.hbsp.harvard.edu%2Flti%2Flinks"
+                        "%2F615007-PDF-ENG%2Frich-text",
+                    }
+                ],
+            }
+            return httpx.Response(200, json=[*fixture("modules"), module])
+        return super().handler(request)
+
+
+def test_hbs_case_links_are_downloaded_through_the_lti_launch(settings):
+    fake = CaseCanvas()
+    report = sync(settings, fake)
+
+    assert not report.errors
+    with Manifest(settings.paths.manifest_db) as m:
+        rec = m.get_file("link-81")
+    assert (
+        rec is not None and rec.mirror_path == "_canvas/Machine Learning/Class 1/Neflix in 2011.pdf"
+    )
+    assert (settings.paths.workspace / rec.mirror_path).read_bytes() == b"%PDF-1.7 netflix case\n"
+    assert fake.posts == [
+        "POST /lti/links/615007-PDF-ENG/rich-text",
+        "POST /lti/links/615007-PDF-ENG/pdf-downloads",
+    ]
+
+    fake.posts.clear()
+    sync(settings, fake)
+    assert fake.posts == [], "a mirrored case is not fetched again"

@@ -144,14 +144,14 @@ Recitations and assignments keep their original names.
   | OCP Group | `OCP_group.pdf` |
   | Strategy and the New Economics of Information | `strategy_in_the_age_of_information.pdf` |
 
-  A reading that Canvas hosts as a file (e.g. `Toward_Global_Food_Security.pdf`)
-  is filed there like any other placement. Most cases, though, are HBS
-  Publishing links. They open through Canvas with my own HBS login, and mitsync
-  cannot download them. `unfiled --json` lists them under `links`. For each
-  link with no matching file in `case studies/`, tell me the title, the
-  `canvas_url`, and the exact name to save it under
-  (`From Anaytics to Action/case studies/<name>.pdf`). Do not write the file
-  yourself.
+  `mitsync sync` downloads each HBS Publishing case and article in the
+  modules (it performs the same launch as clicking the link in Canvas), and
+  they arrive in `unfiled` like any file, titled by their module item. A
+  reading Canvas hosts as a file (e.g. `Toward_Global_Food_Security.pdf`) is
+  filed the same way. If `case studies/` already has a file for that case
+  (I downloaded some by hand), put the new one in `skips` with that reason
+  instead of filing a second copy. `unfiled --json` lists under `links` only
+  cases sync could not download. Report those to me with their `canvas_url`.
 
 ### Analytics Lab, Analytics Tools
 

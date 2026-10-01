@@ -32,7 +32,7 @@ it every run, the filenames are per course), the allowed `course_folders`,
 `buckets` and `per_item_buckets`, the `plan_schema`, the `plans_dir`,
 `files[]` (`file_id`, `display_name`, `course`, `canvas_folder`,
 `module_name`, `module_item_title`, `module_subheader`, …) and `links[]`, the
-case links mitsync cannot download.
+case links sync could not download.
 
 ## 2. Decide, following `naming_rules`, not memory
 
@@ -54,9 +54,9 @@ For each file, pick `<Course>/<bucket>/[<item>/]<filename>`:
 - not sure? Leave it out of both lists. Unfiled is better than misfiled, and it
   will be offered again next run.
 
-For `links[]`: if a case has no matching file in the course's `case studies/`
-folder, list it in your reply with the name to save it under. Never download
-or write it yourself.
+For `links[]`: list each in your reply with its `canvas_url`. Sync downloads
+cases itself, so these are failures to report, never something to fetch
+yourself.
 
 ## 3. Write the plan and apply it
 

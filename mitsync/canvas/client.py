@@ -154,6 +154,9 @@ class CanvasClient:
         self._min_remaining = float(settings.canvas.min_rate_limit_remaining)
         self._per_page = int(settings.canvas.per_page)
         self._owns_client = True
+        # Kept so `hbsp` can open its own cookie session over the same transport
+        # (in tests, the same mock).
+        self.transport = transport
         self._client = httpx.Client(
             transport=transport,
             timeout=timeout,

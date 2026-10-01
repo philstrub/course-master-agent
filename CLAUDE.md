@@ -33,7 +33,7 @@ command validates**:
 The facts come from `due --json`, `work --json`, `calendar --json` and
 `unfiled --json`. `unfiled --json` carries the path of `config/naming.md`
 (which names filed files per course), the allowed buckets, the plan schema,
-each file's module item title, and the HBS case links mitsync cannot
+each file's module item title, and any HBS case link sync failed to
 download. Filing rules are never in Python, so read them from there rather
 than from memory.
 
@@ -61,7 +61,10 @@ confirmation and writes an undo log to `state/undo/`. `email` sends only to `ema
    ({GET, HEAD}), and `tests/test_canvas_read_only.py` scans every module for
    HTTP write calls.
    Do not add a submission, upload, comment, or deletion path, and do not
-   relax that check.
+   relax that check. The single exception is `canvas/hbsp.py`: downloading an
+   HBS Publishing case means submitting Canvas's signed LTI launch form to
+   HBS (a login, as the student's click would). It POSTs only to
+   `services.hbsp.harvard.edu`, and the test allows POSTs in that file alone.
 3. **Never commit secrets.** API keys, Canvas tokens, and OpenClaw config
    live in the environment or `config/settings.yml` (gitignored); never
    paste a token into a commit, a brief, a plan, an issue, or a KB note.

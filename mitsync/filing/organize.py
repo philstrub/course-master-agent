@@ -470,7 +470,8 @@ def _module_items(settings: Settings) -> list[dict[str, Any]]:
 
 def unfiled(settings: Settings) -> dict[str, Any]:
     """Every mirrored file neither filed nor skipped, plus the rules the agent
-    files by, and the case links in modules that mitsync cannot download.
+    files by, and the case links in modules that `sync` has not downloaded
+    (yet, or at all: its report says why).
 
     Each file carries its module item's title and subheader: the course's own
     label ("PostClass CART Regression Slides") often says more than the
@@ -481,8 +482,9 @@ def unfiled(settings: Settings) -> dict[str, Any]:
     by_file_id = {
         str(i["content_id"]) if i["type"] == "File" else f"link-{i['id']}": i for i in items
     }
+    candidates = _canvas_candidates(settings)
     files = []
-    for c in _canvas_candidates(settings).values():
+    for c in candidates.values():
         if c["filed_path"] or c["skip_reason"]:
             continue
         item = by_file_id.get(c["file_id"], {})
@@ -507,7 +509,7 @@ def unfiled(settings: Settings) -> dict[str, Any]:
             "canvas_url": i.get("html_url"),
         }
         for i in items
-        if i["type"] == "ExternalTool" and i["course"]
+        if i["type"] == "ExternalTool" and i["course"] and f"link-{i['id']}" not in candidates
     ]
     return {
         "naming_rules": str(naming_rules_path(settings)),

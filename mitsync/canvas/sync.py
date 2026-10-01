@@ -67,16 +67,20 @@ explicit start and end dates always sent, because Canvas's default window is
 only -14d/+28d. `_canvas/_meta/planner.json` holds planner items across every
 course, fetched once per run.
 
-**Shared Google Slides links are mirrored too.** Some courses post their
-decks as `ExternalUrl` module items pointing at Google Slides rather than as
-Canvas files. Each one whose deck is shared by link is exported as PDF into
-`<Course Folder>/<module name>/<item title>.pdf` and recorded like a file,
-keyed `link-<module item id>` with `canvas_id` 0 (it is not a Canvas file).
-Google gives no version signal, so a deck is fetched once and again only on
-`--full`. A deck that is not shared comes back as a sign-in page, not a PDF;
-that is a notice, not an error. Every other link (publisher cases launched
-through an LTI tool, forms, websites) needs the student's own login and is
-never fetched; `organize.unfiled` lists the case links for the agent.
+**Some module links are mirrored too.** Two kinds of module item have bytes
+behind them that are not Canvas files:
+
+* an `ExternalUrl` to a Google Slides deck shared by link, exported as PDF;
+* an `ExternalTool` launching an HBS Publishing case or article
+  (`hbsp.download_case`, which performs the LTI launch the student's click
+  would).
+
+Each is written to `<Course Folder>/<module name>/<item title>.pdf` and
+recorded like a file, keyed `link-<module item id>` with `canvas_id` 0 (it is
+not a Canvas file). Neither source gives a version signal, so a link is
+fetched once and again only on `--full`. An answer that is not a PDF (a deck
+not shared by link comes back as a sign-in page) is a notice, not an error.
+Every other link (forms, websites) is never fetched.
 
 **Catch-up safety.** Work is derived from manifest state versus Canvas state
 -- never from time since the last run -- so a skipped or late scheduled run
@@ -118,15 +122,19 @@ from __future__ import annotations
 import json
 import re
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
+from functools import partial
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 from rich.console import Console
 from rich.table import Table
 
+from mitsync.canvas import hbsp
 from mitsync.canvas.client import CanvasClient
 from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
 from mitsync.core.clock import now_iso, parse_iso
@@ -400,20 +408,18 @@ def _sync_course(
         )
     for module in modules:
         for item in module.get("items") or []:
-            match = _GOOGLE_SLIDES.match(str(item.get("external_url") or ""))
-            if item.get("type") == "ExternalUrl" and match:
-                _sync_slides_link(
-                    settings,
-                    client,
-                    manifest,
-                    report,
-                    entry,
-                    module,
-                    item,
-                    match.group(1),
-                    dry_run=dry_run,
-                    full=full,
-                )
+            url = str(item.get("external_url") or "")
+            slides = _GOOGLE_SLIDES.match(url)
+            if item.get("type") == "ExternalUrl" and slides:
+                export = f"https://docs.google.com/presentation/d/{slides.group(1)}/export/pdf"
+                fetch = partial(client.download_url, export)
+            elif item.get("type") == "ExternalTool" and urlparse(url).netloc == hbsp.HBSP_HOST:
+                fetch = partial(hbsp.download_case, client, item)
+            else:
+                continue  # documented: other links have no bytes we may fetch
+            _sync_link(
+                settings, manifest, report, entry, module, item, fetch, dry_run=dry_run, full=full
+            )
 
     _write_course_meta(
         settings, client, report, entry, modules, term_start, term_end, dry_run=dry_run
@@ -752,20 +758,21 @@ def _sync_file(
     )
 
 
-def _sync_slides_link(
+def _sync_link(
     settings: Any,
-    client: CanvasClient,
     manifest: Manifest,
     report: SyncReport,
     entry: dict[str, Any],
     module: dict[str, Any],
     item: dict[str, Any],
-    deck_id: str,
+    fetch: Callable[[Path], str],
     *,
     dry_run: bool,
     full: bool,
 ) -> None:
-    """Mirror one Google Slides module link as a PDF (see "Shared Google Slides")."""
+    """Mirror one module link as a PDF; ``fetch(path)`` writes it and returns its
+    sha256 (see "Some module links are mirrored too").
+    """
     course_folder = entry["folder"]
     uuid = f"link-{item['id']}"
     title = str(item.get("title") or f"slides-{item['id']}")
@@ -780,22 +787,23 @@ def _sync_slides_link(
         return
     if dry_run:
         report.new += 1
-        log.info("would export %s", rel_path)
+        log.info("would fetch %s", rel_path)
         return
 
     staging = dest.with_name(dest.name + ".download")
-    url = f"https://docs.google.com/presentation/d/{deck_id}/export/pdf"
     try:
-        sha = client.download_url(url, staging)
+        sha = fetch(staging)
     except (MitsyncError, httpx.HTTPError) as exc:
         staging.unlink(missing_ok=True)
-        report.add_error(course_folder, "slides-link", f"{title}: {type(exc).__name__}: {exc}")
+        report.add_error(course_folder, "module-link", f"{title}: {type(exc).__name__}: {exc}")
         return
     with open(staging, "rb") as fh:
         is_pdf = fh.read(5) == b"%PDF-"
     if not is_pdf:
         staging.unlink()
-        report.add_notice(course_folder, "slides-link", f"{title}: not shared by link; skipped")
+        report.add_notice(
+            course_folder, "module-link", f"{title}: not a PDF (not shared?); skipped"
+        )
         return
 
     size = staging.stat().st_size
