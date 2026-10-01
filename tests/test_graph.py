@@ -453,8 +453,29 @@ def test_a_declared_repo_is_a_node_from_config_alone(seeded: Settings) -> None:
     }  # fmt: skip
     assert "repo:not-cloned" not in nodes
     assert not [p for p in by_path(seeded) if "nandatown" in p], "nothing inside is read"
-    [v] = [v for v in graph_mod.check(seeded) if v.node == "repo:nandatown"]
-    assert v.code == "no_course"  # no assignment declared: the agent attaches it
+    edges = [e for e in graph_mod.load_edges(seeded) if e["s"] == "repo:nandatown"]
+    assert [(e["p"], e["o"]) for e in edges] == [("repo_of_course", "course:ai-studio")]
+    assert not [v for v in graph_mod.check(seeded) if v.node == "repo:nandatown"]
+
+
+def test_a_git_repo_in_an_assignment_folder_is_linked_to_that_assignment(
+    seeded: Settings,
+) -> None:
+    hw2 = seeded.paths.workspace / ML / "assignments" / "hw-02"
+    (hw2 / ".git").mkdir(parents=True)
+    (hw2 / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+    graph_mod.build_backbone(seeded)
+
+    nodes = graph_mod.load_nodes(seeded)
+    rid = "repo:machine-learning-hw-02"
+    assert nodes[rid]["attrs"] == {"name": "hw-02", "path": f"{ML}/assignments/hw-02"}
+    aid = "assignment:machine-learning:hw-02"
+    assert nodes[aid]["type"] == "Assignment"  # the folder holds only the repo
+    edges = {(e["s"], e["p"], e["o"]) for e in graph_mod.load_edges(seeded)}
+    assert (rid, "repo_of_assignment", aid) in edges
+    assert (aid, "assignment_of_course", "course:machine-learning") in edges
+    assert not [v for v in graph_mod.check(seeded) if v.node in (rid, aid)]
+    assert not [p for p in by_path(seeded) if "/.git" in p], "nothing inside is read"
 
 
 def test_backbone_never_touches_nandatown(seeded: Settings) -> None:

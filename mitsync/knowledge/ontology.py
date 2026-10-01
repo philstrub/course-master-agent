@@ -74,10 +74,11 @@ exactly one course; every repo exactly one of `repo_of_assignment` /
 `repo_of_course`; every concept at least one `concept_in_*`. `CARDINALITY`
 is that table.
 
-**Miscellaneous edges are rationed.** `file_of_course` and `repo_of_course`
-require a `reason` and may cover at most `MISC_SHARE` of a course's files
-(never fewer than `MISC_FLOOR`). They are for material that truly belongs to
-no lecture, recitation, assignment or syllabus.
+**Miscellaneous edges are rationed.** `file_of_course` requires a `reason`
+and may cover at most `MISC_SHARE` of a course's files (never fewer than
+`MISC_FLOOR`). It is for material that truly belongs to no lecture,
+recitation, assignment or syllabus. `repo_of_course` also needs a `reason`, and
+the backbone writes it (with every other repo edge) from `courses.yml`.
 
 **Disk agrees with the graph.** A file stored under a per-item folder
 (`<Course>/assignments/hw-01/`) must hang off that item, and a file in
@@ -292,9 +293,9 @@ class DataFile(_File):
 class Repo(NodeAttrs):
     """A code repository the student works in (e.g. `AI_Studio/nandatown`).
 
-    Declared under the course's `repos:` in `config/courses.yml` and written by
-    the backbone. Metadata only: nothing reads inside a repo (guardrail 5).
-    When the entry names no assignment, the agent writes the parent edge.
+    Written by the backbone, with its parent edge, from the course's `repos:`
+    in `config/courses.yml` and from any `assignments/<item>/` holding a `.git`.
+    Metadata only: nothing reads inside a repo (guardrail 5).
     """
 
     id_prefix: ClassVar[str] = "repo"
@@ -459,7 +460,8 @@ class RepoOfAssignment(EdgeAttrs):
 
 
 class RepoOfCourse(EdgeAttrs):
-    """LAST RESORT. The repository belongs to the course but to no single assignment.
+    """The repository belongs to the course but to no single assignment. The
+    backbone writes it for a repo `courses.yml` declares without `assignment`.
     Say why in `reason`."""
 
     name: ClassVar[str] = "repo_of_course"

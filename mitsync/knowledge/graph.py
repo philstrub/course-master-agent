@@ -57,7 +57,9 @@ the folder a file is filed in says so unambiguously, its parent item
 `lectures/` whose name states its number, `other/` / `notes/`). Every Canvas
 and Gradescope assignment of a mapped course is an `Assignment` node carrying
 the student's submission status, joined to its `assignments/<item>/` node by
-title key, and every repo `courses.yml` declares is a `Repo` node.
+title key. Every repo is a `Repo` node with its parent: one `courses.yml`
+declares hangs off its assignment or else its course, and an
+`assignments/<item>/` folder holding a `.git` is that assignment's repo.
 
 **The agent supervises the rest.** `check` lists what needs judgment:
 `lecture_unattached` (a lecture file with no number in its name),
@@ -853,8 +855,10 @@ def build_backbone(settings: Settings) -> GraphReport:
                 edges.append({"s": fid, "p": p, "o": target, "attrs": eattrs,
                               "src": canonical, "ts": ts})  # fmt: skip
 
-    _add_assignments(settings, nodes, edges)
+    # Repos first: an assignment folder holding only a repo needs its node
+    # before Canvas facts are joined onto the folders' nodes.
     _add_repos(settings, entries, nodes, edges)
+    _add_assignments(settings, nodes, edges)
     records = [normalize_node(n) for n in nodes.values()]
     for node in records:
         validate_node(node)
@@ -882,31 +886,64 @@ def _add_repos(
     nodes: dict[str, dict[str, Any]],
     edges: list[dict[str, Any]],
 ) -> None:
-    """The repos a course entry in `config/courses.yml` declares, metadata only.
+    """Every repo in a course folder, with its parent, metadata only.
 
-    Guardrail 5: nothing reads inside a repo. Name, remote and assignment come
-    from the entry (`repos: [{path, remote_url, description, assignment}]`,
-    `path` relative to the course folder), and the checkout is only checked to
-    exist. A repo declared without `assignment` gets no parent: `graph check`
-    lists it, and the agent writes `repo_of_assignment` or `repo_of_course`.
+    Guardrail 5: nothing reads inside a repo. Two sources:
+
+    - The repos a course entry in `config/courses.yml` declares (`repos: [{path,
+      remote_url, description, assignment}]`, `path` relative to the course
+      folder). With `assignment` the parent is that assignment, without it the
+      course: the entry states the course outright, so this is a fact and not a
+      last resort.
+    - Any `assignments/<item>/` folder holding a `.git` is that assignment's
+      repo. Only the `.git` entry itself is looked at.
+
+    So every repo is linked to a course or an assignment by the backbone, and
+    `graph check` reports `no_course` only if this ever stops being true. An
+    assignment folder that holds nothing but the repo still gets its node.
     """
+    ws = settings.paths.workspace
     for entry in entries:
         folder = entry["folder"]
-        for repo in entry.get("repos") or []:
-            rel = f"{folder}/{repo['path']}"
-            if not (settings.paths.workspace / rel).is_dir():
+        declared_repos = entry.get("repos") or []
+        repos = [{**r, "id": f"repo:{slug(Path(r['path']).name)}"} for r in declared_repos]
+        declared = {r["path"].strip("/") for r in repos}
+        for git in sorted((ws / folder / "assignments").glob("*/.git")):
+            item = git.parent.name
+            if f"assignments/{item}" not in declared:
+                repos.append({"path": f"assignments/{item}", "assignment": item,
+                              "id": f"repo:{slug(folder)}-{slug(item)}"})  # fmt: skip
+        for repo in repos:
+            rel = f"{folder}/{repo['path'].strip('/')}"
+            if not (ws / rel).is_dir():
                 continue  # declared but not checked out
             name = Path(repo["path"]).name
-            rid = f"repo:{slug(name)}"
+            rid = repo["id"]
             attrs = {"name": name, "path": rel}
             attrs |= {k: repo[k] for k in ("remote_url", "description") if repo.get(k)}
             nodes[rid] = {
                 "id": rid, "type": "Repo", "label": name, "attrs": attrs,
                 "src": [rel], "ts": _iso(0),
             }  # fmt: skip
-            if repo.get("assignment"):
-                edges.append({"s": rid, "p": "repo_of_assignment", "src": rel, "ts": _iso(0),
-                              "o": item_id(Assignment, folder, repo["assignment"])})  # fmt: skip
+            if not repo.get("assignment"):
+                reason = "declared in config/courses.yml with no assignment"
+                edges.append({"s": rid, "p": "repo_of_course", "o": course_id(folder), "src": rel,
+                              "attrs": {"reason": reason}, "ts": _iso(0)})  # fmt: skip
+                continue
+            item = repo["assignment"]
+            aid = item_id(Assignment, folder, item)
+            if aid not in nodes:
+                iattrs: dict[str, Any] = {"folder": f"{folder}/assignments/{item}", "title": item}
+                if item.startswith("hw-"):
+                    iattrs["kind"] = "homework"
+                nodes[aid] = {
+                    "id": aid, "type": "Assignment", "attrs": iattrs, "src": [rel], "ts": _iso(0),
+                    "label": item_label(item.replace("-", " ").replace("_", " ")),
+                }  # fmt: skip
+                edges.append({"s": aid, "p": "assignment_of_course", "o": course_id(folder),
+                              "src": rel, "ts": _iso(0)})  # fmt: skip
+            edges.append({"s": rid, "p": "repo_of_assignment", "o": aid, "src": rel,
+                          "ts": _iso(0)})  # fmt: skip
 
 
 def _add_assignments(

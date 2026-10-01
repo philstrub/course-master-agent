@@ -39,7 +39,7 @@ Run `M graph check --json` and work through it by `code`:
 | `lecture_unattached` | a file in `lectures/` whose name states no number: read its `text` and the Canvas module order, then write `Lecture N` (`lecture:<course>:<NN>`), its `lecture_of_course` edge and the `file_of_lecture` edge |
 | `no_concepts` | a lecture, recitation or assignment with readable files and no concept: read the files' `text`, write its Concept nodes and `concept_in_*` edges |
 | `unfiled` | a course-folder file with no parent: one `file_of_*` edge to the item it belongs to (`file_of_course` is a rationed last resort with a `reason`) |
-| `no_course` on a Repo | a repo `config/courses.yml` declares without an assignment: `repo_of_assignment` (or `repo_of_course` with a `reason`) |
+| `no_course` on a Repo | should not happen: the backbone links every repo (a declared one to its `assignment`, else its course, and an `assignments/<item>/` holding `.git` to that item). Report it as a bug. To move a declared repo from its course to an assignment, ask the student to set `assignment:` under it in `config/courses.yml` rather than adding a second parent |
 | `duplicate_content` | identical copies on disk: tell the student; never delete |
 
 Write the facts as JSONL (e.g. in the scratch dir), one record per line, using

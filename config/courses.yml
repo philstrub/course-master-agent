@@ -12,7 +12,9 @@
 # node for each from this file alone, because nothing reads inside a repo
 # (guardrail 5): `path` is relative to the course folder, and `remote_url`,
 # `description` and `assignment` (the assignment folder, e.g. hw-02) are
-# optional. Without `assignment` the agent attaches the repo itself.
+# optional. Without `assignment` the repo is linked to the course. A git repo
+# in an `assignments/<item>/` folder needs no entry: it is found and linked to
+# that assignment.
 
 courses:
   - canvas_id: 38494
