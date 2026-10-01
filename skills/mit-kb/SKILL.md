@@ -1,6 +1,6 @@
 ---
 name: mit-kb
-description: Build and query the course knowledge base. `mitsync extract` turns documents into text, `kb build` writes the indexes, the agent writes each course's NOTES.md and graph facts (`graph add`), and `graph query` answers questions such as "where is the simplex method taught" or "what did I submit for HW1". Use when the user asks to rebuild, search or extend the knowledge base.
+description: Build, supervise and query the course knowledge graph. The backbone comes from the student's course folders; the agent works through `graph check` (filing Canvas files, numbering lectures, adding concepts) with `graph add`, and `graph query` / `graph cypher` answer questions such as "where is the simplex method taught" or "what did I submit for HW1". Use when the user asks to rebuild, search or extend the knowledge base.
 user-invocable: true
 metadata:
   { "openclaw": { "requires": { "bins": ["uv"] }, "os": ["darwin"] } }
@@ -11,44 +11,57 @@ metadata:
 `M` is `/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent`
 (in Claude Code: `uv run mitsync` from `_agent/`).
 
+The graph is built from the student's course folders, never from the
+`_canvas/` dump. The tools derive what the folders state outright. `M graph
+check` lists the rest, and you supervise until it is clean.
+
 ## Build (the tools)
 
 ```
 M extract        # documents -> _kb/text/, incremental by sha256 (--force to redo)
-M kb build       # INDEX.md per course, _kb/manifest.json, _kb/AGENTS.md; deterministic
-M graph backbone # files on disk -> Course, file, lecture/recitation/assignment/syllabus nodes
+M kb build       # graph backbone from the course folders + _kb/AGENTS.md; deterministic
+M graph backbone # the backbone alone: Course, File (path, text), items, Repo nodes
 M graph check    # what is still incomplete (`--json`); exit 1 until it is clean
 M graph schema   # the ontology: node/edge types, attrs, id formats, structural rules
-M graph rebuild  # _kb/graph/*.jsonl -> state/graph.duckdb (a disposable cache)
+M graph push     # replace the Neo4j copy (for `graph cypher` and the Browser)
 ```
 
-`kb build` never writes `NOTES.md`, and the graph backbone needs no model.
-Everything below is your work.
+There is no index to read: a File node's `path` is the file and its `text` is
+the extracted page to read instead.
 
-## Write (your judgment)
+## Supervise (your judgment)
 
-**Notes.** For a course, read the extracted text listed in
-`_kb/courses/<Course>/INDEX.md` and write `_kb/courses/<Course>/NOTES.md`:
-the topics, in course order, each with the files and pages that teach it.
-Cite; don't invent. Rewrite a course's notes only when its INDEX changed.
+Run `M graph check --json` and work through it by `code`:
 
-**Graph facts.** Write a JSONL file (e.g. in the scratch dir), one record per
-line, using only the types `M graph schema` prints:
+| code | what you do |
+|---|---|
+| `canvas_unfiled` | a Canvas file not yet in a course folder: follow `mit-organize` (plan or skip); the student applies it |
+| `lecture_unattached` | a file in `lectures/` whose name states no number: read its `text` and the Canvas module order, then write `Lecture N` (`lecture:<course>:<NN>`), its `lecture_of_course` edge and the `file_of_lecture` edge |
+| `no_concepts` | a lecture, recitation or assignment with readable files and no concept: read the files' `text`, write its Concept nodes and `concept_in_*` edges |
+| `unfiled` | a course-folder file with no parent: one `file_of_*` edge to the item it belongs to (`file_of_course` is a rationed last resort with a `reason`) |
+| `no_course` on a Repo | a repo `config/courses.yml` declares without an assignment: `repo_of_assignment` (or `repo_of_course` with a `reason`) |
+| `duplicate_content` | identical copies on disk: tell the student; never delete |
+
+Write the facts as JSONL (e.g. in the scratch dir), one record per line, using
+only the types `M graph schema` prints:
 
 ```
-{"id": "concept:simplex-method", "type": "Concept", "label": "Simplex method", "attrs": {"name": "Simplex method"}, "src": ["Optimization/lectures/L3.pdf"]}
-{"s": "concept:simplex-method", "p": "concept_in_lecture", "o": "lecture:optimization:03", "attrs": {"depth": "taught"}, "src": "Optimization/lectures/L3.pdf", "conf": 0.9}
+{"id": "lecture:analytics-edge:04", "type": "Lecture", "label": "Lecture 4", "attrs": {"number": 4, "title": "CART classification"}, "src": ["Analytics Edge/lectures/CART_classification.pdf"]}
+{"s": "lecture:analytics-edge:04", "p": "lecture_of_course", "o": "course:analytics-edge", "src": "Analytics Edge/lectures/CART_classification.pdf"}
+{"s": "file:<16 hex>", "p": "file_of_lecture", "o": "lecture:analytics-edge:04", "attrs": {"role": "slides"}, "src": "Analytics Edge/lectures/CART_classification.pdf"}
+{"id": "concept:cart", "type": "Concept", "label": "CART", "attrs": {"name": "CART", "aliases": ["decision trees"]}, "src": ["Analytics Edge/lectures/CART_classification.pdf"]}
+{"s": "concept:cart", "p": "concept_in_lecture", "o": "lecture:analytics-edge:04", "attrs": {"depth": "taught"}, "src": "Analytics Edge/lectures/CART_classification.pdf", "conf": 0.9}
 ```
 
-The files the backbone could not attach are `M graph check --json` violations
-with code `unfiled`: attach each with one `file_of_*` edge to the lecture,
-recitation, assignment or syllabus it belongs to (create the item node if
-needed). `file_of_course` is a last resort that needs a `reason` and is
-rationed.
+Names are canonical (`Lecture 4`, never the file title). Reuse an existing
+concept id rather than minting a variant: `M graph query --canned
+concepts_by_course` lists them. Then `M graph add <file>`. It is all or
+nothing: one bad line rejects the file with every error listed by line number,
+so fix it and re-run. `src` must be a workspace-relative course file. Repeat
+`M graph check --json` until only `human` items are left, and report those.
 
-Then `M graph add <file>` and `M graph rebuild`. `add` is all or nothing: one
-bad line rejects the file with every error listed by line number; fix and
-re-run. `src` must be a workspace-relative course file.
+**Notes.** `_kb/courses/<Course>/NOTES.md` is for what the graph cannot hold
+(grading quirks, how the student works). It is optional and never generated.
 
 ## Query
 
@@ -59,7 +72,10 @@ M graph query --sql "SELECT n.type, count(*) FROM nodes n GROUP BY 1"
 
 `M graph query` with no flag lists the canned queries (`concepts_by_course`,
 `assignments_due`, `files_for_concept`, `files_of`, `submitted`, `orphans`).
-Tables: `nodes(id, type, label, attrs)` and `edges(s, p, o, conf)`.
+`--param NAME=VALUE` fills a canned query's `$NAME`, for example `--canned
+files_of --param item=lecture:optimization:03` (the files, with `path` and
+`text`), and `--json` prints rows as JSON. Tables: `nodes(id, type, label,
+attrs)` and `edges(s, p, o, conf)`.
 
 The same graph in Neo4j (after `M graph push`), read-only:
 

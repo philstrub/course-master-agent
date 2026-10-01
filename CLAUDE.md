@@ -27,7 +27,8 @@ command validates**:
 | the morning brief | `_kb/briefings/<date>-morning.json` (schema `email/brief.schema.json`) | `mitsync email` (`--dry-run` first) |
 | where unfiled files go, and what they are called | a plan `{"placements": [{"file_id", "destination", "reason"}], "skips": [{"file_id", "reason"}]}` | `mitsync organize apply --plan <path>` (the human runs it) |
 | concept facts, unfiled files | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
-| course notes | `_kb/courses/<Course>/NOTES.md` | none; `kb build` never overwrites it |
+| lecture numbers, concepts, file parents (what `graph check --json` lists) | a JSONL of nodes/edges per `mitsync graph schema` | `mitsync graph add <file>`, then `mitsync graph check` |
+| course notes the graph cannot hold | `_kb/courses/<Course>/NOTES.md` | none; `kb build` never overwrites it |
 
 The facts come from `due --json`, `work --json`, `calendar --json` and
 `unfiled --json`. `unfiled --json` carries the path of `config/naming.md`
@@ -94,7 +95,8 @@ mitsync sync                       # mirror Canvas (needs $CANVAS_TOKEN)
 mitsync gradescope sync            # Gradescope status and scores (needs $GRADESCOPE_COOKIE)
 mitsync due --json                 # deadlines and the student's own status
 mitsync work --json                # the student's files, by provenance
-mitsync extract && mitsync kb build   # text and indexes under _kb/
+mitsync extract && mitsync kb build   # extracted text, graph backbone from the course folders
+mitsync graph check --json         # what the graph still needs from you (skills/mit-kb)
 mitsync email --dry-run            # after writing today's brief JSON
 ```
 

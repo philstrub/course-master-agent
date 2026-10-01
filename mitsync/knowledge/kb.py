@@ -131,7 +131,8 @@ def _agents_md(settings: Settings, courses: list[str], notes: dict[str, bool]) -
         'mitsync graph cypher "MATCH (f)-[:FILE_OF_LECTURE]->(l:Lecture)-[:LECTURE_OF_COURSE]->'
         "(c:Course {folder: 'Optimization'}) RETURN l.name, f.path, f.text\" --json",
         'mitsync graph cypher "MATCH (k:Concept)-[r]->(i) RETURN k.name, type(r), i.name" --json',
-        "mitsync graph query --canned files_for_concept",
+        "mitsync graph query --canned files_of --param item=lecture:optimization:03 --json",
+        "mitsync graph query --canned files_for_concept --param concept=%simplex% --json",
         'mitsync graph query --sql "SELECT type, count(*) FROM nodes GROUP BY 1"',
         "```",
         "",

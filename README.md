@@ -59,7 +59,7 @@ and runs `mitsync email`, which sends the dashboard to the address in
 ~/Desktop/MIT/courses/        the workspace (and OpenClaw's)
   Machine Learning/ …         my folders; never moved without an approved plan
   _canvas/                    verbatim Canvas mirror; source of truth
-  _kb/                        briefings/, text/, courses/<Course>/INDEX.md
+  _kb/                        AGENTS.md, graph/, text/, briefings/, courses/<Course>/NOTES.md
   _agent/                     this repo
     bin/mitsync-agent         the one binary OpenClaw may execute
     mitsync/                  core · canvas · filing · schedule · knowledge · cli

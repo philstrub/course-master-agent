@@ -211,6 +211,17 @@ def test_graph_check_json_and_exit_code(use, settings: Settings) -> None:
     assert run_json("graph", "check")["ok"] is True
 
 
+def test_graph_query_takes_params_and_prints_json(use, settings: Settings) -> None:
+    from tests.test_graph import seed_graph
+
+    use(settings)
+    seed_graph(settings)
+    rows = run_json("graph", "query", "--canned", "files_of", "--param", "item=lecture:ae:05")
+    assert [r["path"] for r in rows] == ["Analytics Edge/lectures/trees.pdf"]
+    bad = runner.invoke(cli.app, ["graph", "query", "--canned", "files_of", "--param", "item"])
+    assert bad.exit_code != 0 and "NAME=VALUE" in str(bad.exception) + bad.output
+
+
 def test_graph_schema_prints_the_ontology() -> None:
     result = runner.invoke(cli.app, ["graph", "schema"])
     assert result.exit_code == 0

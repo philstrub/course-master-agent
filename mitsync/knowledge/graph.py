@@ -603,7 +603,8 @@ CANNED: dict[str, Canned] = {
             SELECT DISTINCT i.label AS item,
                    e.p AS edge,
                    json_extract_string(e.attrs, '$.role') AS role,
-                   json_extract_string(f.attrs, '$.path') AS path
+                   json_extract_string(f.attrs, '$.path') AS path,
+                   json_extract_string(f.attrs, '$.text') AS text
             FROM edges e
             JOIN nodes i ON i.id = e.o
             JOIN nodes f ON f.id = e.s AND f.type IN ('File', 'DataFile')
@@ -611,8 +612,8 @@ CANNED: dict[str, Canned] = {
             ORDER BY item, edge, path
         """,
         params={"item": "%"},
-        help="Files attached to a lecture, recitation, assignment, syllabus or course "
-        "($item: id or LIKE pattern).",
+        help="Files attached to a lecture, recitation, assignment, syllabus or course, "
+        "with their extracted text ($item: id or LIKE pattern).",
     ),
     "submitted": Canned(
         sql="""
@@ -648,8 +649,9 @@ def query(
     sql: str | None = None,
     canned: str | None = None,
     params: dict[str, Any] | None = None,
+    show: bool = True,
 ) -> list[dict[str, Any]]:
-    """Run a canned query by name or raw SQL; returns rows and prints a table."""
+    """Run a canned query by name or raw SQL; returns rows and, if `show`, prints a table."""
     if not settings.paths.graph_db.exists():
         rebuild(settings)
     backend = get_backend(settings)
@@ -672,11 +674,13 @@ def query(
             "UNION ALL SELECT 'edges', count(*) FROM edges ORDER BY table_name"
         )
         title = "graph summary"
-        print("Canned queries: " + ", ".join(sorted(CANNED)))
-        for name, spec in sorted(CANNED.items()):
-            print(f"  {name}: {spec.help}")
+        if show:
+            print("Canned queries: " + ", ".join(sorted(CANNED)))
+            for name, spec in sorted(CANNED.items()):
+                print(f"  {name}: {spec.help}")
 
-    print_rows(title, rows)
+    if show:
+        print_rows(title, rows)
     return rows
 
 

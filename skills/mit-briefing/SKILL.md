@@ -44,8 +44,9 @@ Open nothing for it.
 
 Otherwise (new homework, or new work on disk):
 
-1. **Read the handout** once. Find its extracted text through
-   `_kb/courses/<Course>/INDEX.md` and list its parts (Q1, Q2a, …).
+1. **Read the handout** once. `M graph query --canned files_of --param
+   item=<assignment id> --json` lists its files with `path` and `text` (the
+   extracted page to read); list the handout's parts (Q1, Q2a, …).
 2. **Judge progress from the evidence** in `work`:
    - only `canvas_copy` files → `not_started`, progress 0;
    - `edited` / `yours` files → open the newest one or two (`.ipynb`, `.tex`,
@@ -54,9 +55,10 @@ Otherwise (new homework, or new work on disk):
    - a `yours` PDF newer than its source, and Canvas still `unsubmitted` →
      `ready_to_submit`;
    - can't open or can't tell → `unknown`, progress `null`, and say why in `gaps`.
-3. **Pick 1–3 things to review**, for the remaining parts only, from the
-   lecture and recitation titles in the same INDEX.md. Open a candidate's text
-   only to find the slides or pages. Skip this for `ready_to_submit`.
+3. **Pick 1–3 things to review**, for the remaining parts only. `M graph query
+   --canned files_for_concept --param concept=<concept> --json` gives the
+   lectures and recitations that teach a concept, with their files. Open a
+   candidate's text only to find the slides or pages. Skip this for `ready_to_submit`.
 4. **Estimate hours left**, honestly.
 
 ## 3. Write the brief, then send it

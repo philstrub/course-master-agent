@@ -10,8 +10,8 @@ edit by hand.
 | `<Course>/` | the student's own folders. `assignments/hw-NN/` holds each homework |
 | `_canvas/` | verbatim, read-only Canvas mirror. Never edit |
 | `_kb/briefings/<date>-morning.json` | the brief you write each morning; `email` renders and sends it |
-| `_kb/courses/<Course>/INDEX.md` | every file of a course, with a link to its extracted text |
-| `_kb/text/*.md` | plain-text versions of the PDFs/notebooks. Read these, not binaries |
+| `_kb/graph/` | the knowledge graph, built from the course folders. Query it with `graph query` |
+| `_kb/text/*.md` | plain-text versions of the PDFs/notebooks. A File node's `text` names its page. Read these, not binaries |
 | `_agent/` | the tool's source. Not course content |
 
 ## Tools
@@ -30,7 +30,9 @@ You have **one** shell command, and exec is allowlisted to it:
 | `calendar --days N --json` | Apple Calendar events (read-only) |
 | `unfiled --json` | Canvas files not yet filed into course folders |
 | `email [--dry-run]` | validate `_kb/briefings/<date>-morning.json`, render the dashboard, email it to the student |
-| `extract` · `kb build` | refresh extracted text and the per-course `INDEX.md` |
+| `extract` · `kb build` | refresh extracted text and the graph backbone |
+| `graph query --canned files_of --param item=<id> --json` | an item's files, each with `path` and `text` |
+| `graph check --json` | what the graph still lacks (see `mit-kb`) |
 | `doctor` | what is configured and what is broken |
 
 The tools only fetch, check and deliver. **Every judgment is yours**: what
@@ -46,10 +48,10 @@ don't retry it or rephrase it.
 - **Shell = the wrapper only.** Call its absolute path with plain arguments.
   Anything else is denied instantly: `ls`, `cat`, `find`, `ps`, `sleep`, `true`,
   pipes `|`, `&&`, `;`, redirects like `2>/dev/null`, `$(...)`. To find files,
-  use `work --json`, `unfiled --json` or `_kb/courses/<Course>/INDEX.md`.
+  use `work --json`, `unfiled --json` or `graph query ... --json`.
 - **`exec`: leave `host` out** (it is set to the gateway). `host=node` and
   `host=sandbox` always fail here.
-- **`read` takes one file, not a directory.** Build paths from `work`/`INDEX.md`
+- **`read` takes one file, not a directory.** Build paths from `work`/`graph query`
   output, or from the naming rule `_kb/briefings/<YYYY-MM-DD>-morning.json`.
 - **`write` replaces the whole file.** There is no `apply_patch` or `edit` in a
   scheduled run. To fix the brief, write the full JSON again.
@@ -72,6 +74,7 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 - `mit-briefing` — the morning brief: deadlines, homework progress, what to review. The main job.
 - `mit-canvas-sync` — "anything new on Canvas?"
 - `mit-organize` — file newly mirrored Canvas material into the course folders (every 2 h, 08–22).
+- `mit-kb` — keep the knowledge graph complete (`graph check`) and answer "where is X taught?".
 
 ## Rules that are never negotiable
 

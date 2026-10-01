@@ -441,10 +441,22 @@ def graph_rebuild() -> None:
 def graph_query(
     sql: Annotated[str | None, typer.Option("--sql", help="Raw SQL against the graph DB.")] = None,
     canned: Annotated[str | None, typer.Option("--canned", help="Named query.")] = None,
+    param: Annotated[
+        list[str] | None,
+        typer.Option("--param", help="NAME=VALUE for the query's $NAME; repeatable."),
+    ] = None,
+    as_json: JsonOpt = False,
 ) -> None:
-    """Query the knowledge graph."""
+    """Query the knowledge graph (the local DuckDB projection)."""
     settings = _settings()
-    graph_mod.query(settings, sql=sql, canned=canned)
+    pairs = [p.partition("=") for p in param or []]
+    bad = [name for name, eq, _ in pairs if not eq]
+    if bad:
+        raise MitsyncError(f"--param takes NAME=VALUE, not {bad[0]!r}")
+    params = {name: value for name, _, value in pairs} or None
+    rows = graph_mod.query(settings, sql=sql, canned=canned, params=params, show=not as_json)
+    if as_json:
+        _emit_json(rows)
 
 
 @graph_app.command("push")
