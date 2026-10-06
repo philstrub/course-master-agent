@@ -1,19 +1,96 @@
 # Canvas course -> workspace folder mapping.
 #
-# Bootstrap this file with:   mitsync map        (preview)
-#                             mitsync map --apply (write)
+# Maintained by hand; mitsync never writes it. It is also the list of folders
+# that count as courses: extraction, the knowledge base and `organize
+# --include-existing` only look inside folders named here (plus `_canvas/`),
+# so other top-level directories (e.g. OpenClaw's `memory/`) are never indexed.
 #
-# `mitsync map` proposes mappings by matching Canvas course names against the
-# folders that already exist in the workspace; edit freely afterwards -- this
-# file is the source of truth and is never overwritten without --apply.
+# `folder` must match the workspace folder name on disk byte-for-byte.
+# `aliases` are the course-number spellings actually seen in filenames and
+# calendar events; the organizer and `calendar_read.tag_course` match on them.
+# `repos` are code checkouts inside the course folder. The graph gets a Repo
+# node for each from this file alone, because nothing reads inside a repo
+# (guardrail 5): `path` is relative to the course folder, and `remote_url`,
+# `description` and `assignment` (the assignment folder, e.g. hw-02) are
+# optional. Without `assignment` the repo is linked to the course. A git repo
+# in an `assignments/<item>/` folder needs no entry: it is found and linked to
+# that assignment.
 
-courses: []
+courses:
+  - canvas_id: 38494
+    course_code: 15.003_FA26
+    folder: Analytics Tools
+    course_number: "15.003"
+    aliases:
+      - "15.003"
+      - "15_003"
+      - "15003"
+      - Analytics Tools
 
-# Example:
-# courses:
-#   - canvas_id: 28451
-#     folder: Machine Learning        # workspace-relative folder name
-#     course_number: "6.7900"         # null if the course has no number
-#     aliases:                        # other names seen in filenames / Canvas
-#       - ML
-#       - "6.790"
+  - canvas_id: 38522
+    course_code: 15.072_FA26
+    folder: Analytics Edge
+    course_number: "15.072"
+    aliases:
+      - "15.072"
+      - "15_072"
+      - "15072"
+      - Analytics Edge
+
+  - canvas_id: 38524
+    course_code: 15.095_FA26
+    folder: Machine Learning
+    course_number: "15.095"
+    aliases:
+      - "15.095"
+      - "15_095"
+      - "15095"
+      - Machine Learning
+
+  - canvas_id: 38521
+    course_code: 15.572_FA26
+    folder: Analytics Lab
+    course_number: "15.572"
+    aliases:
+      - "15.572"
+      - "15_572"
+      - "15572"
+      - Analytics Lab
+      - A-Lab
+
+  # NOTE: "From Anaytics to Action" is spelled that way on disk (missing the
+  # "l" in "Analytics"). That is the student's own folder name -- reproduce it
+  # exactly; do NOT "fix" the spelling here or the mapping stops matching.
+  - canvas_id: 38537
+    course_code: 15.681_FA26
+    folder: From Anaytics to Action
+    course_number: "15.681"
+    aliases:
+      - "15.681"
+      - "15_681"
+      - "15681"
+      - From Analytics to Action
+      - From Anaytics to Action
+
+  - canvas_id: 38615
+    course_code: 15.C57_FA26
+    folder: Optimization
+    course_number: 15.C57
+    aliases:
+      - 15.C57
+      - 15_C57
+      - 15C57
+      - Optimization
+
+  - canvas_id: 40577
+    course_code: MAS.665
+    folder: AI_Studio
+    course_number: MAS.665
+    aliases:
+      - MAS.665
+      - MAS_665
+      - MAS665
+      - AI Studio
+      - AI Ventures
+    repos:
+      - path: nandatown

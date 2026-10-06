@@ -1,63 +1,36 @@
-"""organize.py: plan -> apply -> undo, and the guardrails around all three."""
+"""organize.py: unfiled -> agent-written plan -> validate/apply -> undo, and the guardrails."""
 
 from __future__ import annotations
 
 import json
 import os
-import textwrap
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from mitsync import organize
-from mitsync.config import Settings
-from mitsync.llm.base import JudgeTask
-from mitsync.llm.rules_driver import RulesJudge
-from mitsync.manifest import CourseRecord, FileRecord, Manifest
-
-NAMING_MD = textwrap.dedent(
-    """
-    # Filing rules
-
-    Keep the original filename. One of lectures/ recitations/ assignments/
-    data/ syllabus/ notes/ other/ inside the course folder.
-    """
-).strip()
+from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest
+from mitsync.core.config import Settings
+from mitsync.core.errors import MitsyncError
+from mitsync.filing import organize
 
 
 # --------------------------------------------------------------------------
 # helpers
 # --------------------------------------------------------------------------
-class RecordingJudge:
-    """Wraps the rules driver so tests can inspect the payload it was handed."""
-
-    def __init__(self, settings: Settings) -> None:
-        self.inner = RulesJudge(settings)
-        self.tasks: list[JudgeTask] = []
-
-    def judge(self, task: JudgeTask) -> dict[str, Any]:
-        self.tasks.append(task)
-        return self.inner.judge(task)
-
-
-class FixedJudge:
-    """Returns a canned (schema-valid) result, whatever it is asked."""
-
-    def __init__(self, result: dict[str, Any]) -> None:
-        self.result = result
-        self.tasks: list[JudgeTask] = []
-
-    def judge(self, task: JudgeTask) -> dict[str, Any]:
-        self.tasks.append(task)
-        return self.result
-
-
-def write_naming(settings: Settings, text: str = NAMING_MD) -> Path:
-    path = settings.paths.config_dir / "naming.md"
+def write_plan(settings: Settings, placements: list[dict[str, Any]], name: str = "plan") -> Path:
+    """What the driving agent writes: `{"placements": [...]}`."""
+    path = settings.paths.plans_dir / f"{name}.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(text)
+    path.write_text(json.dumps({"placements": placements}))
     return path
+
+
+def place(file_id: str, destination: str, reason: str = "test") -> dict[str, str]:
+    return {"file_id": file_id, "destination": destination, "reason": reason}
+
+
+LEC = "Machine Learning/lectures/Lec03_2026.pdf"
 
 
 def write_course_map(settings: Settings, entries: list[dict[str, Any]]) -> Path:
@@ -128,7 +101,6 @@ def filed_path_of(settings: Settings, uuid: str) -> str | None:
 
 @pytest.fixture
 def prepared(settings: Settings) -> Settings:
-    write_naming(settings)
     write_course_map(
         settings,
         [{"canvas_id": 1, "folder": "Machine Learning", "course_number": "15.095", "aliases": []}],
@@ -137,137 +109,48 @@ def prepared(settings: Settings) -> Settings:
 
 
 # --------------------------------------------------------------------------
-# plan
+# unfiled
 # --------------------------------------------------------------------------
-def test_plan_on_empty_manifest_is_harmless(prepared: Settings) -> None:
-    judge = RecordingJudge(prepared)
-    result = organize.plan(prepared, judge)
-    assert result.entries == []
-    assert judge.tasks == []  # nothing to judge -> no task, no pending judgment
-    assert result.path is not None and result.path.exists()
+def test_unfiled_on_an_empty_manifest_is_harmless(prepared: Settings) -> None:
+    doc = organize.unfiled(prepared)
+    assert doc["files"] == []
+    assert doc["course_folders"] == ["Machine Learning"]
 
 
-def test_plan_writes_a_plan_and_moves_nothing(prepared: Settings) -> None:
-    source = add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
-    judge = RecordingJudge(prepared)
+def test_unfiled_lists_mirror_files_with_their_context_and_the_rules(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf", module_name="Week 3")
+    doc = organize.unfiled(prepared)
 
-    result = organize.plan(prepared, judge)
-
-    assert [e.destination for e in result.entries] == ["Machine Learning/lectures/Lec03_2026.pdf"]
-    assert result.entries[0].uuid == "u1"
-    assert source.exists()
-    assert not (prepared.paths.workspace / "Machine Learning" / "lectures").exists()
-    doc = json.loads(result.path.read_text())
-    assert doc["plan_id"] == result.plan_id
-    assert doc["naming_rules_sha"] and doc["entries"][0]["file_id"] == "101"
-
-
-def test_plan_uses_the_course_map_not_the_mirror_folder(prepared: Settings) -> None:
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="hw1.pdf")
-    result = organize.plan(prepared, RecordingJudge(prepared))
-    assert result.entries[0].destination.startswith("Machine Learning/")
+    assert doc["naming_rules"].endswith("config/naming.md")
+    assert doc["buckets"] == list(organize.FILING_BUCKETS)
+    assert "data" not in doc["buckets"]  # naming.md: no course-wide data folder
+    assert doc["per_item_buckets"] == ["assignments", "recitations"]
+    assert doc["plan_schema"] == organize.PLAN_SCHEMA
+    [f] = doc["files"]
+    assert f["file_id"] == "101"
+    assert f["course"] == "Machine Learning"  # the course map, not the mirror folder
+    assert f["mirror_course"] == "ML Mirror"
+    assert f["mirror_path"] == "_canvas/ML Mirror/Lec03_2026.pdf"
+    assert f["display_name"] == "Lec03_2026.pdf"
+    assert f["module_name"] == "Week 3"
+    assert "module_position" in f
 
 
-def test_naming_rules_are_injected_verbatim_and_tune_the_plan(prepared: Settings) -> None:
+def test_unfiled_reports_an_unmapped_course_as_null(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u9", canvas_id=909, name="x.pdf", course_canvas_id=77)
+    [f] = organize.unfiled(prepared)["files"]
+    assert f["course"] is None
+
+
+def test_filed_files_leave_the_unfiled_list(prepared: Settings) -> None:
     add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
-
-    judge = RecordingJudge(prepared)
-    first = organize.plan(prepared, judge)
-    assert judge.tasks[0].rules == NAMING_MD  # the file's text reached the judge
-
-    edited = NAMING_MD + "\n\nPut every lecture in `slides/` instead of `lectures/`.\n"
-    write_naming(prepared, edited)
-    judge2 = RecordingJudge(prepared)
-    second = organize.plan(prepared, judge2)
-
-    assert judge2.tasks[0].rules == edited
-    assert "slides/" in judge2.tasks[0].rules
-    assert second.naming_rules_sha != first.naming_rules_sha
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+    assert organize.unfiled(prepared)["files"] == []
 
 
-def test_naming_rules_change_the_destination_for_a_rules_aware_judge(
-    prepared: Settings,
-) -> None:
-    """Prose is the tuning surface: a judge that reads it files differently."""
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
-
-    class ProseFollowingJudge:
-        def judge(self, task: JudgeTask) -> dict[str, Any]:
-            bucket = "slides" if "slides/" in task.rules else "lectures"
-            return {
-                "placements": [
-                    {
-                        "file_id": "101",
-                        "destination": f"Machine Learning/{bucket}/Lec03_2026.pdf",
-                        "reason": "followed config/naming.md",
-                        "confidence": 0.9,
-                    }
-                ]
-            }
-
-    before = organize.plan(prepared, ProseFollowingJudge())
-    write_naming(prepared, NAMING_MD + "\nPut lectures in `slides/`.\n")
-    after = organize.plan(prepared, ProseFollowingJudge())
-
-    assert before.entries[0].destination.endswith("lectures/Lec03_2026.pdf")
-    assert after.entries[0].destination.endswith("slides/Lec03_2026.pdf")
-
-
-@pytest.mark.parametrize(
-    "destination",
-    [
-        "../outside.pdf",
-        "Machine Learning/../../escape.pdf",
-        "~/secret.pdf",
-        "_canvas/ML Mirror/copy.pdf",
-        "_agent/mitsync/evil.py",
-        "_kb/text/evil.txt",
-        "AI_Studio/nandatown/x.pdf",
-        "bare.pdf",
-    ],
-)
-def test_bad_destinations_are_rejected_before_they_reach_a_plan(
-    prepared: Settings, destination: str
-) -> None:
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="x.pdf")
-    judge = FixedJudge(
-        {
-            "placements": [
-                {
-                    "file_id": "101",
-                    "destination": destination,
-                    "reason": "hostile",
-                    "confidence": 1.0,
-                }
-            ]
-        }
-    )
-    result = organize.plan(prepared, judge)
-    assert result.entries == []
-    assert result.rejected and "101" in {r["file_id"] for r in result.rejected}
-
-
-def test_schema_itself_blocks_absolute_destinations(prepared: Settings) -> None:
-    """Defence in depth: the task schema rejects `/abs` before organize sees it."""
-    from mitsync.llm.base import ResultValidationError
-
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="x.pdf")
-    judge = FixedJudge(
-        {
-            "placements": [
-                {
-                    "file_id": "101",
-                    "destination": "/etc/passwd",
-                    "reason": "hostile",
-                    "confidence": 1.0,
-                }
-            ]
-        }
-    )
-    with pytest.raises(ResultValidationError):
-        organize.plan(prepared, judge)
-
-
+# --------------------------------------------------------------------------
+# validation
+# --------------------------------------------------------------------------
 @pytest.mark.parametrize("bad", ["", "justafile.pdf", "../x/y.pdf", "/abs/x.pdf"])
 def test_validate_destination_rejects(prepared: Settings, bad: str) -> None:
     with pytest.raises(ValueError):
@@ -275,60 +158,191 @@ def test_validate_destination_rejects(prepared: Settings, bad: str) -> None:
 
 
 def test_validate_destination_accepts_a_normal_path(prepared: Settings) -> None:
-    assert (
-        organize.validate_destination(prepared, "Machine Learning/lectures/a.pdf")
-        == "Machine Learning/lectures/a.pdf"
+    assert organize.validate_destination(prepared, LEC) == LEC
+
+
+@pytest.mark.parametrize(
+    ("destination", "why"),
+    [
+        ("../outside.pdf", "traverse"),
+        ("Machine Learning/../../escape.pdf", "traverse"),
+        ("~/secret.pdf", "absolute"),
+        ("/etc/passwd", "absolute"),
+        ("_canvas/ML Mirror/copy.pdf", "reserved"),
+        ("_agent/mitsync/evil.py", "reserved"),
+        ("_kb/text/evil.txt", "reserved"),
+        ("AI_Studio/nandatown/x.pdf", "ignore_globs"),
+        ("bare.pdf", "course folder"),
+        ("Optimization/lectures/x.pdf", "courses.yml"),
+        ("Machine Learning/x.pdf", "bucket"),
+        ("Machine Learning/data/x.pdf", "not an allowed bucket"),
+        ("Machine Learning/slides/x.pdf", "not an allowed bucket"),
+        ("Machine Learning/assignments/x.pdf", "per-item"),
+        ("Machine Learning/recitations/x.pdf", "per-item"),
+        ("Machine Learning/assignments/hw-01/sub/x.pdf", "never nest"),
+        ("Machine Learning/lectures/week-1/x.pdf", "flat"),
+    ],
+)
+def test_bad_destinations_are_rejected_with_a_reason(
+    prepared: Settings, destination: str, why: str
+) -> None:
+    source = add_mirror_file(prepared, uuid="u1", canvas_id=101, name="x.pdf")
+    report = organize.apply_plan(
+        prepared, write_plan(prepared, [place("101", destination)]), yes=True
     )
+    assert not report.applied
+    [rejected] = report.rejected
+    assert rejected["file_id"] == "101"
+    assert rejected["destination"] == destination
+    assert why in rejected["reason"]
+    assert source.exists()
+    assert not (prepared.paths.workspace / "Machine Learning" / "assignments").exists()
 
 
-def test_nandatown_and_venvs_never_appear_in_a_plan(prepared: Settings) -> None:
-    ws = prepared.paths.workspace
-    for rel in (
-        "AI_Studio/nandatown/src/app.py",
-        "AI_Studio/nandatown/README.md",
-        "AI_Studio/.venv/lib/site-packages/thing.py",
-        "Machine Learning/__pycache__/x.pyc",
-        "Machine Learning/notes_of_mine.pdf",
-    ):
-        path = ws / rel
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text("x")
-
-    result = organize.plan(prepared, RecordingJudge(prepared), include_existing=True)
-
-    planned = [e.source for e in result.entries] + [r.get("file_id", "") for r in result.rejected]
-    blob = " ".join(planned)
-    assert "nandatown" not in blob
-    assert ".venv" not in blob
-    assert "__pycache__" not in blob
-    assert any(e.source == "Machine Learning/notes_of_mine.pdf" for e in result.entries)
+def test_per_item_folders_are_accepted(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="hw1.pdf")
+    dest = "Machine Learning/assignments/hw-01/hw1.pdf"
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", dest)]), yes=True)
+    assert [r["destination"] for r in report.applied] == [dest]
+    assert (prepared.paths.workspace / dest).exists()
 
 
-def test_ignored_paths_cover_the_directory_itself(prepared: Settings) -> None:
-    assert organize.is_ignored(prepared, "AI_Studio/nandatown")
-    assert organize.is_ignored(prepared, "AI_Studio/nandatown/src/app.py")
-    assert not organize.is_ignored(prepared, "AI_Studio/notes.pdf")
+@pytest.mark.parametrize(
+    ("doc", "where"),
+    [
+        ({"placements": [{"file_id": "101", "destination": LEC}]}, "$.placements[0]"),
+        (
+            {"placements": [{**place("101", LEC), "confidence": 0.9}]},
+            "$.placements[0]",
+        ),
+        ({"placements": "all of them"}, "$.placements"),
+        ({"plan": []}, "$"),
+    ],
+)
+def test_a_plan_that_breaks_the_schema_is_refused_whole(
+    prepared: Settings, doc: dict[str, Any], where: str
+) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    path = prepared.paths.plans_dir / "bad.json"
+    path.write_text(json.dumps(doc))
+    with pytest.raises(MitsyncError, match="plan schema") as excinfo:
+        organize.apply_plan(prepared, path, yes=True)
+    assert f"at {where}:" in str(excinfo.value)
+    assert not (prepared.paths.workspace / LEC).exists()
+
+
+def test_a_missing_plan_file_is_an_error(prepared: Settings) -> None:
+    with pytest.raises(MitsyncError, match="not found"):
+        organize.apply_plan(prepared, prepared.paths.plans_dir / "nope.json", yes=True)
+
+
+def test_unknown_and_duplicate_file_ids_are_rejected(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    plan = write_plan(
+        prepared,
+        [
+            place("101", LEC),
+            place("101", "Machine Learning/other/Lec03_2026.pdf"),
+            place("999", "Machine Learning/other/ghost.pdf"),
+        ],
+    )
+    report = organize.apply_plan(prepared, plan, yes=True)
+    assert [r["destination"] for r in report.applied] == [LEC]
+    reasons = {r["file_id"] + ":" + r["destination"]: r["reason"] for r in report.rejected}
+    assert "duplicate" in reasons["101:Machine Learning/other/Lec03_2026.pdf"]
+    assert "no mirrored file" in reasons["999:Machine Learning/other/ghost.pdf"]
+
+
+def test_two_placements_may_not_share_a_destination(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="a.pdf")
+    add_mirror_file(prepared, uuid="u2", canvas_id=102, name="b.pdf")
+    dest = "Machine Learning/other/same.pdf"
+    report = organize.apply_plan(
+        prepared, write_plan(prepared, [place("101", dest), place("102", dest)]), yes=True
+    )
+    assert len(report.applied) == 1
+    assert "same destination" in report.rejected[0]["reason"]
+
+
+def test_a_source_missing_from_the_mirror_is_rejected(prepared: Settings) -> None:
+    source = add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    source.unlink()
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+    assert not report.applied
+    assert "missing from the mirror" in report.rejected[0]["reason"]
+
+
+def test_an_already_filed_file_is_rejected(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+    again = write_plan(prepared, [place("101", "Machine Learning/other/x.pdf")], name="again")
+    report = organize.apply_plan(prepared, again, yes=True)
+    assert "already filed" in report.rejected[0]["reason"]
+
+
+def test_a_different_file_at_the_destination_is_never_overwritten(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf", body=b"new bytes")
+    dest = prepared.paths.workspace / LEC
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"mine, hands off")
+
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+
+    assert dest.read_bytes() == b"mine, hands off"
+    assert not report.applied
+    assert "different file already exists" in report.rejected[0]["reason"]
+    assert filed_path_of(prepared, "u1") is None
+
+
+def test_an_identical_file_at_the_destination_is_skipped_and_recorded(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf", body=b"same")
+    dest = prepared.paths.workspace / LEC
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"same")
+
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+
+    assert not report.applied and not report.rejected
+    assert "identical" in report.skipped[0]["status"]
+    assert dest.read_bytes() == b"same"
+    assert filed_path_of(prepared, "u1") == LEC
 
 
 # --------------------------------------------------------------------------
 # apply / undo
 # --------------------------------------------------------------------------
-def test_apply_links_from_the_mirror_and_leaves_it_intact(prepared: Settings) -> None:
+def test_a_good_plan_links_from_the_mirror_and_leaves_it_intact(prepared: Settings) -> None:
     source = add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
 
-    report = organize.apply_plan(prepared, the_plan.path)
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
 
-    dest = prepared.paths.workspace / "Machine Learning/lectures/Lec03_2026.pdf"
+    dest = prepared.paths.workspace / LEC
     assert dest.exists()
     assert source.exists(), "the Canvas mirror must remain the source of truth"
     assert source.read_bytes() == dest.read_bytes()
+    assert report.confirmed and not report.rejected
     assert report.applied[0]["mode"] in ("hardlink", "copy")
-    assert filed_path_of(prepared, "u1") == "Machine Learning/lectures/Lec03_2026.pdf"
+    assert report.applied[0]["reason"] == "test"
+    assert filed_path_of(prepared, "u1") == LEC
     assert report.undo_log is not None and report.undo_log.exists()
+    assert json.loads(report.undo_log.read_text())["plan_id"] == "plan"
 
 
-def test_plan_apply_undo_is_a_byte_identical_round_trip(prepared: Settings) -> None:
+def test_nothing_is_applied_without_confirmation(
+    prepared: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": staticmethod(lambda: False)})())
+
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]))
+
+    assert not report.confirmed
+    assert not report.applied
+    assert report.skipped[0]["status"] == "not confirmed"
+    assert not (prepared.paths.workspace / LEC).exists()
+
+
+def test_apply_undo_is_a_byte_identical_round_trip(prepared: Settings) -> None:
     source = add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
     before = {
         p.relative_to(prepared.paths.workspace).as_posix(): p.read_bytes()
@@ -336,8 +350,7 @@ def test_plan_apply_undo_is_a_byte_identical_round_trip(prepared: Settings) -> N
         if p.is_file() and "_agent" not in p.parts
     }
 
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
-    report = organize.apply_plan(prepared, the_plan.path)
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
     assert report.applied
 
     undone = organize.undo(prepared, "latest")
@@ -355,91 +368,94 @@ def test_plan_apply_undo_is_a_byte_identical_round_trip(prepared: Settings) -> N
 
 def test_hardlink_falls_back_to_copy(prepared: Settings, monkeypatch: pytest.MonkeyPatch) -> None:
     add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
 
     def boom(*_a: object, **_k: object) -> None:
         raise OSError(18, "Invalid cross-device link")
 
     monkeypatch.setattr(os, "link", boom)
-    report = organize.apply_plan(prepared, the_plan.path)
+    report = organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
 
     assert report.applied[0]["mode"] == "copy"
-    dest = prepared.paths.workspace / "Machine Learning/lectures/Lec03_2026.pdf"
+    dest = prepared.paths.workspace / LEC
     assert dest.exists() and dest.stat().st_nlink == 1
 
 
 def test_symlink_mode_is_honoured(prepared: Settings) -> None:
     add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
     prepared.organize.link_mode = "symlink"
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
-    organize.apply_plan(prepared, the_plan.path)
-    dest = prepared.paths.workspace / "Machine Learning/lectures/Lec03_2026.pdf"
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)]), yes=True)
+    dest = prepared.paths.workspace / LEC
     assert dest.is_symlink()
     organize.undo(prepared, None)
     assert not dest.exists() and not dest.is_symlink()
 
 
-def test_identical_destination_is_skipped_not_overwritten(prepared: Settings) -> None:
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf", body=b"same")
-    dest = prepared.paths.workspace / "Machine Learning/lectures/Lec03_2026.pdf"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"same")
+# --------------------------------------------------------------------------
+# pre-existing files
+# --------------------------------------------------------------------------
+def _loose(settings: Settings, rel: str, body: bytes = b"mine") -> Path:
+    path = settings.paths.workspace / rel
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(body)
+    return path
 
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
-    report = organize.apply_plan(prepared, the_plan.path)
+
+HW = "Machine Learning/assignments/hw-01/15_095_hw1.pdf"
+
+
+def test_preexisting_files_are_refused_without_include_existing(prepared: Settings) -> None:
+    loose = _loose(prepared, "Machine Learning/HW1/15_095_hw1.pdf")
+    plan = write_plan(prepared, [place("existing:Machine Learning/HW1/15_095_hw1.pdf", HW)])
+
+    report = organize.apply_plan(prepared, plan, yes=True)
 
     assert not report.applied
-    assert report.skipped and "identical" in report.skipped[0]["status"]
-    assert dest.read_bytes() == b"same"
-    assert filed_path_of(prepared, "u1") == "Machine Learning/lectures/Lec03_2026.pdf"
+    assert "--include-existing" in report.rejected[0]["reason"]
+    assert loose.exists() and loose.read_bytes() == b"mine"
 
 
-def test_different_destination_is_suffixed_and_flagged(prepared: Settings) -> None:
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf", body=b"new bytes")
-    dest = prepared.paths.workspace / "Machine Learning/lectures/Lec03_2026.pdf"
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    dest.write_bytes(b"mine, hands off")
+def test_preexisting_files_move_with_the_flag_and_undo_restores_them(prepared: Settings) -> None:
+    loose = _loose(prepared, "Machine Learning/HW1/15_095_hw1.pdf", b"notebook bytes")
+    plan = write_plan(prepared, [place("existing:Machine Learning/HW1/15_095_hw1.pdf", HW)])
 
-    the_plan = organize.plan(prepared, RecordingJudge(prepared))
-    report = organize.apply_plan(prepared, the_plan.path)
+    report = organize.apply_plan(prepared, plan, yes=True, include_existing=True)
 
-    assert dest.read_bytes() == b"mine, hands off"
-    suffixed = dest.with_name("Lec03_2026-2.pdf")
-    assert suffixed.exists() and suffixed.read_bytes() == b"new bytes"
-    assert report.flagged and "collision" in report.flagged[0]["status"]
+    moved = prepared.paths.workspace / HW
+    assert report.applied[0]["mode"] == "move"
+    assert moved.exists() and not loose.exists()
+
+    undone = organize.undo(prepared, "latest")
+    assert not undone.refused
+    assert loose.exists() and loose.read_bytes() == b"notebook bytes"
+    assert not moved.exists()
 
 
-def test_low_confidence_placements_are_held_for_review(prepared: Settings) -> None:
-    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="mystery.pdf")
-    judge = FixedJudge(
-        {
-            "placements": [
-                {
-                    "file_id": "101",
-                    "destination": "Machine Learning/other/mystery.pdf",
-                    "reason": "no idea",
-                    "confidence": 0.2,
-                }
-            ]
-        }
+@pytest.mark.parametrize(
+    ("file_id", "why"),
+    [
+        ("existing:AI_Studio/nandatown/README.md", "ignore_globs"),
+        ("existing:Machine Learning/nope.pdf", "does not exist"),
+        ("existing:../outside.pdf", "workspace-relative"),
+        ("existing:Optimization/notes.pdf", "mapped course folder"),
+    ],
+)
+def test_bad_existing_sources_are_rejected(prepared: Settings, file_id: str, why: str) -> None:
+    _loose(prepared, "AI_Studio/nandatown/README.md")
+    report = organize.apply_plan(
+        prepared,
+        write_plan(prepared, [place(file_id, "Machine Learning/other/x.pdf")]),
+        yes=True,
+        include_existing=True,
     )
-    the_plan = organize.plan(prepared, judge)
-    report = organize.apply_plan(prepared, the_plan.path)
-
-    assert the_plan.entries[0].needs_review
     assert not report.applied
-    assert report.skipped[0]["status"] == "low-confidence"
+    assert why in report.rejected[0]["reason"]
 
 
 def test_undo_refuses_when_the_file_changed_since_apply(prepared: Settings) -> None:
-    ws = prepared.paths.workspace
-    loose = ws / "Machine Learning" / "HW1" / "15_095_hw1.pdf"
-    loose.parent.mkdir(parents=True, exist_ok=True)
-    loose.write_bytes(b"original")
-
-    the_plan = organize.plan(prepared, RecordingJudge(prepared), include_existing=True)
-    organize.apply_plan(prepared, the_plan.path, yes=True)
-    moved = ws / "Machine Learning/assignments/15_095_hw1.pdf"
+    loose = _loose(prepared, "Machine Learning/HW1/15_095_hw1.pdf", b"original")
+    plan = write_plan(prepared, [place("existing:Machine Learning/HW1/15_095_hw1.pdf", HW)])
+    organize.apply_plan(prepared, plan, yes=True, include_existing=True)
+    moved = prepared.paths.workspace / HW
     assert moved.exists()
 
     moved.write_bytes(b"edited since")
@@ -450,159 +466,167 @@ def test_undo_refuses_when_the_file_changed_since_apply(prepared: Settings) -> N
     assert not loose.exists()
 
 
+def test_ignored_paths_cover_the_directory_itself(prepared: Settings) -> None:
+    assert organize.is_ignored(prepared, "AI_Studio/nandatown")
+    assert organize.is_ignored(prepared, "AI_Studio/nandatown/src/app.py")
+    assert not organize.is_ignored(prepared, "AI_Studio/notes.pdf")
+
+
 # --------------------------------------------------------------------------
-# pre-existing files
+# skips, replacing a filed copy, refiling under a new name
 # --------------------------------------------------------------------------
-def test_preexisting_files_are_not_planned_without_include_existing(
+def write_plan_doc(settings: Settings, doc: dict[str, Any], name: str = "plan") -> Path:
+    path = settings.paths.plans_dir / f"{name}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(doc))
+    return path
+
+
+def skip_reason_of(settings: Settings, uuid: str) -> str | None:
+    with Manifest(settings.paths.manifest_db) as man:
+        rec = man.get_file(uuid)
+    return rec.skip_reason if rec else None
+
+
+REG = "Machine Learning/lectures/Regression.pdf"
+
+
+def test_a_skipped_file_is_not_offered_again_and_undo_brings_it_back(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="PreClass_Regression.pdf")
+    plan = write_plan_doc(
+        prepared, {"placements": [], "skips": [{"file_id": "101", "reason": "pre-class deck"}]}
+    )
+
+    report = organize.apply_plan(prepared, plan, yes=True)
+
+    assert not report.rejected
+    assert skip_reason_of(prepared, "u1") == "pre-class deck"
+    assert organize.unfiled(prepared)["files"] == []
+
+    organize.undo(prepared, "latest")
+    assert skip_reason_of(prepared, "u1") is None
+    assert [f["file_id"] for f in organize.unfiled(prepared)["files"]] == ["101"]
+
+
+def test_skipping_a_filed_file_removes_its_copy_only_with_include_existing(
     prepared: Settings,
 ) -> None:
-    loose = prepared.paths.workspace / "Machine Learning" / "HW1" / "15_095_hw1.pdf"
-    loose.parent.mkdir(parents=True, exist_ok=True)
-    loose.write_bytes(b"mine")
-
-    result = organize.plan(prepared, RecordingJudge(prepared))
-    assert result.entries == []
-    assert loose.exists()
-
-
-def test_preexisting_files_are_not_moved_without_yes(
-    prepared: Settings, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    loose = prepared.paths.workspace / "Machine Learning" / "HW1" / "15_095_hw1.pdf"
-    loose.parent.mkdir(parents=True, exist_ok=True)
-    loose.write_bytes(b"mine")
-
-    the_plan = organize.plan(prepared, RecordingJudge(prepared), include_existing=True)
-    assert the_plan.entries and the_plan.entries[0].kind == "existing"
-
-    monkeypatch.setattr("sys.stdin", type("S", (), {"isatty": staticmethod(lambda: False)})())
-    report = organize.apply_plan(prepared, the_plan.path)  # no yes=True
-
-    assert not report.applied
-    assert report.skipped[0]["status"] == "needs --yes"
-    assert loose.exists() and loose.read_bytes() == b"mine"
-
-
-def test_preexisting_files_move_with_yes_and_undo_restores_them(prepared: Settings) -> None:
-    ws = prepared.paths.workspace
-    loose = ws / "Machine Learning" / "recitation 1" / "Recitation_1_Linear_Regression_v1.ipynb"
-    loose.parent.mkdir(parents=True, exist_ok=True)
-    loose.write_bytes(b"notebook bytes")
-
-    the_plan = organize.plan(prepared, RecordingJudge(prepared), include_existing=True)
-    organize.apply_plan(prepared, the_plan.path, yes=True)
-
-    moved = ws / "Machine Learning/recitations/Recitation_1_Linear_Regression_v1.ipynb"
-    assert moved.exists() and not loose.exists()
-
-    report = organize.undo(prepared, "latest")
-    assert not report.refused
-    assert loose.exists() and loose.read_bytes() == b"notebook bytes"
-    assert not moved.exists()
-
-
-def test_already_bucketed_files_are_left_alone(prepared: Settings) -> None:
-    filed = prepared.paths.workspace / "Machine Learning" / "lectures" / "keep.pdf"
-    filed.parent.mkdir(parents=True, exist_ok=True)
-    filed.write_text("x")
-    result = organize.plan(prepared, RecordingJudge(prepared), include_existing=True)
-    assert result.entries == []
-
-
-# --------------------------------------------------------------------------
-# course map
-# --------------------------------------------------------------------------
-def test_suggest_course_map_writes_nothing_without_apply(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
-
-    report = organize.suggest_course_map(settings, RulesJudge(settings))
-
-    assert report.written is False
-    assert not (settings.paths.config_dir / "courses.yml").exists()
-    assert report.mappings and report.mappings[0]["folder"] == "Machine Learning"
-    assert "courses:" in report.yaml_text
-
-
-def test_suggest_course_map_apply_writes_and_preserves_hand_edits(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="15_095_hw1.pdf")
-    write_course_map(
-        settings,
-        [{"canvas_id": 1, "folder": "My Own Name", "course_number": "15.095", "aliases": ["ML"]}],
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="a.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+    plan = write_plan_doc(
+        prepared, {"placements": [], "skips": [{"file_id": "101", "reason": "x"}]}, "p2"
     )
 
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
+    refused = organize.validate_plan(prepared, plan)
+    assert not refused.skips and refused.rejected[0]["destination"] == "-"
+    assert "needs --include-existing" in refused.rejected[0]["reason"]
 
-    assert report.written is True
-    entries = organize.load_course_map(settings)
-    assert entries[0]["folder"] == "My Own Name", "a hand-edited folder must survive"
-    assert entries[0]["aliases"] == ["ML"]
-    assert report.conflicts and report.conflicts[0]["proposed_folder"] == "Machine Learning"
-    assert 1 in report.preserved and not report.added
+    organize.apply_plan(prepared, plan, yes=True, include_existing=True)
+    dest = prepared.paths.workspace / REG
+    assert not dest.exists()
+    assert filed_path_of(prepared, "u1") is None and skip_reason_of(prepared, "u1") == "x"
+
+    undone = organize.undo(prepared, "latest")
+    assert not undone.refused and not undone.errors
+    assert dest.exists()
+    assert filed_path_of(prepared, "u1") == REG and skip_reason_of(prepared, "u1") is None
 
 
-def test_suggest_course_map_adds_new_courses(settings: Settings) -> None:
-    write_naming(settings)
-    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
-    add_mirror_file(
-        settings, uuid="u2", canvas_id=102, name="b.pdf", mirror_folder="AI", course_canvas_id=2
+def test_a_post_class_deck_replaces_the_filed_pre_class_copy(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="pre", canvas_id=101, name="Pre.pdf", body=b"pre deck")
+    add_mirror_file(prepared, uuid="post", canvas_id=102, name="Post.pdf", body=b"post deck")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+
+    report = organize.apply_plan(
+        prepared, write_plan(prepared, [place("102", REG)], "p2"), yes=True
     )
-    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning", "aliases": []}])
 
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
+    dest = prepared.paths.workspace / REG
+    assert not report.rejected and dest.read_bytes() == b"post deck"
+    assert filed_path_of(prepared, "post") == REG
+    assert filed_path_of(prepared, "pre") is None
+    assert skip_reason_of(prepared, "pre") == f"replaced by 102 at {REG}"
+    assert organize.unfiled(prepared)["files"] == []
 
-    assert report.added == [2]
-    assert {e["canvas_id"] for e in organize.load_course_map(settings)} == {1, 2}
+    undone = organize.undo(prepared, "latest")
 
-
-def test_observed_course_numbers_are_mined_from_filenames(prepared: Settings) -> None:
-    path = prepared.paths.workspace / "Machine Learning" / "15_095_hw1.pdf"
-    path.write_text("x")
-    assert organize.observed_course_numbers(prepared) == {"15.095": ["Machine Learning"]}
-
-
-def test_suggest_course_map_without_any_canvas_courses(settings: Settings) -> None:
-    write_naming(settings)
-    report = organize.suggest_course_map(settings, RulesJudge(settings), apply=True)
-    assert report.mappings == [] and report.written is False
+    assert not undone.refused and not undone.errors
+    assert dest.read_bytes() == b"pre deck"
+    assert filed_path_of(prepared, "pre") == REG and skip_reason_of(prepared, "pre") is None
+    assert filed_path_of(prepared, "post") is None
 
 
-# --------------------------------------------------------------------------
-# the agent driver round trip (task file -> result -> replay)
-# --------------------------------------------------------------------------
-def test_agent_driver_task_carries_the_rules_and_replays(prepared: Settings) -> None:
-    from mitsync.cli import _PreJudged
-    from mitsync.errors import PendingJudgment
-    from mitsync.llm.agent_driver import AgentJudge, resolve_task
+def test_a_filed_copy_the_student_changed_is_never_replaced(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="pre", canvas_id=101, name="Pre.pdf", body=b"pre deck")
+    add_mirror_file(prepared, uuid="post", canvas_id=102, name="Post.pdf", body=b"post deck")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+    (prepared.paths.workspace / REG).write_bytes(b"pre deck + my annotations")
 
+    report = organize.validate_plan(prepared, write_plan(prepared, [place("102", REG)], "p2"))
+
+    assert not report.entries
+    assert "changed since it was filed" in report.rejected[0]["reason"]
+
+
+def test_renaming_a_filed_copy_needs_include_existing_and_undoes(prepared: Settings) -> None:
     add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)], "p1"), yes=True)
+    plan = write_plan(prepared, [place("101", REG)], "p2")
 
-    with pytest.raises(PendingJudgment) as excinfo:
-        organize.plan(prepared, AgentJudge(prepared))
+    refused = organize.validate_plan(prepared, plan)
+    assert "needs --include-existing" in refused.rejected[0]["reason"]
 
-    task_doc = json.loads(excinfo.value.task_path.read_text())
-    assert task_doc["origin_command"] == "organize plan"
-    assert task_doc["rules"] == NAMING_MD
-    assert task_doc["payload"]["files"][0]["display_name"] == "Lec03_2026.pdf"
-    assert task_doc["payload"]["files"][0]["course"] == "Machine Learning"
+    report = organize.apply_plan(prepared, plan, yes=True, include_existing=True)
 
-    answer = prepared.paths.state_dir / "answer.json"
-    answer.write_text(
+    ws = prepared.paths.workspace
+    assert report.applied[0]["mode"] == "refile"
+    assert (ws / REG).exists() and not (ws / LEC).exists()
+    assert filed_path_of(prepared, "u1") == REG
+
+    organize.undo(prepared, "latest")
+    assert (ws / LEC).exists() and not (ws / REG).exists()
+    assert filed_path_of(prepared, "u1") == LEC
+
+
+def test_a_filed_copy_cannot_be_moved_as_an_existing_file(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Lec03_2026.pdf")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", LEC)], "p1"), yes=True)
+
+    plan = write_plan(prepared, [place(f"existing:{LEC}", REG)], "p2")
+    report = organize.validate_plan(prepared, plan, include_existing=True)
+
+    assert "place it by that file_id" in report.rejected[0]["reason"]
+
+
+def test_unfiled_carries_module_item_titles_and_case_links(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="InClass_Trees.pdf")
+    meta = prepared.paths.canvas_mirror / "ML Mirror" / "_meta" / "modules.json"
+    meta.parent.mkdir(parents=True, exist_ok=True)
+    items = [
+        {"id": 1, "type": "SubHeader", "title": "Lecture 5 - Regression Trees"},
+        {"id": 2, "type": "File", "content_id": 101, "title": "PostClass CART Regression Slides"},
+        {"id": 3, "type": "ExternalTool", "title": "OCP Group", "html_url": "https://c/items/3"},
+    ]
+    meta.write_text(
         json.dumps(
             {
-                "placements": [
-                    {
-                        "file_id": "101",
-                        "destination": "Machine Learning/lectures/03-trees.pdf",
-                        "reason": "module Week 3",
-                        "confidence": 0.95,
-                    }
-                ]
+                "fetched_at": "x",
+                "course_canvas_id": 1,
+                "items": [{"name": "Lectures 5 and 6", "items": items}],
             }
         )
     )
-    validated = resolve_task(excinfo.value.task_path, answer)
-    replayed = organize.plan(prepared, _PreJudged(validated))
 
-    assert [e.destination for e in replayed.entries] == ["Machine Learning/lectures/03-trees.pdf"]
+    doc = organize.unfiled(prepared)
+
+    [f] = doc["files"]
+    assert f["module_item_title"] == "PostClass CART Regression Slides"
+    assert f["module_subheader"] == "Lecture 5 - Regression Trees"
+    assert doc["links"] == [
+        {
+            "course": "Machine Learning",
+            "title": "OCP Group",
+            "module_name": "Lectures 5 and 6",
+            "canvas_url": "https://c/items/3",
+        }
+    ]

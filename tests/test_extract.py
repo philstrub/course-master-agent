@@ -8,8 +8,8 @@ from pathlib import Path
 import frontmatter
 import pytest
 
-from mitsync import extract as extract_mod
-from mitsync.config import Settings
+from mitsync.core.config import Settings
+from mitsync.knowledge import extract as extract_mod
 
 
 def make_pdf(path: Path, pages: tuple[str, ...] = ("page one text", "page two text")) -> Path:

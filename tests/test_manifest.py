@@ -1,10 +1,30 @@
+"""
+# Manifest Tests
+
+The DuckDB schema, upsert semantics, and the two fields upsert must not
+clobber.
+
+Covers the round trip for file and course rows, filtered listing (by course
+and by unfiled-only), the append-only `runs` log and its per-command
+`last_run`, and `synthetic_uuid` for files Canvas hands over without one.
+
+The load-bearing cases are the ownership rules between modules: `first_seen`
+survives a re-sync, and a `filed_path` written by `organize` is not blanked by
+a later `sync` upsert that carries `None`. Those two are why `upsert_file`
+reads the existing row first, and a regression in either silently rewrites
+history or unfiles the student's material.
+
+`db` is a local fixture -- a fresh `manifest.duckdb` under `tmp_path`. These
+tests need no workspace and do not use the `settings` fixture.
+"""
+
 from __future__ import annotations
 
 from pathlib import Path
 
 import pytest
 
-from mitsync.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
+from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
 
 
 def make_file(uuid: str = "uuid-1", **over) -> FileRecord:
@@ -33,7 +53,10 @@ def make_file(uuid: str = "uuid-1", **over) -> FileRecord:
 
 @pytest.fixture
 def db(tmp_path: Path) -> Path:
-    return tmp_path / "state" / "manifest.duckdb"
+    """The manifest path inside a state/ dir, as `Paths.ensure()` would leave it."""
+    state = tmp_path / "state"
+    state.mkdir()
+    return state / "manifest.duckdb"
 
 
 def test_open_creates_schema_and_is_idempotent(db: Path):

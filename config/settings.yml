@@ -5,34 +5,36 @@ canvas:
   base_url: https://canvas.mit.edu/api/v1
   token_env: CANVAS_TOKEN        # name of the env var holding the Canvas token
   per_page: 100
-  term: auto                     # "auto" = only terms whose start/end cover today
+  term: auto                     # "auto" = only terms whose start/end cover today.
+                                 # With "auto", when at least one course sits in a
+                                 # properly dated current term, courses whose term
+                                 # carries no dates at all (Canvas's "Default Term")
+                                 # are excluded and reported in the sync report.
+  exclude_courses: []            # never sync these: a Canvas course id, or a
+                                 # case-insensitive substring of the course name
+                                 # or course_code. Example (already handled by the
+                                 # dateless-term rule above -- shown here only to
+                                 # document the mechanism):
+                                 #   - 17557   # F-1 Immigration Orientation eCourse
   max_retries: 5
   min_rate_limit_remaining: 100.0  # back off when Canvas reports less than this
 
-llm:
-  driver: auto                   # auto | api | agent | rules
-                                 # auto -> api when the api key env var is set, else agent
-  provider: anthropic            # anthropic | openai | google | openai_compatible
-  model: claude-opus-5
-  api_key_env: ANTHROPIC_API_KEY
-  base_url: null                 # required for openai_compatible
-  max_output_tokens: 8000
-  temperature: 0
-
 calendar:
-  cli: ical-guy                  # EventKit CLI emitting JSON; ekctl also works
+  # MitsyncCalendar.app via its shim (`make calendar-helper`), so the OpenClaw
+  # gateway can hold its own Calendar grant; ical-guy only works from a terminal.
+  cli: /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-calendar
   lookahead_days: 14
 
 graph:
-  backend: duckdb                # duckdb | neo4j
-  neo4j:
-    uri: null
-    user: null
-    password_env: null
+  backend: duckdb                # the only implemented backend
 
 organize:
-  include_existing: false        # true = also file pre-existing workspace files
   link_mode: hardlink            # hardlink | copy | symlink
+
+email:                           # the morning brief; the recipient is fixed by config, never by the agent
+  # sender and to come from MITSYNC_EMAIL_SENDER / MITSYNC_EMAIL_TO in _agent/.env (kept out of git)
+  password_env: GMAIL_APP_PASSWORD   # a Gmail app password, kept in _agent/.env
+  node: /Users/filippostrub/.nvm/versions/node/v26.10.0/bin/node   # the LaunchAgent has no nvm, so the absolute path
 
 # Paths (workspace-relative) never scanned, mirrored, or organized.
 ignore_globs:
@@ -41,4 +43,6 @@ ignore_globs:
   - "**/site-packages/**"
   - "**/node_modules/**"
   - "**/__pycache__/**"
-  - "AI_Studio/nandatown/**"
+  # Broad on purpose: this list REPLACES DEFAULT_IGNORE_GLOBS wholesale, so it must
+  # not be narrower than the default. Matches nandatown wherever it appears.
+  - "**/nandatown/**"

@@ -13,18 +13,18 @@ from pathlib import Path
 
 import pytest
 
-from mitsync import env as env_mod
-from mitsync.config import Settings, load_settings
-from mitsync.env import (
+from mitsync.cli import _secret_source
+from mitsync.core import env as env_mod
+from mitsync.core.config import load_settings
+from mitsync.core.env import (
     ENVIRONMENT,
     NOT_SET,
     OPENCLAW_DOTENV,
     REPO_DOTENV,
     load_dotenv,
     parse_dotenv,
-    source_of,
 )
-from mitsync.paths import Paths
+from mitsync.core.paths import Paths
 
 SECRET = "sentinel-not-a-real-token-0001"
 OTHER = "sentinel-not-a-real-token-0002"
@@ -33,15 +33,12 @@ REAL = "sentinel-not-a-real-token-0003"
 
 @pytest.fixture(autouse=True)
 def _isolate(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
-    """Fresh loader state, a temp HOME, and no leftover sentinel vars."""
-    env_mod.reset()
+    """A temp HOME and no leftover sentinel vars."""
     home = tmp_path / "home"
     home.mkdir()
     monkeypatch.setenv("HOME", str(home))
-    for name in ("CANVAS_TOKEN", "TEST_LLM_KEY", "ANTHROPIC_API_KEY", "MITSYNC_DOTENV"):
+    for name in ("CANVAS_TOKEN", "ANTHROPIC_API_KEY", "MITSYNC_DOTENV"):
         monkeypatch.delenv(name, raising=False)
-    yield
-    env_mod.reset()
 
 
 def _repo(tmp_path: Path, body: str) -> Paths:
@@ -66,27 +63,24 @@ def test_value_read_from_repo_dotenv(tmp_path: Path):
     import os
 
     assert os.environ["CANVAS_TOKEN"] == SECRET
-    assert source_of("CANVAS_TOKEN") == REPO_DOTENV
 
 
 def test_openclaw_dotenv_used_as_fallback(tmp_path: Path):
     paths = Paths(workspace=tmp_path, repo=tmp_path / "_agent")  # no repo .env
     _openclaw(f"CANVAS_TOKEN={SECRET}\n")
-    load_dotenv(paths)
+    assert load_dotenv(paths) == {"CANVAS_TOKEN": OPENCLAW_DOTENV}
     import os
 
     assert os.environ["CANVAS_TOKEN"] == SECRET
-    assert source_of("CANVAS_TOKEN") == OPENCLAW_DOTENV
 
 
 def test_repo_dotenv_wins_over_openclaw(tmp_path: Path):
     paths = _repo(tmp_path, f"CANVAS_TOKEN={SECRET}\n")
     _openclaw(f"CANVAS_TOKEN={OTHER}\n")
-    load_dotenv(paths)
+    assert load_dotenv(paths) == {"CANVAS_TOKEN": REPO_DOTENV}
     import os
 
     assert os.environ["CANVAS_TOKEN"] == SECRET
-    assert source_of("CANVAS_TOKEN") == REPO_DOTENV
 
 
 def test_real_environment_wins_over_both(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
@@ -97,7 +91,6 @@ def test_real_environment_wins_over_both(tmp_path: Path, monkeypatch: pytest.Mon
     import os
 
     assert os.environ["CANVAS_TOKEN"] == REAL
-    assert source_of("CANVAS_TOKEN") == ENVIRONMENT
 
 
 def test_openclaw_fills_a_key_the_repo_file_omits(tmp_path: Path):
@@ -109,8 +102,24 @@ def test_openclaw_fills_a_key_the_repo_file_omits(tmp_path: Path):
     }
 
 
-def test_source_of_unset_variable():
-    assert source_of("MITSYNC_DEFINITELY_UNSET_VAR") == NOT_SET
+# --------------------------------------------------------------------------
+# doctor's provenance label, built from the mapping load_dotenv returns
+# --------------------------------------------------------------------------
+def test_secret_source_labels_a_dotenv_key(tmp_path: Path):
+    sources = load_dotenv(_repo(tmp_path, f"CANVAS_TOKEN={SECRET}\n"))
+    assert _secret_source(sources, "CANVAS_TOKEN") == REPO_DOTENV
+
+
+def test_secret_source_labels_a_real_environment_key(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+):
+    monkeypatch.setenv("CANVAS_TOKEN", REAL)
+    sources = load_dotenv(_repo(tmp_path, f"CANVAS_TOKEN={SECRET}\n"))
+    assert _secret_source(sources, "CANVAS_TOKEN") == ENVIRONMENT
+
+
+def test_secret_source_of_unset_variable():
+    assert _secret_source({}, "MITSYNC_DEFINITELY_UNSET_VAR") == NOT_SET
 
 
 # --------------------------------------------------------------------------
@@ -147,7 +156,7 @@ def test_parse_quoting_comments_export_whitespace_and_equals():
 
 
 def test_malformed_lines_are_skipped_without_raising(caplog: pytest.LogCaptureFixture):
-    with caplog.at_level(logging.DEBUG, logger="mitsync.env"):
+    with caplog.at_level(logging.DEBUG, logger="mitsync.core.env"):
         parsed = parse_dotenv(
             "NO_EQUALS_HERE\n=novalue\n1BAD=x\nBAD KEY=x\nGOOD=ok\n", origin="fake.env"
         )
@@ -163,7 +172,7 @@ def test_unreadable_dotenv_is_not_fatal(tmp_path: Path):
 
 
 # --------------------------------------------------------------------------
-# escape hatch and idempotence
+# escape hatch and reloading
 # --------------------------------------------------------------------------
 def test_mitsync_dotenv_zero_disables_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("MITSYNC_DOTENV", "0")
@@ -172,30 +181,31 @@ def test_mitsync_dotenv_zero_disables_loading(tmp_path: Path, monkeypatch: pytes
     import os
 
     assert "CANVAS_TOKEN" not in os.environ
-    assert source_of("CANVAS_TOKEN") == NOT_SET
 
 
-def test_double_load_is_idempotent(tmp_path: Path):
+def test_reloading_reports_the_same_mapping_and_changes_nothing(tmp_path: Path):
     paths = _repo(tmp_path, f"CANVAS_TOKEN={SECRET}\n")
     first = load_dotenv(paths)
-    (paths.repo / ".env").write_text(f"CANVAS_TOKEN={OTHER}\n")
-    second = load_dotenv(paths)  # cheap no-op; must not re-read or overwrite
+    second = load_dotenv(paths)
     import os
 
     assert first == second == {"CANVAS_TOKEN": REPO_DOTENV}
     assert os.environ["CANVAS_TOKEN"] == SECRET
 
 
+def test_a_second_load_never_overwrites_an_already_injected_value(tmp_path: Path):
+    paths = _repo(tmp_path, f"CANVAS_TOKEN={SECRET}\n")
+    load_dotenv(paths)
+    (paths.repo / ".env").write_text(f"CANVAS_TOKEN={OTHER}\n")
+    load_dotenv(paths)
+    import os
+
+    assert os.environ["CANVAS_TOKEN"] == SECRET
+
+
 # --------------------------------------------------------------------------
 # the bug this fixes
 # --------------------------------------------------------------------------
-def test_resolve_driver_is_api_when_key_only_in_dotenv(tmp_path: Path):
-    settings = Settings()  # llm.api_key_env defaults to ANTHROPIC_API_KEY
-    assert settings.resolve_driver(None) == "agent"  # before loading: no key
-    load_dotenv(_repo(tmp_path, f"ANTHROPIC_API_KEY={SECRET}\n"))
-    assert settings.resolve_driver(None) == "api"
-
-
 def test_load_settings_triggers_dotenv_loading(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     repo = tmp_path / "_agent"
     (repo / "config").mkdir(parents=True)

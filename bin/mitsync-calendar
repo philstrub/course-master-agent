@@ -1,0 +1,35 @@
+#!/bin/bash
+#
+# mitsync-calendar -- ical-guy's read-only query, answered by MitsyncCalendar.app.
+#
+#   mitsync-calendar events list --from YYYY-MM-DD --to YYYY-MM-DD --format json --group-by none
+#
+# Set `calendar.cli` in config/settings.yml to this file's absolute path.
+# The app is launched through LaunchServices (`open`) rather than exec'd, so
+# macOS treats it, not the OpenClaw gateway's node, as the process asking
+# for Calendar access. See calendar-helper/main.swift for why that matters.
+# `open` does not forward stdout, so the app writes to temp files that are
+# replayed here, along with its exit status.
+
+set -euo pipefail
+
+APP="${MITSYNC_CALENDAR_APP:-${HOME}/Applications/MitsyncCalendar.app}"
+if [ ! -d "${APP}" ]; then
+  echo "mitsync-calendar: ${APP} not found; build it with \`make calendar-helper\` in _agent/" >&2
+  exit 69
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "${tmp}"' EXIT
+
+# -W wait for it to exit, -g stay in the background, -n a fresh instance per query.
+/usr/bin/open -W -g -n -a "${APP}" --args "$@" \
+  --out "${tmp}/out" --err "${tmp}/err" --status "${tmp}/status"
+
+[ -f "${tmp}/out" ] && cat "${tmp}/out"
+[ -f "${tmp}/err" ] && cat "${tmp}/err" >&2
+if [ ! -f "${tmp}/status" ]; then
+  echo "mitsync-calendar: MitsyncCalendar exited without reporting a status" >&2
+  exit 70
+fi
+exit "$(cat "${tmp}/status")"

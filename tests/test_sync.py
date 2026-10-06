@@ -1,3 +1,37 @@
+"""
+# Sync Tests
+
+Mirroring Canvas end to end against a fake Canvas, and the invariants the
+mirror has to keep.
+
+`FakeCanvas` serves the fixtures under `tests/fixtures/canvas/` through
+`httpx.MockTransport`, with switches for the failure shapes that matter
+(`files_403`, `pages_404`). Term dates in the fixtures are placeholders
+rewritten relative to today at import, so the "current term" tests do not rot.
+Nothing here touches the network or a real token.
+
+What the file is really guarding:
+
+* **Idempotence and catch-up.** A second run downloads nothing, a missing
+  mirror file is re-fetched, `--full` re-checks everything without creating
+  spurious versions, and a file whose bytes changed is re-downloaded with the
+  previous version kept beside it rather than overwritten.
+* **State ownership.** `first_seen` is stable across runs and a `filed_path`
+  written by `organize` survives a re-sync.
+* **Partial failure is not total failure.** A 403 on Files falls back to
+  walking modules, a 404 from a disabled Pages tab is a notice rather than an
+  error, and a download failure is reported on the run rather than raised --
+  but a run that recorded errors still exits non-zero.
+* **Course selection.** Explicit terms, the dateless "Default Term" rule, and
+  `canvas.exclude_courses`.
+* **The metadata contract.** The `_meta` files everything downstream reads,
+  including announcements fetched over explicit term-spanning dates and a
+  planner written once globally.
+
+Dry-run tests assert that nothing at all is written, which is the property the
+whole review-before-apply design depends on.
+"""
+
 from __future__ import annotations
 
 import json
@@ -7,9 +41,10 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mitsync.canvas_client import CanvasClient
-from mitsync.manifest import Manifest
-from mitsync.sync import course_folder_name, run_sync
+from mitsync.canvas.client import CanvasClient
+from mitsync.canvas.manifest import Manifest
+from mitsync.canvas.sync import course_folder_name, run_sync
+from mitsync.core.errors import CanvasAuthError
 
 FIXTURES = Path(__file__).parent / "fixtures" / "canvas"
 BASE = "https://canvas.mit.edu/api/v1"
@@ -37,8 +72,9 @@ BODIES = {
 class FakeCanvas:
     """A Canvas instance served from the JSON fixtures, via httpx.MockTransport."""
 
-    def __init__(self, *, files_403: bool = False) -> None:
+    def __init__(self, *, files_403: bool = False, pages_404: bool = False) -> None:
         self.files_403 = files_403
+        self.pages_404 = pages_404
         self.files = {
             5001: fixture("files_page1")[0],
             5002: fixture("files_page2")[0],
@@ -96,6 +132,9 @@ class FakeCanvas:
             if tail == "assignments":
                 return httpx.Response(200, json=fixture("assignments"))
             if tail == "pages":
+                if self.pages_404:
+                    # A course with the Pages feature switched off.
+                    return httpx.Response(404, json=fixture("pages_disabled_404"))
                 return httpx.Response(200, json=fixture("pages"))
 
         if parts[2] == "courses" and parts[3] == "28452":
@@ -278,10 +317,47 @@ def test_403_on_files_falls_back_to_modules(settings):
         f"{ML}/Lectures/week2-notes.pdf",
     }
     assert report.new == 2
-    stages = {e["stage"] for e in report.errors}
+    # A hidden Files tab is expected, not a failure: it is a notice, and the
+    # Modules fallback covers it.
+    assert report.errors == []
+    stages = {n["stage"] for n in report.notices}
     assert "files" in stages
-    msg = next(e["message"] for e in report.errors if e["stage"] == "files")
+    msg = next(n["message"] for n in report.notices if n["stage"] == "files")
     assert "module-derived" in msg
+
+
+# --------------------------------------------------------------------------
+# disabled Pages feature (404, not 403)
+# --------------------------------------------------------------------------
+def test_pages_disabled_404_is_a_notice_not_an_error(settings):
+    fake = FakeCanvas(pages_404=True)
+    report = sync(settings, fake)
+
+    # The whole point: a disabled feature must not pollute the error count.
+    assert report.errors == []
+    pages_notices = [n for n in report.notices if n["stage"] == "pages"]
+    assert [n["course"] for n in pages_notices] == [ML]
+    assert "disabled" in pages_notices[0]["message"]
+    assert report.as_dict()["notices"] == report.notices
+
+    # ...and the course is otherwise synced exactly as normal.
+    assert report.new == 3
+    assert mirrored_files(settings) == {
+        f"{ML}/Lectures/lecture1.pdf",
+        f"{ML}/syllabus.pdf",
+        f"{ML}/Lectures/week2-notes.pdf",
+    }
+    pages_meta = json.loads((mirror(settings) / ML / "_meta" / "pages.json").read_text())
+    assert pages_meta["items"] == []
+    # Later stages still run: announcements come after pages in the fetch list.
+    assert (mirror(settings) / ML / "_meta" / "announcements.json").exists()
+
+
+def test_notices_render_without_counting_as_errors(settings):
+    report = sync(settings, FakeCanvas(pages_404=True))
+    table = report.render()
+    assert table.row_count > 0
+    assert len(report.notices) >= 1
 
 
 # --------------------------------------------------------------------------
@@ -462,12 +538,15 @@ def test_planner_is_written_once_globally(settings):
 # --------------------------------------------------------------------------
 # failure modes
 # --------------------------------------------------------------------------
-def test_missing_token_exits_with_a_clear_message(settings, monkeypatch, capsys):
+def test_missing_token_raises_a_typed_error_with_remediation(settings, monkeypatch):
+    """`run_sync` is a library call: it raises, it never exits the process.
+
+    `cli.run()` is the single place a `MitsyncError` becomes an exit code, so
+    tests and OpenClaw skills that call `run_sync` directly can catch this.
+    """
     monkeypatch.delenv("CANVAS_TOKEN", raising=False)
-    with pytest.raises(SystemExit) as exc:
+    with pytest.raises(CanvasAuthError, match="CANVAS_TOKEN"):
         run_sync(settings, dry_run=True)
-    assert exc.value.code == 1
-    assert "CANVAS_TOKEN" in capsys.readouterr().out
 
 
 def test_download_failure_is_reported_not_raised(settings):
@@ -492,3 +571,220 @@ def test_download_failure_is_reported_not_raised(settings):
     assert report.new == 0
     assert {e["stage"] for e in report.errors} == {"download"}
     assert mirrored_files(settings) == set()
+
+
+# --------------------------------------------------------------------------
+# course selection, end to end
+# --------------------------------------------------------------------------
+ORIENTATION = {
+    "id": 17557,
+    "name": "F-1 Immigration Orientation eCourse",
+    "course_code": "F1-ORIENT",
+    "term": {"id": 1, "name": "Default Term", "start_at": None, "end_at": None},
+}
+
+
+class CanvasWithOrientation(FakeCanvas):
+    """FakeCanvas plus one dateless-term administrative course."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/courses" and request.url.params.get("page") is not None:
+            return httpx.Response(200, json=[*fixture("courses_page2"), ORIENTATION])
+        return super().handler(request)
+
+
+def test_dateless_term_course_is_excluded_and_reported(settings):
+    report = sync(settings, CanvasWithOrientation(), dry_run=True)
+
+    assert set(report.courses) == {ML, ALGO}
+    assert ORIENTATION["name"] not in report.courses
+    assert report.excluded == [
+        {
+            "canvas_id": "17557",
+            "name": ORIENTATION["name"],
+            "reason": "term has no start/end dates",
+        }
+    ]
+
+
+def test_exclude_courses_setting_drops_a_course_before_any_work(settings):
+    settings.canvas.exclude_courses = ["intro to algorithms"]
+    fake = FakeCanvas()
+    report = sync(settings, fake, dry_run=True)
+
+    assert set(report.courses) == {ML}
+    assert [e["reason"] for e in report.excluded] == ["excluded by config"]
+    assert "/api/v1/courses/28452/modules" not in fake.paths
+
+
+def test_a_sync_that_recorded_errors_exits_nonzero(monkeypatch, workspace):
+    """A recorded error must not exit 0.
+
+    scripts/mitsync-cron.sh branches on the exit code. When course discovery
+    failed, run_sync filed the failure as an error row and the CLI still exited
+    0, so a revoked Canvas token reported "Completed with no errors" on every
+    scheduled run instead of alerting.
+    """
+    from typer.testing import CliRunner
+
+    from mitsync import cli
+    from mitsync.canvas.sync import SyncReport
+
+    report = SyncReport(dry_run=True)
+    report.add_error("-", "courses", "Canvas rejected the token (401)")
+    monkeypatch.setattr(cli.sync_mod, "run_sync", lambda *a, **k: report)
+
+    result = CliRunner().invoke(cli.app, ["sync", "--dry-run"])
+    assert result.exit_code == 1
+
+
+# --------------------------------------------------------------------------
+# Google Slides module links
+# --------------------------------------------------------------------------
+def slides_item(item_id: int, title: str, deck: str) -> dict:
+    return {
+        "id": item_id,
+        "type": "ExternalUrl",
+        "title": title,
+        "external_url": f"https://docs.google.com/presentation/d/{deck}/edit?usp=sharing",
+    }
+
+
+class SlidesCanvas(FakeCanvas):
+    """FakeCanvas plus a module of Google Slides links: one shared, one private."""
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        if request.url.host == "docs.google.com":
+            self.paths.append(request.url.path)
+            if "/shared-deck/" in request.url.path:
+                return httpx.Response(200, content=b"%PDF-1.4 week one deck\n")
+            return httpx.Response(200, content=b"<html>Sign in</html>")
+        if request.url.path.endswith("/courses/28451/modules"):
+            module = {
+                "id": 9,
+                "position": 9,
+                "name": "Week 1 — Sep 10",
+                "items": [
+                    slides_item(
+                        71, "Slides: 2026-09-10 - Week 1 - 3 - Course Logistics", "shared-deck"
+                    ),
+                    slides_item(72, "Slides: private", "private-deck"),
+                    {
+                        "id": 73,
+                        "type": "ExternalUrl",
+                        "title": "Site",
+                        "external_url": "https://x.org",
+                    },
+                ],
+            }
+            return httpx.Response(200, json=[*fixture("modules"), module])
+        return super().handler(request)
+
+
+def test_shared_google_slides_links_are_mirrored_as_pdf(settings):
+    fake = SlidesCanvas()
+    report = sync(settings, fake)
+
+    with Manifest(settings.paths.manifest_db) as m:
+        rec = m.get_file("link-71")
+        assert m.get_file("link-72") is None
+    assert rec is not None and rec.canvas_id == 0 and rec.module_name == "Week 1 — Sep 10"
+    assert rec.mirror_path == (
+        "_canvas/Machine Learning/Week 1 — Sep 10/"
+        "Slides- 2026-09-10 - Week 1 - 3 - Course Logistics.pdf"
+    )
+    assert (settings.paths.workspace / rec.mirror_path).read_bytes().startswith(b"%PDF-")
+    assert not report.errors
+    assert [n["message"] for n in report.notices if n["stage"] == "module-link"] == [
+        "Slides: private: not a PDF (not shared?); skipped"
+    ]
+    assert not [p for p in mirrored_files(settings) if "private" in p or ".download" in p]
+
+
+def test_a_mirrored_deck_is_not_fetched_again(settings):
+    fake = SlidesCanvas()
+    sync(settings, fake)
+    fake.paths.clear()
+
+    sync(settings, fake)
+
+    assert "/presentation/d/shared-deck/export/pdf" not in fake.paths
+
+
+# --------------------------------------------------------------------------
+# HBS Publishing case links
+# --------------------------------------------------------------------------
+HBSP = "https://services.hbsp.harvard.edu/lti/links/615007-PDF-ENG"
+
+
+class CaseCanvas(FakeCanvas):
+    """FakeCanvas plus one HBS case link, served through the whole LTI launch."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.posts: list[str] = []
+
+    def handler(self, request: httpx.Request) -> httpx.Response:
+        url = str(request.url)
+        if request.url.host == "services.hbsp.harvard.edu":
+            self.posts.append(f"{request.method} {request.url.path}")
+            if url == f"{HBSP}/rich-text" and b"oauth_signature=sig" in request.content:
+                return httpx.Response(
+                    200,
+                    html=f'<form id="pdfLaunch" action="{HBSP}/pdf-downloads" method="POST">'
+                    '<input type="hidden" name="availabilityId" value="615007-PDF-ENG"></form>',
+                )
+            if url == f"{HBSP}/pdf-downloads" and b"availabilityId=615007" in request.content:
+                return httpx.Response(200, content=b"%PDF-1.7 netflix case\n")
+            return httpx.Response(403)
+        if request.url.path == "/api/v1/courses/28451/external_tools/sessionless_launch":
+            assert request.url.params["url"] == f"{HBSP}/rich-text"
+            return httpx.Response(
+                200, json={"url": "https://canvas.mit.edu/launch?session_token=t"}
+            )
+        if request.url.path == "/launch":
+            return httpx.Response(
+                200,
+                html=f'<form action="{HBSP}/rich-text" method="POST">'
+                '<input name="oauth_signature" type="hidden" value="sig"></form>',
+            )
+        if request.url.path.endswith("/courses/28451/modules"):
+            module = {
+                "id": 9,
+                "position": 9,
+                "name": "Class 1",
+                "items": [
+                    {
+                        "id": 81,
+                        "type": "ExternalTool",
+                        "title": "Neflix in 2011",
+                        "external_url": f"{HBSP}/rich-text",
+                        "url": f"{BASE}/courses/28451/external_tools/sessionless_launch"
+                        "?id=170&url=https%3A%2F%2Fservices.hbsp.harvard.edu%2Flti%2Flinks"
+                        "%2F615007-PDF-ENG%2Frich-text",
+                    }
+                ],
+            }
+            return httpx.Response(200, json=[*fixture("modules"), module])
+        return super().handler(request)
+
+
+def test_hbs_case_links_are_downloaded_through_the_lti_launch(settings):
+    fake = CaseCanvas()
+    report = sync(settings, fake)
+
+    assert not report.errors
+    with Manifest(settings.paths.manifest_db) as m:
+        rec = m.get_file("link-81")
+    assert (
+        rec is not None and rec.mirror_path == "_canvas/Machine Learning/Class 1/Neflix in 2011.pdf"
+    )
+    assert (settings.paths.workspace / rec.mirror_path).read_bytes() == b"%PDF-1.7 netflix case\n"
+    assert fake.posts == [
+        "POST /lti/links/615007-PDF-ENG/rich-text",
+        "POST /lti/links/615007-PDF-ENG/pdf-downloads",
+    ]
+
+    fake.posts.clear()
+    sync(settings, fake)
+    assert fake.posts == [], "a mirrored case is not fetched again"

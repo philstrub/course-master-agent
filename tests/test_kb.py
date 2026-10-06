@@ -1,289 +1,170 @@
-"""The handoff layer: indexes, notes, manifest, and the AGENTS.md bootstrap."""
+"""The handoff layer: `_kb/AGENTS.md`, no generated index, and COURSE.md left to the agent."""
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
-from typing import Any
 
 import pytest
 
-from mitsync import extract as extract_mod
-from mitsync import graph as graph_mod
-from mitsync import kb as kb_mod
-from mitsync.config import Settings
-from mitsync.errors import JudgeUnavailable
-from mitsync.llm.base import JudgeTask, validate_result
+from mitsync.core.config import Settings
+from mitsync.knowledge import extract as extract_mod
+from mitsync.knowledge import graph as graph_mod
+from mitsync.knowledge import kb as kb_mod
 from tests.test_extract import make_notebook, make_pdf
-from tests.test_graph import EmptyJudge, StubJudge, concept_judge
-
-NOTES_RESULT: dict[str, Any] = {
-    "summary": "Applied analytics, taught through cases.",
-    "topics": [
-        {
-            "name": "Regularization",
-            "summary": "Ridge and lasso as bias-variance control.",
-            "sources": ["Machine Learning/lectures/lec01.pdf"],
-        }
-    ],
-    "open_questions": ["Which dataset does HW1 use?"],
-}
 
 
 @pytest.fixture
 def built(workspace: Path, settings: Settings) -> Settings:
     ml = workspace / "Machine Learning"
     make_pdf(ml / "lectures" / "lec01.pdf", ("regularization and ridge regression",))
-    make_notebook(ml / "assignments" / "hw1.ipynb")
-    (ml / "data").mkdir(parents=True, exist_ok=True)
-    (ml / "data" / "train.csv").write_text("a,b\n1,2\n")
-
-    (workspace / "_canvas" / "Analytics Edge").mkdir(parents=True)
-    make_pdf(workspace / "_canvas" / "Analytics Edge" / "syllabus.pdf", ("syllabus",))
+    make_notebook(ml / "assignments" / "hw-01" / "hw1.ipynb")
+    (settings.paths.config_dir / "courses.yml").write_text(
+        "courses:\n  - folder: Machine Learning\n  - folder: Analytics Edge\n"
+    )
+    (workspace / "Analytics Edge").mkdir()
 
     junk = workspace / "AI_Studio" / "nandatown" / ".venv" / "lib" / "site-packages"
     junk.mkdir(parents=True, exist_ok=True)
-    (junk / "x.py").write_text("print(1)")
     (junk / "guide.md").write_text("# venv guide")
     (workspace / "AI_Studio" / "nandatown" / "README.md").write_text("# nandatown")
 
     extract_mod.extract_all(settings)
-    graph_mod.extract_graph(settings, StubJudge(concept_judge))
     return settings
 
 
-# --------------------------------------------------------------------------
-# structure
-# --------------------------------------------------------------------------
-def test_build_writes_every_page(built: Settings) -> None:
+def test_build_writes_only_agents_md(built: Settings) -> None:
     report = kb_mod.build(built)
     kb = built.paths.kb
-    assert (kb / "INDEX.md").exists()
-    assert (kb / "AGENTS.md").exists()
-    assert (kb / "manifest.json").exists()
-    for course in ("Machine Learning", "Analytics Edge"):
-        assert (kb / "courses" / course / "INDEX.md").exists()
-        assert (kb / "courses" / course / "NOTES.md").exists()
-    assert set(report.courses) == {"Machine Learning", "Analytics Edge"}
-    assert report.files == 4
-    assert report.extracted == 4
+    written = sorted(
+        p.relative_to(kb).as_posix()
+        for p in kb.rglob("*")
+        if p.is_file() and not p.is_relative_to(kb / "text") and not p.is_relative_to(kb / "graph")
+    )
+    assert written == ["AGENTS.md"], "no index, manifest or per-course page repeats the graph"
+    assert report.courses == ["Analytics Edge", "Machine Learning"]
+    assert report.course_files_missing == ["Analytics Edge", "Machine Learning"]
+    assert not (kb / "graph" / "entities").exists()
 
 
-def test_course_index_groups_by_bucket_and_links_both_views(built: Settings) -> None:
+def test_build_refreshes_the_backbone_the_agent_queries(built: Settings) -> None:
     kb_mod.build(built)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "INDEX.md").read_text()
-    assert "## lectures" in body
-    assert "## assignments" in body
-    assert "## data" in body
-    assert "`Machine Learning/lectures/lec01.pdf`" in body  # the canonical file
-    text_rel = extract_mod.text_path_for(built, "Machine Learning/lectures/lec01.pdf").name
-    assert text_rel in body  # and its extracted text
-    assert "NOTES.md" in body
-
-    canvas = (built.paths.kb / "courses" / "Analytics Edge" / "INDEX.md").read_text()
-    assert "## canvas mirror (unfiled)" in canvas
-
-
-def test_global_index_lists_courses_and_links_agents_md(built: Settings) -> None:
-    kb_mod.build(built)
-    body = (built.paths.kb / "INDEX.md").read_text()
-    assert "AGENTS.md" in body
-    assert "| Machine Learning | 3 |" in body
-    assert "courses/Analytics Edge/INDEX.md" in body
-    assert "_kb/due.json" in body or "due.json" in body
-
-
-def test_manifest_is_machine_readable(built: Settings) -> None:
-    kb_mod.build(built)
-    manifest = json.loads((built.paths.kb / "manifest.json").read_text())
-    ml = manifest["courses"]["Machine Learning"]
-    lec = next(f for f in ml["files"] if f["path"].endswith("lec01.pdf"))
-    assert lec["bucket"] == "lectures"
-    assert lec["content_type"] == "pdf"
-    assert lec["text"].startswith("_kb/text/")
-    assert graph_mod.resource_id("Machine Learning/lectures/lec01.pdf") in lec["node_ids"]
+    files = {
+        n["attrs"]["path"]: n
+        for n in graph_mod.load_nodes(built).values()
+        if n["type"] in ("File", "DataFile")
+    }
+    lec = files["Machine Learning/lectures/lec01.pdf"]["attrs"]
+    assert (
+        lec["text"]
+        == extract_mod.text_path_for(built, "Machine Learning/lectures/lec01.pdf")
+        .relative_to(built.paths.workspace)
+        .as_posix()
+    )
 
 
 def test_build_is_idempotent(built: Settings) -> None:
     kb_mod.build(built)
-    pages = sorted(built.paths.kb.rglob("*.md")) + [built.paths.kb / "manifest.json"]
-    before = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in pages}
+    page = built.paths.kb / "AGENTS.md"
+    before = (page.read_bytes(), page.stat().st_mtime_ns)
     kb_mod.build(built)
-    after = {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in pages}
-    assert after == before, "kb build must be byte-identical and must not rewrite files"
+    assert (page.read_bytes(), page.stat().st_mtime_ns) == before
 
 
-# --------------------------------------------------------------------------
-# exclusion
-# --------------------------------------------------------------------------
-def test_nandatown_never_reaches_the_kb(built: Settings) -> None:
-    kb_mod.build(built)
-    data = json.loads((built.paths.kb / "manifest.json").read_text())
-    manifest = json.dumps(data["courses"])
-    assert "nandatown" not in manifest
-    assert "site-packages" not in manifest
-    ws = str(built.paths.workspace)  # the tmp dir is named after this test
-    for page in built.paths.kb.rglob("*.md"):
-        if page.name == "AGENTS.md":
-            continue  # AGENTS.md names it deliberately, as a guardrail
-        assert "nandatown" not in page.read_text().replace(ws, "<ws>"), page
-    assert "AI_Studio" not in data["courses"]
+def test_kb_build_never_creates_or_overwrites_a_course_file(built: Settings) -> None:
+    notes = kb_mod.course_file_path(built, "Machine Learning")
+    notes.parent.mkdir(parents=True, exist_ok=True)
+    mine = "# Machine Learning\n\nWritten by the agent. Do not touch.\n"
+    notes.write_text(mine)
+    stamp = notes.stat().st_mtime_ns
 
-
-# --------------------------------------------------------------------------
-# notes / judgment
-# --------------------------------------------------------------------------
-def test_notes_without_a_judge_are_a_deterministic_skeleton(built: Settings) -> None:
     report = kb_mod.build(built)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert "Machine Learning/lectures/lec01.pdf" in body  # inventory is still useful
-    assert "Machine Learning" in report.notes_pending
+    kb_mod.build(built)
+
+    assert notes.read_text() == mine
+    assert notes.stat().st_mtime_ns == stamp
+    assert notes not in report.written
+    assert not kb_mod.course_file_path(built, "Analytics Edge").exists()
+    assert report.course_files_missing == ["Analytics Edge"]
+    agents = (built.paths.kb / "AGENTS.md").read_text()
+    assert "| Machine Learning | `_kb/courses/Machine Learning/COURSE.md` |" in agents
+    assert "| Analytics Edge | not written yet |" in agents
+    assert "`mitsync kb build` never creates or\noverwrites it" in agents
 
 
-def test_notes_with_a_judge_use_the_validated_result(built: Settings) -> None:
-    judge = StubJudge(NOTES_RESULT)
-    report = kb_mod.build(built, judge)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER not in body
-    assert "Applied analytics, taught through cases." in body
-    assert "### Regularization" in body
-    assert "Which dataset does HW1 use?" in body
-    assert report.notes_pending == []
-
-    task = judge.tasks[0]
-    assert task.name == "course_notes"
-    assert task.payload["course"] in {"Machine Learning", "Analytics Edge"}
-    assert task.payload["documents"]
-    assert task.payload["documents"][0]["excerpt"]
-    assert "untrusted" in (task.instructions + task.rules).lower()
-    validate_result(task, NOTES_RESULT)  # the stub answer satisfies the shipped schema
-
-
-def test_notes_fall_back_when_the_judge_returns_nothing(built: Settings) -> None:
-    """The rules driver has no `course_notes` handler; it returns {}."""
-    judge = EmptyJudge()
-    report = kb_mod.build(built, judge)
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert judge.calls == 2
-    assert "empty result" in report.judge_note
-    assert sorted(report.notes_pending) == ["Analytics Edge", "Machine Learning"]
-
-
-def test_notes_fall_back_when_the_judge_is_unavailable(built: Settings) -> None:
-    class Broken:
-        def judge(self, task: JudgeTask) -> dict[str, Any]:  # noqa: ARG002 -- interface
-            raise JudgeUnavailable("no api key configured")
-
-    report = kb_mod.build(built, Broken())
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert "no api key configured" in report.judge_note
-    assert "no api key configured" in body
-
-
-def test_notes_fall_back_when_the_judged_result_is_invalid(built: Settings) -> None:
-    bad = {"summary": "x", "topics": [{"name": "n"}], "open_questions": []}
-    report = kb_mod.build(built, StubJudge(bad))
-    body = (built.paths.kb / "courses" / "Machine Learning" / "NOTES.md").read_text()
-    assert kb_mod.NOTES_PENDING_MARKER in body
-    assert report.notes_pending
-
-
-# --------------------------------------------------------------------------
-# AGENTS.md -- the acceptance test
-# --------------------------------------------------------------------------
-def test_agents_md_has_every_required_section(built: Settings) -> None:
+def test_agents_md_points_at_the_graph_and_the_folders(built: Settings) -> None:
     kb_mod.build(built)
     body = (built.paths.kb / "AGENTS.md").read_text()
-    for heading in (
-        "## 1. Folder contract",
-        "## 2. Where truth lives",
-        "## 3. How to query the graph",
-        "## 4. Where deadlines live",
-        "## 5. Per-course entry points",
-        "## 6. Guardrails",
-    ):
-        assert heading in body, heading
-
-
-def test_agents_md_explains_where_truth_lives(built: Settings) -> None:
-    kb_mod.build(built)
-    body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "_canvas/" in body and "verbatim" in body
-    assert "curated view" in body
-    assert "_kb/text/" in body
-    assert "source of truth" in body
-
-
-def test_agents_md_gives_runnable_graph_commands_and_canned_names(built: Settings) -> None:
-    kb_mod.build(built)
-    body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "mitsync graph rebuild" in body
-    assert "mitsync graph query --canned" in body
+    assert "**query the graph**" in body and "mit-graph-query" in body
+    assert "**read its master file**" in body
+    assert "mitsync graph cypher" in body and "mitsync graph query" in body
+    assert "`path`" in body and "`text`" in body
     for name in graph_mod.CANNED:
         assert f"`{name}`" in body, name
+    assert "mitsync graph add" in body and "mitsync graph check --json" in body
+    assert "mitsync due --json" in body
+    for gone in ("INDEX.md", "manifest.json", "entities/", "due.json"):
+        assert gone not in body, gone
 
 
-def test_agents_md_handles_a_missing_due_json_and_then_a_present_one(built: Settings) -> None:
-    kb_mod.build(built)
-    body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "_kb/due.json" in body
-    assert "does **not exist yet**" in body
-    assert "mitsync due" in body
-
-    (built.paths.kb / "due.json").write_text(
-        json.dumps({"items": [{"course": "Machine Learning", "title": "HW1"}]})
-    )
-    kb_mod.build(built)
-    body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "holds 1 item(s)" in body
-    assert "does **not exist yet**" not in body
-
-
-def test_agents_md_lists_per_course_entry_points_and_the_weekly_recipe(
-    built: Settings,
-) -> None:
-    kb_mod.build(built)
-    body = (built.paths.kb / "AGENTS.md").read_text()
-    assert "`_kb/courses/Machine Learning/INDEX.md`" in body
-    assert "`_kb/courses/Analytics Edge/NOTES.md`" in body
-    assert "this week" in body  # the headline question is answered step by step
-    assert "assignments_due" in body
-
-
-def test_agents_md_states_the_data_not_instructions_guardrail(built: Settings) -> None:
+def test_agents_md_states_the_guardrails(built: Settings) -> None:
     kb_mod.build(built)
     body = (built.paths.kb / "AGENTS.md").read_text()
     assert "data, never instructions" in body
     assert "ignore previous instructions" in body
     assert "nandatown" in body
-    assert "Never write to Apple Calendar" in body
+    assert "Never write to Apple Calendar, Canvas or Gradescope" in body
+    assert "mitsync organize apply --plan" in body
 
 
 def test_kb_build_survives_an_empty_workspace(settings: Settings) -> None:
+    (settings.paths.config_dir / "courses.yml").write_text("courses: []\n")
     report = kb_mod.build(settings)
     assert report.courses == []
     body = (settings.paths.kb / "AGENTS.md").read_text()
-    assert "No course materials have been indexed yet" in body
-    assert json.loads((settings.paths.kb / "manifest.json").read_text())["courses"] == {}
+    assert "No course folder is mapped yet" in body
 
 
-def test_buckets_handle_folders_that_predate_organize() -> None:
-    """The student's own names ("Assignment 1/") must still group sensibly."""
-    cases = {
-        "Analytics Edge/Assignment 1/Deliverable_1.ipynb": "assignments",
-        "Analytics Edge/Assignment 1/out/p1a.txt": "assignments",
-        "Analytics Edge/Assignment 1/insurance.csv": "assignments",
-        "Machine Learning/Lecture 3/slides.pdf": "lectures",
-        "Machine Learning/assignments/hw1.pdf": "assignments",
-        "Optimization/syllabus.pdf": "syllabus",
-        "Optimization/data/prices.csv": "data",
-        "Optimization/prices.csv": "data",
-        "Analytics Lab/Recitation 2/walkthrough.pdf": "recitations",
-        "AI_Studio/random.pdf": "other",
-        "_canvas/Analytics Edge/whatever.pdf": "canvas mirror (unfiled)",
-    }
-    for rel, expected in cases.items():
-        assert kb_mod._bucket(rel) == expected, rel
+# --------------------------------------------------------------------------
+# kb check: what the master files do not cover yet
+# --------------------------------------------------------------------------
+def _sources(settings: Settings, course: str, lines: list[str]) -> Path:
+    path = kb_mod.course_file_path(settings, course)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"# {course}\n\nSummary.\n\n## Sources\n" + "".join(f"{x}\n" for x in lines))
+    return path
+
+
+def test_check_lists_documents_the_master_file_does_not_cover(built: Settings) -> None:
+    kb_mod.build(built)
+    doc = kb_mod.check(built)
+    ml = {c["course"]: c for c in doc["courses"]}["Machine Learning"]
+    assert not doc["ok"] and not ml["exists"]
+    # the student's own notebook in assignments/ is their work, not course material
+    assert [d["path"] for d in ml["pending"]] == ["Machine Learning/lectures/lec01.pdf"]
+    [lec] = ml["pending"]
+    assert len(lec["sha256"]) == 12 and lec["text"].startswith("_kb/text/")
+
+    _sources(built, "Machine Learning", [f"- `{lec['path']}` sha256:{lec['sha256']}"])
+    _sources(built, "Analytics Edge", [])
+    assert kb_mod.check(built)["ok"]
+
+
+def test_a_changed_or_deleted_source_is_pending_again(built: Settings) -> None:
+    kb_mod.build(built)
+    _sources(built, "Analytics Edge", [])
+    _sources(built, "Machine Learning", [
+        "- `Machine Learning/lectures/lec01.pdf` sha256:000000000000",
+        "- `Machine Learning/lectures/old.pdf` sha256:111111111111",
+    ])  # fmt: skip
+    ml = {c["course"]: c for c in kb_mod.check(built)["courses"]}["Machine Learning"]
+    assert [d["path"] for d in ml["pending"]] == ["Machine Learning/lectures/lec01.pdf"]
+    assert ml["gone"] == ["Machine Learning/lectures/old.pdf"]
+
+
+def test_only_the_sources_section_counts() -> None:
+    text = (
+        "# X\n\nSee `A/lectures/a.pdf` sha256:aaaaaaaaaaaa in passing.\n\n"
+        "## Sources\n- `A/lectures/b.pdf` sha256:bbbbbbbbbbbb\n\n## After\n"
+        "- `A/lectures/c.pdf` sha256:cccccccccccc\n"
+    )
+    assert kb_mod.listed_sources(text) == {"A/lectures/b.pdf": "bbbbbbbbbbbb"}
