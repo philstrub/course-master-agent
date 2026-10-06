@@ -172,6 +172,20 @@ def test_a_reply_is_posted_once_read_back_and_logged(settings, canvas):
     assert state(settings)["intent"] is None and out["entry_id"] in state(settings)["seen"]
 
 
+def test_read_stays_small_enough_to_reach_the_model(settings, canvas):
+    """Claude Code saves a tool result over ~30 KB to a file the agent cannot open."""
+    long = "<p>" + "word " * 1000 + "</p>"
+    for i in range(60):
+        parent = 10 if i == 0 else 200 + i - 1  # one deep thread
+        canvas.entries.append({"id": 200 + i, "user_id": ALICE, "parent_id": parent,
+                               "created_at": iso(59 - i), "message": long})  # fmt: skip
+    canvas.entries += [
+        {"id": 400 + i, "user_id": BOB, "parent_id": None, "created_at": iso(30), "message": long}
+        for i in range(30)
+    ]
+    assert len(json.dumps(read(settings, canvas), indent=2)) < 30_000
+
+
 def test_dry_run_checks_everything_and_sends_nothing(settings, canvas):
     out = act(settings, canvas, decide(settings), dry_run=True)
     assert out["dry_run"] and out["would_post_to"].endswith(f"{TOPIC}/entries/11/replies")

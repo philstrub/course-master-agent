@@ -35,7 +35,9 @@ F=/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-forum
 | `$F forum act --decision <path>` | posts your decision inside every bound, or records your skip, and writes your diary |
 
 Anything else is refused, and a refusal is final. Don't retry it or look for
-another way.
+another way. If a result says it was too large and was saved to a file, you
+cannot open that file. Use `forum read --thread <id>` on a thread from the
+`threads` index instead.
 
 ## Each run
 
@@ -54,6 +56,11 @@ Budget: at most 10 tool calls, 2 Scholar searches and 3 knowledge lookups.
    the concept in the courses, `scholar` for a recent paper on it. Use only what
    these return or what the thread says. If the lookups give you nothing
    specific, that is a reason to skip.
+   `sources` lists only what a lookup returned in this run: course and lecture
+   exactly as `knowledge search` printed them, and paper titles exactly as
+   `scholar` printed them. Never cite a lecture or paper from memory, even if you
+   are sure it exists. If you can't point to the result that gave it to you,
+   leave it out of the post too.
 4. **Decide, and write the decision file** with your `write` tool, to
    `/Users/filippostrub/Desktop/MIT/courses/_kb/forum/decisions/<YYYYMMDD-HHMM>.json`:
 

@@ -126,7 +126,9 @@ TOPIC_URL = f"https://canvas.mit.edu{TOPIC}"
 MAX_POSTS_PER_HOUR = 3
 MAX_FAILURES = 3
 POST_ATTEMPTS = 3
-SHOWN_NEW = 20
+SHOWN_NEW = 10
+ENTRY_CHARS = 1200  # `read` must stay under the ~30 KB a tool result may carry inline
+THREADS_SHOWN = 12
 SIMILAR = 0.5  # Jaccard overlap of word trigrams that counts as a repeat
 
 _CONTROL = re.compile(r"COURSE-TEAM CONTROL:\s*(RUNNING|PAUSED)")
@@ -352,7 +354,7 @@ def _budget(settings: Settings, state: ForumState, snap: dict) -> dict[str, Any]
     }
 
 
-def _short(e: dict, width: int = 400) -> dict:
+def _short(e: dict, width: int = 200) -> dict:
     text = e["text"] if len(e["text"]) <= width else e["text"][: width - 1] + "…"
     return {"id": e["id"], "author": e["author"], "text": text}
 
@@ -431,11 +433,11 @@ def read(
         "you": {"user_id": snap["me"]} | _budget(settings, state, snap),
         "recovered": recovered,
         "replies_to_you": [
-            _short(e, 2000) | {"reply_to": e["parent_id"], "url": e["url"]}
+            _short(e, ENTRY_CHARS) | {"reply_to": e["parent_id"], "url": e["url"]}
             for e in unseen if e["parent_id"] in mine_ids
         ],
         "new_entries": [
-            _short(e, 2000)
+            _short(e, ENTRY_CHARS)
             | {k: e[k] for k in ("parent_id", "root_id", "depth", "created_at", "url")}
             | {"context": context(e)}
             for e in unseen[-SHOWN_NEW:]
@@ -448,14 +450,14 @@ def read(
         "threads": sorted(
             (
                 {"root_id": r, "started_by": entries[r]["author"],
-                 "opening": _short(entries[r], 200)["text"], "entries": len(group),
+                 "opening": _short(entries[r], 120)["text"], "entries": len(group),
                  "last_activity": max(e["created_at"] for e in group),
                  "you_took_part": any(e["user_id"] == snap["me"] for e in group)}
                 for r, group in roots.items() if r in entries
             ),
             key=lambda t: t["last_activity"], reverse=True,
-        ),
-        "diary_tail": diary.read_text()[-4000:] if diary.exists() else "",
+        )[:THREADS_SHOWN],
+        "diary_tail": diary.read_text()[-3000:] if diary.exists() else "",
     }  # fmt: skip
 
 
