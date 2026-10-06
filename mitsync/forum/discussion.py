@@ -84,6 +84,10 @@ so a run that crashes before deciding sees the same entries again next time.
 On the first run the backlog beyond `SHOWN_NEW` is counted, not shown, and is
 marked seen with the first decision.
 
+**The signature.** `act` appends `SIGNATURE` to every post, and the read-back
+and reconciliation compare the signed text. The model never writes it, so no
+post can go out unsigned.
+
 **Fault injection.** `MITSYNC_FORUM_FAULT=lost-ack` makes the first attempt
 raise a timeout after Canvas accepted the post. `=crash` exits right after it,
 before anything is logged. Both exist to demonstrate the recovery above on a
@@ -146,6 +150,8 @@ SHOWN_NEW = 10
 ENTRY_CHARS = 1200  # `read` must stay under the ~30 KB a tool result may carry inline
 THREADS_SHOWN = 12
 SIMILAR = 0.5  # Jaccard overlap of word trigrams that counts as a repeat
+#: Appended by `act` to every post, so readers always know an agent wrote it.
+SIGNATURE = "— Filippo's Forum Agent"
 
 _CONTROL = re.compile(r"COURSE-TEAM CONTROL:\s*(RUNNING|PAUSED)")
 _URL = re.compile(r"https?://[^\s<>()\"']+")
@@ -278,6 +284,11 @@ def control(topic: dict) -> str:
     return match.group(1) if match else "MISSING"
 
 
+def _signed(decision: Decision) -> str:
+    """The text as posted: the agent's message plus the signature."""
+    return f"{(decision.message or '').strip()}\n\n{SIGNATURE}"
+
+
 def _norm(text: str) -> str:
     return " ".join(re.sub(r"[^\w]+", " ", text.lower()).split())
 
@@ -340,7 +351,7 @@ def _posts_last_hour(snap: dict, now: datetime) -> int:
 
 def _landed(snap: dict, decision: Decision) -> dict | None:
     """The agent's own entry carrying this decision's message, if Canvas has it."""
-    want = _norm(decision.message or "")[:400]
+    want = _norm(_signed(decision))[:400]
     for e in _mine(snap):
         if e["parent_id"] == decision.reply_to and _norm(e["text"])[:400] == want:
             return e
@@ -595,7 +606,7 @@ def _send(
     found by reconciling rather than from the POST's own answer.
     """
     url = _endpoint(client.base_url, decision.reply_to)
-    body = _html(decision.message or "")
+    body = _html(_signed(decision))
     headers = {"Authorization": f"Bearer {settings.canvas.token}", "Accept": "application/json"}
     with httpx.Client(transport=client.transport, timeout=30, headers=headers) as web:
         for attempt in range(POST_ATTEMPTS):
@@ -641,7 +652,7 @@ def _send(
 def _verify(client: CanvasClient, entry_id: int, me: int, decision: Decision) -> bool:
     """Read the entry back from Canvas: it exists, it is ours, it says what we sent."""
     rows = client.get(f"{TOPIC}/entry_list", **{"ids[]": entry_id}) or []
-    want = _norm(decision.message or "")[:400]
+    want = _norm(_signed(decision))[:400]
     return any(
         r["id"] == entry_id
         and r.get("user_id") == me
@@ -729,7 +740,7 @@ def act(
         if dry_run:
             return {"action": decision.action, "dry_run": True, "reply_to": decision.reply_to,
                     "would_post_to": _endpoint(client.base_url, decision.reply_to),
-                    "html": _html(decision.message or ""), "budget": budget}  # fmt: skip
+                    "html": _html(_signed(decision)), "budget": budget}  # fmt: skip
 
         state.intent = Intent(decision=decision, at=now_iso())
         _save(settings, state)

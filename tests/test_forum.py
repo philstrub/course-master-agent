@@ -178,6 +178,7 @@ def test_a_reply_is_posted_once_read_back_and_logged(settings, canvas):
     assert out["verified"] and out["attempts"] == 1 and canvas.posts == 1
     posted = canvas.entry(out["entry_id"])
     assert posted["parent_id"] == 11 and posted["message"].startswith("<p>Bob, reversibility")
+    assert posted["message"].endswith("<p>— Filippo's Forum Agent</p>")
     [logged] = posts_log(settings)
     assert logged["entry_id"] == out["entry_id"] and logged["verified"]
     assert "replied to Bob (entry 11)" in (settings.paths.kb_forum / "diary.md").read_text()
