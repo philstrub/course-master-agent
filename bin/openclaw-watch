@@ -3,6 +3,7 @@
 
     bin/openclaw-watch            follow the newest run, and every run after it
     bin/openclaw-watch --last     print the newest finished run and exit
+    bin/openclaw-watch --forum    the same for the forum agent (workspace _kb/forum)
 
 OpenClaw's claude-cli runtime executes each turn with the real `claude`
 binary in the workspace, and Claude Code writes the whole turn (prompt, tool
@@ -20,7 +21,9 @@ from datetime import datetime
 from pathlib import Path
 
 WORKSPACE = "/Users/filippostrub/Desktop/MIT/courses"
-PROJECT = Path.home() / ".claude" / "projects" / WORKSPACE.replace("/", "-").replace("_", "-")
+# Claude Code names a project folder after its cwd, "/" and "_" both becoming "-".
+AGENT_HOME = WORKSPACE + "/_kb/forum" if "--forum" in sys.argv[1:] else WORKSPACE
+PROJECT = Path.home() / ".claude" / "projects" / AGENT_HOME.replace("/", "-").replace("_", "-")
 POLL = 0.5
 
 DIM, BOLD, RESET = "\033[2m", "\033[1m", "\033[0m"
@@ -47,7 +50,9 @@ def clock(entry: dict) -> str:
 def describe_call(name: str, args: dict) -> str:
     tool = name.removeprefix("mcp__openclaw__")
     if tool == "exec":
-        cmd = args.get("command", "").replace(WORKSPACE + "/_agent/bin/mitsync-agent", "mitsync-agent")
+        cmd = args.get("command", "")
+        for wrapper in ("mitsync-agent", "mitsync-forum"):
+            cmd = cmd.replace(f"{WORKSPACE}/_agent/bin/{wrapper}", wrapper)
         return f"{CYAN}{BOLD}exec{RESET}  {cmd}"
     if tool in ("read", "write"):
         extra = f"  {DIM}({len(args.get('content', ''))} bytes){RESET}" if tool == "write" else ""

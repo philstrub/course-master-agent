@@ -165,3 +165,20 @@ class GradescopeWriteRefused(MitsyncError):
             f"refusing {method.upper()} to Gradescope ({url}): mitsync is read-only. "
             "Gradescope holds graded work; no command may modify it."
         )
+
+
+class ForumRefused(MitsyncError):
+    """`forum act` will not post: the course team paused the forum, the hourly
+    budget is spent, the agent stopped after repeated failures, or the message
+    broke a boundary. The message names which, and nothing was sent."""
+
+
+class ScholarBlocked(MitsyncError):
+    """Google Scholar answered with a CAPTCHA or an error instead of results.
+    Not retried: the agent posts from the course knowledge alone this run."""
+
+
+class ForumOutcomeUnknown(MitsyncError):
+    """A forum post was sent but neither answered nor visible on Canvas yet
+    (Canvas's discussion view is cached). It is never retried blindly: the
+    next run reconciles it once Canvas shows the forum as it is."""

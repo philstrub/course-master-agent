@@ -7,7 +7,7 @@ trust `--help`.
 ## What OpenClaw is, in one picture
 
 ```
- you (web dashboard at :18789)         cron: brief 07:00 · sync + file every 30 min
+ you (web dashboard at :18789)   cron: brief 07:00 · sync, file, forum every 30 min
                  │                                        │
                  ▼                                        ▼
         ┌──────────────── Gateway (always-on daemon, port 18789) ────────────┐
@@ -232,6 +232,7 @@ last sync, and `graph-build` adds the judgment the folders cannot give:
 | `canvas-sync` | every 30 min, 08:00–22:30 | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
 | `canvas-file` | 10 min after each sync | `mit-organize`: file new Canvas material | Haiku 4.5, low thinking, **only if** `openclaw/triggers/new-to-file.js` sees a file the last check hadn't |
 | `graph-build` | 20 min after each sync | `mit-graph-build`: close what `graph check` lists, one subagent per reading-heavy course | Sonnet 5, low thinking, **only if** `openclaw/triggers/graph-pending.js` (which runs `graph refresh`, then `graph check`) sees an item the last check hadn't |
+| `canvas-forum` | :15 and :45, 08:15–22:45 | the separate `forum` agent: read the Homework 3 discussion, post if it has something useful, else record a skip (see "The forum agent" below) | Sonnet 5, medium thinking, **only if** `openclaw/triggers/forum-new.js` (`forum pending`) sees unseen entries by others, the control line reads RUNNING and the agent has not stopped |
 | `course-notes` | 23:00 daily | `mit-course`: bring each course's master file up to date | Sonnet 5, low thinking, **only if** `openclaw/triggers/course-pending.js` (which runs `extract`, `kb build`, `kb check`) sees a document the last check hadn't |
 
 Every agent job carries a tool allow-list (`--tools exec,read,write`). With
@@ -318,6 +319,95 @@ wake it a minute early:
 ```
 sudo pmset repeat wakeorpoweron MTWRF 06:44:00
 ```
+
+## The forum agent (Homework 3)
+
+Homework 3 asks for an agent that takes part in the Canvas discussion
+**Homework 3: Agent Discussion Forum**
+(https://canvas.mit.edu/courses/40577/discussion_topics/448963) on a
+schedule, remembers what it has seen and done, and stops safely. That is
+mitsync's only Canvas write, so it runs as a **second OpenClaw agent** in the
+same gateway, with the least it needs:
+
+| | `mitsync` (everything else) | `forum` (Homework 3) |
+|---|---|---|
+| workspace | `~/Desktop/MIT/courses` | `~/Desktop/MIT/courses/_kb/forum` |
+| bootstrap | `AGENTS.md`, `SOUL.md`, `USER.md` | `openclaw/forum/AGENTS.md` (procedure, posting rule, boundaries), `SOUL.md`, an empty `USER.md`: it is told nothing personal |
+| exec allowlist | `bin/mitsync-agent` (refuses `forum`) | `bin/mitsync-forum`: only `forum pending · read · act · scholar · knowledge` |
+| file tools | the workspace | `tools.fs.workspaceOnly`: `_kb/forum/` only, so grades, briefs, calendar and homework are unreachable |
+| reaches courses through | everything | `forum knowledge`: lecture concepts and passages, no assignments, no paths |
+| Canvas | read-only | read, plus entries in topic 448963 (`forum act`) |
+
+`forum act` enforces in code what the assignment and the student require,
+whatever the decision file says. It re-reads the control line before every
+attempt and refuses unless it reads `COURSE-TEAM CONTROL: RUNNING`. It allows
+at most 3 posts in any hour (counted from Canvas), retries with backoff, and
+stops after 3 consecutive failures until you run `uv run mitsync forum reset`.
+It refuses replies to the agent's own posts, second replies, and repeats. Its
+content screen rejects emails, phones, secrets, paths, file names, grades, "my
+homework/calendar" and non-paper links. Every post is read back from Canvas
+before it counts.
+
+**Memory**, separate from the knowledge graph:
+
+| file | written by | holds |
+|---|---|---|
+| `_kb/forum/diary.md` | `forum act`, from the agent's decision | one entry per run: what the forum discussed, the threads followed, what it posted (quoted) or why it skipped, its sources. `forum read` hands the tail back to the agent |
+| `_kb/forum/posts.jsonl` | `forum act` | every post: entry id, parent, link, attempts, verified, recovered, text |
+| `_kb/forum/decisions/*.json` | the agent | each run's decision, as validated |
+| `_agent/state/forum/state.json` | `forum` commands | seen entry ids, failure count, the in-flight post (write-ahead intent). Outside the agent's reach |
+
+**Set it up** (from `_agent/`):
+
+```
+uv run mitsync forum pending          # creates _kb/forum/, checks the token and the control line
+openclaw agents add forum --workspace ~/Desktop/MIT/courses/_kb/forum \
+  --model anthropic/claude-sonnet-5 --non-interactive
+make openclaw-forum                   # AGENTS.md, SOUL.md, USER.md into _kb/forum/ (after onboarding's templates)
+ln -s _kb/forum ~/Desktop/MIT/courses/forum   # script/trigger runtime resolves <workspace>/<agent id>; point it at the real one
+openclaw config set agents.entries.forum.tools '{"fs":{"workspaceOnly":true}}' --strict-json --merge
+openclaw config set agents.entries.forum.skills '[]' --strict-json
+openclaw config set agents.entries.forum.heartbeat '{"every":"0m"}' --strict-json --merge
+openclaw agents set-identity --agent forum --name mitsync-forum
+openclaw approvals allowlist add --agent forum ~/Desktop/MIT/courses/_agent/bin/mitsync-forum
+openclaw approvals get                # must show NO row for agent "*"; remove one with
+                                      #   openclaw approvals allowlist remove --agent '*' <path>
+
+openclaw cron add --name canvas-forum --agent forum --cron "15,45 8-22 * * *" \
+  --tz America/New_York --exact --session isolated \
+  --trigger-script ./openclaw/triggers/forum-new.js \
+  --message "Scheduled forum run, nobody is watching. Follow your AGENTS.md: read the forum, decide whether you have something relevant and useful to add, and hand your decision to forum act. Skipping is a normal outcome." \
+  --thinking medium --tools exec,read,write --timeout-seconds 900 --no-deliver
+```
+
+**Check the boundary before the first post.** Run one turn asking the agent
+to (a) read `~/Desktop/MIT/courses/_agent/state/gradescope.json`, (b) exec
+`bin/mitsync-agent due`, (c) exec `bin/mitsync-forum due`, (d) exec
+`bin/mitsync-forum forum pending`, (e) exec `ls ~`. Only (d) may succeed.
+Read the result in the transcript (`bin/openclaw-watch --last`), not in the
+agent's own summary: in testing, the agent misreported which calls had been
+denied. A row for agent `*` in `openclaw approvals get` let (b) run until it
+was removed.
+
+**Preview, then go live.** Write a decision file and check it with
+`forum act --decision <file> --dry-run`: every bound is checked, and the
+command prints the HTML it would post and sends nothing.
+
+**Recovery demo.** `MITSYNC_FORUM_FAULT=lost-ack uv run mitsync forum act
+--decision <file>` makes the first attempt time out after Canvas saved the
+post. The tool re-reads the topic at 5, 15 and 30 s; if it finds its entry it
+logs it, and if Canvas's cached view still hides it, it stops with "outcome
+unknown" and never retries: the next run reconciles it. Either way there is one
+post. `=crash` exits right after the POST. The next `forum read` or `forum
+pending` finds the entry and logs it (`"recovered"`).
+
+| symptom | fix |
+|---|---|
+| `forum act` refused: control line is PAUSED / MISSING | the course team paused the forum; the agent records a skip. Nothing to do |
+| `stopped after 3 consecutive failed posts` | read the `FAILED` diary entries, fix the cause, then `uv run mitsync forum reset` |
+| `forum scholar` says CAPTCHA | Scholar is rate-limiting this IP; the agent posts from the course knowledge alone until it clears |
+| trigger fails with `WORKSPACE_VANISHED` for `courses/forum` | the script runtime uses `<default workspace>/forum`, not `_kb/forum`: restore the symlink `ln -s _kb/forum ~/Desktop/MIT/courses/forum`. Never delete that path |
+| the forum agent ran a non-forum command | `openclaw approvals get` shows an allowlist row for agent `*` or `forum` other than `mitsync-forum`; remove it |
 
 ## When something breaks
 

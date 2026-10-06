@@ -1,0 +1,42 @@
+#!/bin/bash
+#
+# mitsync-forum -- the one executable the OpenClaw `forum` agent may run.
+#
+#   mitsync-forum forum read            same arguments as `mitsync`
+#
+# The forum agent takes part in one Canvas discussion (Homework 3). Its exec
+# allowlist holds only this file, and this file allows only the commands that
+# job needs:
+#
+#   forum pending | read | act | scholar | knowledge search | knowledge outline
+#
+# Everything else is refused, so the agent that writes to Canvas cannot reach
+# deadlines, Gradescope scores, the calendar, the student's files, filing or
+# email. `forum reset` (clearing the stop after repeated failures) is refused
+# too: a human runs it from a terminal after looking at why posts failed.
+#
+# A LaunchAgent has no shell profile, so uv is looked up by absolute path.
+
+set -euo pipefail
+
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+case "${1:-} ${2:-}" in
+  "forum pending" | "forum read" | "forum act" | "forum scholar" | "forum knowledge") ;;
+  "forum reset")
+    echo "mitsync-forum: forum reset lifts the stop after repeated failures; a human" >&2
+    echo "runs it from a terminal. Record a skip and say what failed instead." >&2
+    exit 2
+    ;;
+  *)
+    echo "mitsync-forum: only 'forum pending|read|act|scholar|knowledge' are allowed here," >&2
+    echo "not '$*'. The forum agent has no other tools." >&2
+    exit 2
+    ;;
+esac
+
+for uv in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
+  [ -x "${uv}" ] && exec "${uv}" run --quiet --project "${REPO}" mitsync "$@"
+done
+echo "mitsync-forum: uv not found in ~/.local/bin, /opt/homebrew/bin or /usr/local/bin" >&2
+exit 1

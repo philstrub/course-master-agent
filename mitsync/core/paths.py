@@ -126,6 +126,11 @@ class Paths:
     def kb_briefings(self) -> Path:
         return self.kb / "briefings"
 
+    @property
+    def kb_forum(self) -> Path:
+        """The forum agent's workspace: its diary, post log and decision files."""
+        return self.kb / "forum"
+
     # --- repo-side ---
     @property
     def config_dir(self) -> Path:
@@ -159,6 +164,12 @@ class Paths:
     def due_json(self) -> Path:
         return self.state_dir / "due.json"
 
+    @property
+    def forum_state(self) -> Path:
+        """Seen entries, the failure count and an in-flight post: code-owned, so it
+        sits outside the forum agent's workspace, where its file tools cannot reach."""
+        return self.state_dir / "forum"
+
     def writable_dirs(self) -> list[Path]:
         return [
             self.canvas_mirror,
@@ -167,7 +178,10 @@ class Paths:
             self.kb_graph,
             self.kb_courses,
             self.kb_briefings,
+            self.kb_forum,
+            self.kb_forum / "decisions",
             self.state_dir,
+            self.forum_state,
             self.undo_dir,
             self.plans_dir,
         ]

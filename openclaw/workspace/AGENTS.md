@@ -99,6 +99,8 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 2. **Nothing leaves read-only sources.** Never write to Canvas or Apple
    Calendar; there is no command for it and you must not look for one. The
    only outbound message is `email`, and its recipient is fixed in config.
+   (A separate agent, `forum`, posts to the Homework 3 discussion. Your wrapper
+   refuses every `forum` command.)
 3. **Never move, rename or delete the student's files.** `organize apply
    --plan P --yes` only copies Canvas files out of the mirror and rejects any
    placement that touches a file already there; that is yours to run.

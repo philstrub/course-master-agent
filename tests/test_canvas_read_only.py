@@ -3,6 +3,9 @@
 Canvas holds graded work: a submission, a deletion, or an overwritten file is
 not recoverable from this tool's side. The guarantee is therefore structural --
 a chokepoint check plus a source scan -- not a matter of caller discipline.
+
+There is one write, and it is pinned: `forum/discussion.py` may POST an entry
+to the Homework 3 agent forum, and only there (`_post` refuses every other URL).
 """
 
 import ast
@@ -37,9 +40,11 @@ def test_read_methods_are_allowed(settings):
     assert READ_ONLY_METHODS == {"GET", "HEAD"}
 
 
-#: The one file allowed an HTTP POST: the LTI launch to HBS Publishing, a login
-#: rather than a write, and `hbsp._post` refuses every other host.
-POST_ALLOWED = {"hbsp.py"}
+#: The files allowed an HTTP POST. `hbsp.py`: the LTI launch to HBS Publishing, a
+#: login rather than a write; `hbsp._post` refuses every other host.
+#: `discussion.py`: an entry in the Homework 3 agent forum; `discussion._post`
+#: refuses every URL but that topic's entries and replies.
+POST_ALLOWED = {"hbsp.py", "discussion.py"}
 
 
 def test_no_module_issues_an_http_write_call():
@@ -63,7 +68,7 @@ def test_no_module_issues_an_http_write_call():
     assert not offenders, f"HTTP write calls found: {offenders}"
 
 
-def test_hbsp_is_the_only_module_that_posts_and_only_to_hbs():
+def test_only_the_pinned_modules_post_and_only_where_pinned():
     posting = {
         path.name
         for path in SRC.rglob("*.py")
@@ -81,3 +86,15 @@ def test_hbsp_is_the_only_module_that_posts_and_only_to_hbs():
     with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as web:
         with pytest.raises(MitsyncError, match="refusing to POST"):
             hbsp._post(web, {"action": "https://canvas.mit.edu/api/v1/x", "data": {}})
+
+    from mitsync.forum import discussion
+
+    with httpx.Client(transport=httpx.MockTransport(lambda r: httpx.Response(200))) as web:
+        for url in (
+            "https://canvas.mit.edu/api/v1/courses/40577/assignments/1/submissions",
+            "https://canvas.mit.edu/api/v1/courses/40577/discussion_topics/1/entries",
+            "https://canvas.mit.edu/api/v1/courses/1/discussion_topics/448963/entries",
+            "https://canvas.mit.edu/api/v1/courses/40577/discussion_topics/448963/entries/5",
+        ):
+            with pytest.raises(MitsyncError, match="refusing to POST"):
+                discussion._post(web, url, "<p>x</p>")

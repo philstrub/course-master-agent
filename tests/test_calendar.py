@@ -261,7 +261,7 @@ def test_reads_and_normalises_ical_guy_json(
 
     assert [e.title for e in events] == [
         "15.681 From Analytics to Action (Session 1)",
-        "GYM",
+        "Personal",
         "Analytics Edge - Group formation due",
     ]
     lecture = events[0]
@@ -278,15 +278,15 @@ def test_reads_and_normalises_ical_guy_json(
 def test_optional_fields_absent_become_none(
     settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The GYM event carries no location and no notes -- and no KeyError."""
+    """The personal event carries no location and no notes -- and no KeyError."""
     write_courses(settings)
     fake_cli(tmp_path, monkeypatch, stdout=ICAL_GUY_JSON)
 
-    gym = next(e for e in calendar_read.read_events(settings) if e.title == "GYM")
-    assert gym.location is None
-    assert gym.notes is None
-    assert gym.calendar == "filippostrub@gmail.com"
-    assert gym.course is None
+    personal = next(e for e in calendar_read.read_events(settings) if e.title == "Personal")
+    assert personal.location is None
+    assert personal.notes is None
+    assert personal.calendar == "student@example.com"
+    assert personal.course is None
 
 
 def test_all_day_event(settings: Settings, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

@@ -28,6 +28,21 @@
       // every 30 minutes with nothing to do.
       heartbeat: { every: "0m" },
     },
+    entries: {
+      // Homework 3: the only agent that writes to Canvas (one discussion
+      // topic, through `mitsync forum act`). Created by `openclaw agents add
+      // forum` (SETUP.md, "The forum agent"). It has its own workspace (its
+      // diary and decision files, plus AGENTS.md, SOUL.md and an empty USER.md
+      // from `make openclaw-forum`), file tools that cannot leave it, and no
+      // skills. Its exec allowlist holds only bin/mitsync-forum.
+      forum: {
+        workspace: "/Users/filippostrub/Desktop/MIT/courses/_kb/forum",
+        model: "anthropic/claude-sonnet-5",
+        skills: [],
+        heartbeat: { every: "0m" },
+        tools: { fs: { workspaceOnly: true } },
+      },
+    },
   },
 
   tools: {
@@ -38,11 +53,14 @@
       // Not "allowlist": with the claude-cli runtime, ask=off denies every
       // shell call, the allowlisted wrapper included.
       //
-      // The allowlist holds one entry, added per agent with the CLI (it lives
+      // The allowlist holds one entry per agent, added with the CLI (it lives
       // in OpenClaw's state database, not here):
       //   openclaw approvals allowlist add --agent mitsync \
       //     /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent
-      // That wrapper refuses `organize undo` and `--include-existing`.
+      //   openclaw approvals allowlist add --agent forum \
+      //     /Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-forum
+      // mitsync-agent refuses `organize undo`, `--include-existing` and `forum`.
+      // Never add an entry for agent "*": it hands every agent every binary.
       mode: "ask",
       // Run on this Mac. Left on "auto", models try host=node/sandbox first
       // and burn two failed calls per run.
