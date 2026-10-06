@@ -129,6 +129,12 @@ class StalePresignedURL(MitsyncError):
     """A Canvas file download URL expired; re-fetch the file record."""
 
 
+class CanvasFileLocked(MitsyncError):
+    """Canvas lists the file but locks it for the student (an unpublished
+    module, a future unlock date). Expected, not a failure: the next sync
+    after it unlocks downloads it."""
+
+
 class CalendarAccessDenied(MitsyncError):
     """macOS TCC denied calendar access. Grant it in System Settings > Privacy."""
 
@@ -176,3 +182,9 @@ class ForumRefused(MitsyncError):
 class ScholarBlocked(MitsyncError):
     """Google Scholar answered with a CAPTCHA or an error instead of results.
     Not retried: the agent posts from the course knowledge alone this run."""
+
+
+class ForumOutcomeUnknown(MitsyncError):
+    """A forum post was sent but neither answered nor visible on Canvas yet
+    (Canvas's discussion view is cached). It is never retried blindly: the
+    next run reconciles it once Canvas shows the forum as it is."""

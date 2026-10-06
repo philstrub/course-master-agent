@@ -17,7 +17,7 @@ from pathlib import Path
 import httpx
 import pytest
 
-from mitsync.core.errors import ForumRefused, MitsyncError, ScholarBlocked
+from mitsync.core.errors import ForumOutcomeUnknown, ForumRefused, MitsyncError, ScholarBlocked
 from mitsync.forum import discussion, knowledge, scholar
 from mitsync.forum.discussion import TOPIC
 
@@ -44,13 +44,18 @@ class FakeCanvas:
         self.fail_next = 0  # answer this many POSTs with 503 without saving
         self.lose_ack = False  # save the next POST, then time out instead of answering
         self.pause_after_post = False
+        self.stale_views = 0  # serve this many /view reads without the newest own entries
+        self.refuse_connect = 0  # fail this many POSTs before they reach Canvas
+        self._visible = 10**9  # own entries above this id are hidden while views are stale
 
     def entry(self, entry_id: int) -> dict:
         return next(e for e in self.entries if e["id"] == entry_id)
 
-    def tree(self, parent: int | None) -> list[dict]:
+    def tree(self, parent: int | None, hide_above: int) -> list[dict]:
         return [
-            {**e, "replies": self.tree(e["id"])} for e in self.entries if e["parent_id"] == parent
+            {**e, "replies": self.tree(e["id"], hide_above)}
+            for e in self.entries
+            if e["parent_id"] == parent and not (e["user_id"] == ME and e["id"] > hide_above)
         ]
 
     def handler(self, request: httpx.Request) -> httpx.Response:
@@ -66,14 +71,21 @@ class FakeCanvas:
                 {"id": i, "display_name": n}
                 for i, n in ((ME, "Me"), (ALICE, "Alice"), (BOB, "Bob"))
             ]
+            hide_above = self._visible if self.stale_views else 10**9
+            self.stale_views = max(0, self.stale_views - 1)
+            view = self.tree(None, hide_above)
             return httpx.Response(
-                200, json={"participants": people, "view": self.tree(None), "new_entries": []}
+                200, json={"participants": people, "view": view, "new_entries": []}
             )
         if request.method == "GET" and path == f"{TOPIC}/entry_list":
             ids = {int(v) for v in request.url.params.get_list("ids[]")}
             return httpx.Response(200, json=[e for e in self.entries if e["id"] in ids])
         if request.method == "POST" and path.startswith(f"{TOPIC}/entries"):
+            if self.refuse_connect:
+                self.refuse_connect -= 1
+                raise httpx.ConnectError("connection refused", request=request)
             self.posts += 1
+            self._visible = max(e["id"] for e in self.entries)
             if self.pause_after_post:
                 self.control = "PAUSED"
             if self.fail_next:
@@ -268,12 +280,50 @@ def test_a_crash_after_the_post_is_recovered_by_the_next_run(settings, canvas, m
     assert canvas.posts == 1
 
 
-def test_an_interrupted_post_that_never_landed_is_dropped(settings, canvas):
-    canvas.fail_next = 1
+def test_a_lost_acknowledgement_with_a_stale_view_is_never_retried(settings, canvas):
+    """The live failure of 2026-10-06: a cached view hid the first post; a retry duplicated it."""
     read(settings, canvas)
-    s = state(settings) | {
-        "intent": {"decision": json.loads(decide(settings).read_text()), "at": iso()}
-    }
+    canvas.lose_ack, canvas.stale_views = True, 100
+    with pytest.raises(ForumOutcomeUnknown, match="not retrying"):
+        act(settings, canvas, decide(settings))
+    assert canvas.posts == 1 and state(settings)["intent"] is not None
+    with pytest.raises(ForumRefused, match="not resolved yet"):
+        act(settings, canvas, decide(settings, reply_to=10))  # no new post while unresolved
+    assert canvas.posts == 1
+
+    canvas.stale_views = 0  # the cache catches up before the next run
+    assert read(settings, canvas)["recovered"]["on_canvas"] is True
+    assert len([e for e in canvas.entries if e["user_id"] == ME]) == 1
+    assert posts_log(settings)[0]["recovered"] == "after restart"
+
+
+def test_a_post_that_never_reached_canvas_is_retried(settings, canvas):
+    canvas.refuse_connect = 1
+    out = act(settings, canvas, decide(settings))
+    assert out["attempts"] == 2 and canvas.posts == 1
+
+
+def test_the_post_log_blocks_a_second_reply_while_the_view_is_stale(settings, canvas):
+    act(settings, canvas, decide(settings))
+    canvas.stale_views = 100
+    with pytest.raises(ForumRefused, match="already replied to entry 11"):
+        act(settings, canvas, decide(settings, message=MESSAGE.replace("Bob", "Bob again")))
+    assert canvas.posts == 1
+
+
+def test_an_unresolved_post_is_kept_until_it_is_old_enough_to_drop(settings, canvas):
+    read(settings, canvas)
+    fresh = {"decision": json.loads(decide(settings).read_text()), "at": iso(2)}
+    s = state(settings) | {"intent": fresh}
+    (settings.paths.forum_state / "state.json").write_text(json.dumps(s))
+    assert read(settings, canvas)["recovered"]["on_canvas"] == "not visible yet"
+    assert state(settings)["intent"] is not None
+
+
+def test_an_interrupted_post_that_never_landed_is_dropped(settings, canvas):
+    read(settings, canvas)
+    decision = json.loads(decide(settings).read_text())
+    s = state(settings) | {"intent": {"decision": decision, "at": iso(30)}}
     (settings.paths.forum_state / "state.json").write_text(json.dumps(s))
     assert read(settings, canvas)["recovered"] == {
         "interrupted_post_sent_at": s["intent"]["at"],

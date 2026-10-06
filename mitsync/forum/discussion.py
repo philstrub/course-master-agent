@@ -63,13 +63,20 @@ Memory is split by who may write it:
 
 ## 4. Key Concepts
 
-**Write-ahead intent, then reconcile.** The decision is saved as `intent`
-before the POST. If the acknowledgement is lost (a timeout, a 5xx, a
-malformed answer), or the process dies before logging, Canvas may still have
-the post. So the next step, a retry or the next run's `read`/`act`/`pending`,
-first looks for the agent's own entry with the same text under the same
-parent, and records it instead of posting again. A post is retried only once
-Canvas shows it did not land.
+**Write-ahead intent, then reconcile; never retry an unknown outcome.** The
+decision is saved as `intent` before the POST. If the acknowledgement is lost
+(a timeout, a malformed answer, a 5xx other than 503), or the process dies
+before logging, Canvas may still have the post. The tool then re-reads the
+forum (`RECONCILE_WAITS`) for its own entry with the same text under the same
+parent. If none shows, it does **not** retry: it raises
+`ForumOutcomeUnknown` and leaves the intent in place. Canvas caches the
+discussion view, and on 2026-10-06 a retry made after one stale read
+duplicated a live post. While the intent is unresolved, `act` refuses new
+posts. The next run's `read`/`act`/`pending` records the entry once the view
+shows it, or drops the intent after `UNRESOLVED_FOR`. Retries with backoff
+happen only when Canvas provably did not create the entry: a connection
+failure, or a 429/503 answer. The one-reply-per-entry rule and the hourly count
+also read `posts.jsonl`, for the same caching reason.
 
 **Seen means read by the agent.** `read` remembers the ids it showed (all
 entries by others, the newest `SHOWN_NEW` in full). Only `act` marks them seen,
@@ -110,7 +117,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_valida
 from mitsync.canvas.client import CanvasClient
 from mitsync.core.clock import now_iso, parse_iso
 from mitsync.core.config import Settings
-from mitsync.core.errors import ForumRefused, MitsyncError
+from mitsync.core.errors import ForumOutcomeUnknown, ForumRefused, MitsyncError
 from mitsync.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -126,6 +133,15 @@ TOPIC_URL = f"https://canvas.mit.edu{TOPIC}"
 MAX_POSTS_PER_HOUR = 3
 MAX_FAILURES = 3
 POST_ATTEMPTS = 3
+#: Waits (seconds) between re-reads of the forum after an ambiguous failure.
+#: Canvas caches the discussion view, so a post that landed can be missing
+#: from it for a while (seen live: under a minute).
+RECONCILE_WAITS = (5.0, 15.0, 30.0)
+#: An unresolved post younger than this blocks new posts; older, it is dropped
+#: as never landed (by then the cached view has caught up).
+UNRESOLVED_FOR = timedelta(minutes=10)
+#: Statuses that mean Canvas did not create the entry, so a retry is safe.
+_NOT_CREATED = frozenset({429, 503})
 SHOWN_NEW = 10
 ENTRY_CHARS = 1200  # `read` must stay under the ~30 KB a tool result may carry inline
 THREADS_SHOWN = 12
@@ -331,8 +347,20 @@ def _landed(snap: dict, decision: Decision) -> dict | None:
     return None
 
 
+def _logged_posts(settings: Settings) -> list[dict]:
+    """The local post log. Canvas's cached view can lag a fresh post, so the
+    hourly count and the one-reply-per-entry rule consult both."""
+    path = settings.paths.kb_forum / "posts.jsonl"
+    return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
 def _budget(settings: Settings, state: ForumState, snap: dict) -> dict[str, Any]:
-    used = _posts_last_hour(snap, datetime.now(UTC))
+    now = datetime.now(UTC)
+    logged = sum(
+        bool(p["posted_at"]) and parse_iso(p["posted_at"]) > now - timedelta(hours=1)
+        for p in _logged_posts(settings)
+    )
+    used = max(_posts_last_hour(snap, now), logged)
     why = None
     if snap["control"] != "RUNNING":
         why = f"the course team's control line is {snap['control']}"
@@ -485,10 +513,12 @@ def screen(message: str, token: str | None = None) -> list[str]:
     return problems
 
 
-def _check(decision: Decision, snap: dict, token: str | None) -> list[str]:
+def _check(settings: Settings, decision: Decision, snap: dict, token: str | None) -> list[str]:
     """Screen the message, and refuse replies that would ignore the thread's state."""
     problems = screen(decision.message or "", token)
     mine = _mine(snap)
+    # The post log too: Canvas's cached view can lag a reply posted minutes ago.
+    replied = {e["parent_id"] for e in mine} | {p["reply_to"] for p in _logged_posts(settings)}
     if decision.reply_to is not None:
         target = snap["entries"].get(decision.reply_to)
         if target is None:
@@ -497,7 +527,7 @@ def _check(decision: Decision, snap: dict, token: str | None) -> list[str]:
             problems.append(f"entry {decision.reply_to} was deleted")
         elif target["user_id"] == snap["me"]:
             problems.append(f"entry {decision.reply_to} is your own post")
-        elif any(e["parent_id"] == decision.reply_to for e in mine):
+        elif decision.reply_to in replied:
             problems.append(f"you already replied to entry {decision.reply_to}")
     new = _trigrams(decision.message or "")
     for e in mine:
@@ -580,13 +610,27 @@ def _send(
                 return entry, attempt + 1, False
             except (httpx.TransportError, httpx.HTTPStatusError, ValueError) as exc:
                 log.warning("post attempt %d failed: %s: %s", attempt + 1, type(exc).__name__, exc)
+                code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
+                # Safe to retry only when Canvas provably did not create the entry.
+                not_created = code in _NOT_CREATED or isinstance(
+                    exc, (httpx.ConnectError, httpx.ConnectTimeout)
+                )
                 found = _landed(_snapshot(client), decision)
+                for wait in () if not_created else RECONCILE_WAITS:
+                    if found:
+                        break
+                    sleep(wait)
+                    found = _landed(_snapshot(client), decision)
                 if found:
                     log.info("entry %s is on Canvas after all; not posting again", found["id"])
                     return found, attempt + 1, True
-                code = exc.response.status_code if isinstance(exc, httpx.HTTPStatusError) else None
                 if code is not None and code < 500 and code != 429:
                     raise MitsyncError(f"Canvas refused the post: HTTP {code}") from exc
+                if not not_created:
+                    raise ForumOutcomeUnknown(
+                        f"the post may be on Canvas ({type(exc).__name__}: {exc}) but no read "
+                        "shows it yet; not retrying. The next run reconciles it."
+                    ) from exc
                 if attempt + 1 == POST_ATTEMPTS:
                     raise MitsyncError(f"post failed {POST_ATTEMPTS} times: {exc}") from exc
                 delay = 2.0 * 2**attempt
@@ -633,6 +677,9 @@ def _reconcile(settings: Settings, state: ForumState, snap: dict) -> dict | None
         return None
     decision, sent = state.intent.decision, state.intent.at
     found = _landed(snap, decision)
+    if found is None and datetime.now(UTC) - parse_iso(sent) < UNRESOLVED_FOR:
+        log.warning("the post sent at %s is not visible yet; leaving it unresolved", sent)
+        return {"unresolved_post_sent_at": sent, "on_canvas": "not visible yet"}
     if found is None:
         log.warning("the interrupted post from %s never reached Canvas; dropping it", sent)
         state.intent = None
@@ -668,7 +715,12 @@ def act(
                 _record(settings, state, decision, snap, None, "skipped")
             return {"action": "skip", "dry_run": dry_run, "recovered": recovered}
 
-        problems = _check(decision, snap, settings.canvas.token)
+        if state.intent is not None:
+            raise ForumRefused(
+                f"a post sent at {state.intent.at} is not resolved yet; record a skip, "
+                "the next run settles it"
+            )
+        problems = _check(settings, decision, snap, settings.canvas.token)
         if problems:
             raise ForumRefused("not posted, because " + "; ".join(problems) + ". Revise and retry.")
         budget = _budget(settings, state, snap)
@@ -686,6 +738,11 @@ def act(
         except ForumRefused:
             state.intent = None
             _save(settings, state)
+            raise
+        except ForumOutcomeUnknown as exc:
+            state.failures += 1  # the intent stays: the next run reconciles it
+            _save(settings, state)
+            _diary(settings, decision, snap, None, f"OUTCOME UNKNOWN, left to reconcile: {exc}")
             raise
         except MitsyncError as exc:
             state.failures += 1
