@@ -1,6 +1,6 @@
 ---
 name: mit-organize
-description: File newly mirrored Canvas material into the student's own course folders under the per-course names in `config/naming.md`. Lists unfiled files with `mitsync unfiled --json`, decides where each belongs and what it is called, writes a plan JSON (placements and skips), and applies it with `organize apply --yes`, which only copies Canvas files and never touches the student's own. Runs every 2 hours from 08:00 to 22:00. Use when the user asks to organize, file, sort or tidy course materials.
+description: File newly mirrored Canvas material into the student's own course folders under the per-course names in `config/naming.md`. Lists unfiled files with `mitsync unfiled --json`, decides where each belongs and what it is called, writes a plan JSON (placements and skips), and applies it with `organize apply --yes`, which only copies Canvas files and never touches the student's own. Runs every 30 minutes from 08:00 to 22:00. Use when the user asks to organize, file, sort or tidy course materials.
 user-invocable: true
 metadata:
   { "openclaw": { "requires": { "bins": ["uv"] }, "os": ["darwin"] } }

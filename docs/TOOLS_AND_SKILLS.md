@@ -43,7 +43,7 @@ It says which tools to run and what to judge.
 |---|---|---|---|
 | **`mit-briefing`** | "morning brief", "am I behind?", cron 07:00 | `sync`, `due`, `work`, then `email` | how far along each homework is (handout parts vs. your drafts), 1–3 things to review, hours left |
 | `mit-canvas-sync` | "anything new on Canvas?" | `sync` | which errors are expected (hidden Files tab, throttling) and which are real (expired token) |
-| `mit-organize` | "file my new material", cron every 2 h 08–22 | `unfiled`, `organize apply --yes` | where each file goes and its per-course name, per `config/naming.md`; files Canvas copies, never your own files |
+| `mit-organize` | "file my new material", cron every 30 min 08–22 | `unfiled`, `organize apply --yes` | where each file goes and its per-course name, per `config/naming.md`; files Canvas copies, never your own files |
 | `mit-graph-query` | "where is X taught?", "what's in lecture 5?", "what did I submit?" | `graph query`, `graph cypher` (read-only) | which query answers the question, and what the returned `text` pages say |
 | `mit-graph-build` | "rebuild / complete the knowledge base", cron 20 min after each sync when `graph check` has new items | `graph refresh`, `graph check`, `graph add --dry-run`, `graph add`, subagents | lecture numbers, concepts and file parents, one subagent per reading-heavy course, until `graph check` is clean |
 | `mit-course` | "update the course notes", cron nightly | `extract`, `kb build`, `kb check` | each course's master file `COURSE.md` (what every lecture, recitation, assignment and reading says) and its `readings.json`, until `kb check` is clean |
@@ -52,7 +52,7 @@ It says which tools to run and what to judge.
 
 | | **OpenClaw** (autonomous) | **Claude Code** (interactive) |
 |---|---|---|
-| starts a turn | cron (brief 07:00, filing and graph every 2 h 08–22, master files 23:00), or a dashboard chat message | you, in the terminal |
+| starts a turn | cron (brief 07:00, filing and graph every 30 min 08–22, master files 23:00), or a dashboard chat message | you, in the terminal |
 | instructions | workspace `AGENTS.md` + `SOUL.md` + `USER.md` (copied from `_agent/openclaw/workspace/` by `make openclaw-workspace`) | `_agent/CLAUDE.md` |
 | skills | discovered from `<workspace>/skills`, also slash commands | the same files, read on request |
 | shell | allowlisted to **one binary**, `mitsync-agent`, which refuses `organize undo` and `--include-existing` | any command, behind Claude Code's permission prompts |

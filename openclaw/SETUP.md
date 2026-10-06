@@ -7,7 +7,7 @@ trust `--help`.
 ## What OpenClaw is, in one picture
 
 ```
- you (web dashboard at :18789)         cron: brief 07:00 · sync + file every 2 h
+ you (web dashboard at :18789)         cron: brief 07:00 · sync + file every 30 min
                  │                                        │
                  ▼                                        ▼
         ┌──────────────── Gateway (always-on daemon, port 18789) ────────────┐
@@ -229,7 +229,7 @@ last sync, and `graph-build` adds the judgment the folders cannot give:
 | `gradescope-sync`, `-morning` | 5 min before each sync | `mitsync-agent gradescope sync` (command job), so the backbone's Assignment nodes carry Gradescope's status | none |
 | `canvas-sync-morning` | 06:45 Mon–Fri | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
 | `morning-brief` | 07:00 Mon–Fri | `mit-briefing`: judge, write, email | Sonnet 5, low thinking |
-| `canvas-sync` | every 2 h, 08:00–22:00 | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
+| `canvas-sync` | every 30 min, 08:00–22:30 | `mitsync-agent sync`: mirror Canvas, then refresh the graph (command job) | none |
 | `canvas-file` | 10 min after each sync | `mit-organize`: file new Canvas material | Haiku 4.5, low thinking, **only if** `openclaw/triggers/new-to-file.js` sees a file the last check hadn't |
 | `graph-build` | 20 min after each sync | `mit-graph-build`: close what `graph check` lists, one subagent per reading-heavy course | Sonnet 5, low thinking, **only if** `openclaw/triggers/graph-pending.js` (which runs `graph refresh`, then `graph check`) sees an item the last check hadn't |
 | `course-notes` | 23:00 daily | `mit-course`: bring each course's master file up to date | Sonnet 5, low thinking, **only if** `openclaw/triggers/course-pending.js` (which runs `extract`, `kb build`, `kb check`) sees a document the last check hadn't |
@@ -247,12 +247,12 @@ openclaw config set agents.defaults.models \
 
 openclaw cron add --name gradescope-sync-morning --agent mitsync --cron "40 6 * * 1-5" \
   --tz America/New_York --exact --command-argv "[\"$W\",\"gradescope\",\"sync\"]" --timeout-seconds 120 --no-deliver
-openclaw cron add --name gradescope-sync --agent mitsync --cron "55 7-21/2 * * *" \
+openclaw cron add --name gradescope-sync --agent mitsync --cron "25,55 7-22 * * *" \
   --tz America/New_York --exact --command-argv "[\"$W\",\"gradescope\",\"sync\"]" --timeout-seconds 120 --no-deliver
 
 openclaw cron add --name canvas-sync-morning --agent mitsync --cron "45 6 * * 1-5" \
   --tz America/New_York --exact --command-argv "[\"$W\",\"sync\"]" --timeout-seconds 600 --no-deliver
-openclaw cron add --name canvas-sync --agent mitsync --cron "0 8-22/2 * * *" \
+openclaw cron add --name canvas-sync --agent mitsync --cron "*/30 8-22 * * *" \
   --tz America/New_York --exact --command-argv "[\"$W\",\"sync\"]" --timeout-seconds 600 --no-deliver
 
 openclaw cron add --name morning-brief --agent mitsync --cron "0 7 * * 1-5" \
@@ -260,13 +260,13 @@ openclaw cron add --name morning-brief --agent mitsync --cron "0 7 * * 1-5" \
   --message "Scheduled run, nobody is watching. Read skills/mit-briefing/SKILL.md and follow it: write today's morning brief and send it. Stay within its tool budget." \
   --thinking low --tools exec,read,write --timeout-seconds 900 --no-deliver
 
-openclaw cron add --name canvas-file --agent mitsync --cron "10 8-22/2 * * *" \
+openclaw cron add --name canvas-file --agent mitsync --cron "10,40 8-22 * * *" \
   --tz America/New_York --exact --session isolated \
   --trigger-script ./openclaw/triggers/new-to-file.js \
   --message "Scheduled filing run, nobody is watching. Read skills/mit-organize/SKILL.md and follow it: file the new Canvas material with organize apply --yes." \
   --model anthropic/claude-haiku-4-5 --thinking low --tools exec,read,write --timeout-seconds 600 --no-deliver
 
-openclaw cron add --name graph-build --agent mitsync --cron "20 8-22/2 * * *" \
+openclaw cron add --name graph-build --agent mitsync --cron "20,50 8-22 * * *" \
   --tz America/New_York --exact --session isolated \
   --trigger-script ./openclaw/triggers/graph-pending.js \
   --message "Scheduled run, nobody is watching. Read skills/mit-graph-build/SKILL.md and follow its scheduled run: close what graph check lists, delegating reading-heavy courses to subagents, and check every facts file before you add it." \
