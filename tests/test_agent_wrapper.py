@@ -1,4 +1,5 @@
-"""`bin/mitsync-agent` refuses what only a human may do to the student's folders.
+"""`bin/mitsync-agent` refuses what only a human may do to the student's folders,
+and `bin/mitsync-forum` allows the forum agent its own commands and nothing else.
 
 OpenClaw's exec allowlist holds only this wrapper, so the wrapper's refusal is
 the whole guarantee that an autonomous run cannot undo a filing or move a
@@ -12,6 +13,7 @@ from pathlib import Path
 import pytest
 
 WRAPPER = Path(__file__).resolve().parents[1] / "bin" / "mitsync-agent"
+FORUM = Path(__file__).resolve().parents[1] / "bin" / "mitsync-forum"
 REFUSED = 2
 
 
@@ -42,3 +44,32 @@ def test_plain_apply_reaches_mitsync(tmp_path):
     )
     assert proc.returncode != REFUSED
     assert "human" not in proc.stderr
+
+
+@pytest.mark.parametrize("args", [["forum", "act", "--decision", "d.json"], ["forum", "read"]])
+def test_the_main_agent_cannot_reach_the_forum(args):
+    proc = subprocess.run([str(WRAPPER), *args], capture_output=True, text=True, check=False)
+    assert proc.returncode == REFUSED
+    assert "forum agent" in proc.stderr
+
+
+@pytest.mark.parametrize(
+    "args",
+    [["due", "--json"], ["gradescope", "sync"], ["calendar"], ["email"], ["work"],
+     ["graph", "query", "--canned", "submitted"], ["organize", "apply", "--plan", "p"],
+     ["forum", "reset"], []],
+)  # fmt: skip
+def test_the_forum_agent_reaches_only_forum_commands(args):
+    proc = subprocess.run([str(FORUM), *args], capture_output=True, text=True, check=False)
+    assert proc.returncode == REFUSED
+
+
+def test_forum_commands_reach_mitsync(tmp_path):
+    proc = subprocess.run(
+        [str(FORUM), "forum", "read"],
+        env={"HOME": str(tmp_path), "PATH": "/usr/bin:/bin"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode != REFUSED

@@ -10,6 +10,7 @@
 #
 #   organize undo                         reverses a filing; a human decides that
 #   organize apply --include-existing     would MOVE the student's own files
+#   forum ...                             the forum agent's, through bin/mitsync-forum
 #
 # Plain `organize apply --plan P --yes` is allowed: it only hardlinks or
 # copies newly mirrored Canvas files into the course folders (replacing at most
@@ -34,6 +35,12 @@ case " $* " in
     exit 2
     ;;
 esac
+
+if [ "${1:-}" = forum ]; then
+  echo "mitsync-agent: the Canvas forum belongs to the separate forum agent" >&2
+  echo "(bin/mitsync-forum); this agent never writes to Canvas." >&2
+  exit 2
+fi
 
 for uv in "${HOME}/.local/bin/uv" /opt/homebrew/bin/uv /usr/local/bin/uv; do
   [ -x "${uv}" ] && exec "${uv}" run --quiet --project "${REPO}" mitsync "$@"

@@ -96,10 +96,14 @@ organize_app = typer.Typer(help="Apply and undo agent-written filing plans.")
 graph_app = typer.Typer(help="Add to, rebuild and query the knowledge graph.")
 kb_app = typer.Typer(help="Build the deterministic parts of the markdown knowledge base.")
 gradescope_app = typer.Typer(help="Read (never write) the student's Gradescope dashboard.")
+forum_app = typer.Typer(help="The Homework 3 agent forum: read it, post to it within bounds.")
+forum_knowledge_app = typer.Typer(help="Lecture material the forum agent may draw on.")
 app.add_typer(organize_app, name="organize")
 app.add_typer(graph_app, name="graph")
 app.add_typer(kb_app, name="kb")
 app.add_typer(gradescope_app, name="gradescope")
+app.add_typer(forum_app, name="forum")
+forum_app.add_typer(forum_knowledge_app, name="knowledge")
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Print one JSON document to stdout.")]
 
@@ -564,6 +568,86 @@ def kb_check(
         graph_mod.print_rows("course master files", rows)
     if not doc["ok"] and not exit_zero:
         raise typer.Exit(1)
+
+
+# --------------------------------------------------------------------------
+# forum (Homework 3): every command prints one JSON document
+# --------------------------------------------------------------------------
+@forum_app.command("pending")
+def forum_pending() -> None:
+    """Control line and unseen entries: whether the forum agent should be woken."""
+    from mitsync.forum import discussion
+
+    _emit_json(discussion.pending(_settings()))
+
+
+@forum_app.command("read")
+def forum_read(
+    thread: Annotated[
+        int | None, typer.Option("--thread", help="Any entry id: return its whole thread.")
+    ] = None,
+) -> None:
+    """Unseen entries with context, replies to you, your posts, your budget, your diary."""
+    from mitsync.forum import discussion
+
+    _emit_json(discussion.read(_settings(), thread=thread))
+
+
+@forum_app.command("act")
+def forum_act(
+    decision: Annotated[
+        Path, typer.Option("--decision", help="The agent's decision file in _kb/forum/decisions/.")
+    ],
+    dry_run: Annotated[
+        bool, typer.Option("--dry-run", help="Validate and check every bound; post nothing.")
+    ] = False,
+) -> None:
+    """Post the decision (reply / new_thread) within every bound, or record a skip."""
+    from mitsync.forum import discussion
+
+    _emit_json(discussion.act(_settings(), decision, dry_run=dry_run))
+
+
+@forum_app.command("reset")
+def forum_reset() -> None:
+    """Clear the consecutive-failure stop. A human's command: the forum wrapper refuses it."""
+    from mitsync.forum import discussion
+
+    _emit_json(discussion.reset(_settings()))
+
+
+@forum_app.command("scholar")
+def forum_scholar(
+    query: Annotated[str, typer.Argument(help="What to search Google Scholar for.")],
+    since: Annotated[
+        int | None, typer.Option("--since", help="Only papers from this year on.")
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="Results to return (max 10).")] = 8,
+) -> None:
+    """Recent papers on a topic: title, link, authors/venue/year, snippet, citations."""
+    from mitsync.forum import scholar
+
+    _emit_json(scholar.search(query, since=since, limit=min(limit, 10)))
+
+
+@forum_knowledge_app.command("search")
+def forum_knowledge_search(
+    term: Annotated[str, typer.Argument(help="A concept or phrase, e.g. 'duality'.")],
+) -> None:
+    """Concepts matching TERM, where each is taught, and lecture passages that mention it."""
+    from mitsync.forum import knowledge
+
+    _emit_json(knowledge.search(_settings(), term))
+
+
+@forum_knowledge_app.command("outline")
+def forum_knowledge_outline(
+    course: Annotated[str, typer.Argument(help="A course folder, e.g. 'AI_Studio'.")],
+) -> None:
+    """A course's lectures and concepts from its master file (no paths, no assignments)."""
+    from mitsync.forum import knowledge
+
+    _emit_json({"course": course, "outline": knowledge.outline(_settings(), course)})
 
 
 # --------------------------------------------------------------------------

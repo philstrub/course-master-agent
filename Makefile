@@ -1,12 +1,16 @@
 UV ?= uv
 
-.PHONY: install check fmt test clean openclaw-workspace openclaw-check calendar-helper neo4j-up graph-push
+.PHONY: install check fmt test clean openclaw-workspace openclaw-forum openclaw-check calendar-helper neo4j-up graph-push
 
 # OpenClaw refuses symlinked bootstrap files ("symlink path component not
 # allowed"), so the workspace gets copies; the originals stay here, in git.
 # CLAUDE.md is for a Claude Code session opened in the workspace.
 WORKSPACE ?= ..
 BOOTSTRAP := AGENTS SOUL USER CLAUDE
+# The forum agent (Homework 3) has its own workspace, and no USER.md: it is
+# told nothing personal, so it has nothing personal to leak.
+FORUM_WORKSPACE ?= ../_kb/forum
+FORUM_BOOTSTRAP := AGENTS SOUL
 
 install:
 	$(UV) sync --extra dev
@@ -32,11 +36,19 @@ openclaw-workspace:
 	  rm -f $(WORKSPACE)/$$f.md && cp openclaw/workspace/$$f.md $(WORKSPACE)/$$f.md && echo "copied $$f.md"; \
 	done
 
+openclaw-forum:
+	@for f in $(FORUM_BOOTSTRAP); do \
+	  rm -f $(FORUM_WORKSPACE)/$$f.md && cp openclaw/forum/$$f.md $(FORUM_WORKSPACE)/$$f.md && echo "copied forum $$f.md"; \
+	done
+
 openclaw-check:
 	@for f in $(BOOTSTRAP); do \
 	  if [ -L $(WORKSPACE)/$$f.md ]; then echo "$$f.md is a symlink: run make openclaw-workspace"; exit 1; fi; \
 	  cmp -s openclaw/workspace/$$f.md $(WORKSPACE)/$$f.md || { echo "$$f.md is stale: run make openclaw-workspace"; exit 1; }; \
 	done; echo "workspace bootstrap files are current"
+	@for f in $(FORUM_BOOTSTRAP); do \
+	  cmp -s openclaw/forum/$$f.md $(FORUM_WORKSPACE)/$$f.md || { echo "forum $$f.md is stale: run make openclaw-forum"; exit 1; }; \
+	done; echo "forum bootstrap files are current"
 
 # Calendar access for the gateway: see calendar-helper/main.swift. Ad-hoc
 # signed, so every rebuild is a new app to macOS and needs a fresh Allow.
