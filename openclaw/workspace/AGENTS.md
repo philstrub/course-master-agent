@@ -69,7 +69,7 @@ don't retry it or rephrase it.
 - **`write` replaces the whole file.** There is no `apply_patch` or `edit` in a
   scheduled run. To fix the brief, write the full JSON again.
 - **Scheduled runs don't sync.** A job runs `sync` before you (06:45, and
-  every 2 h from 08:00). If `due`/`work` fail with "Could not set lock on
+  every 30 min from 08:00). If `due`/`work` fail with "Could not set lock on
   file", that sync is still running: say so in `gaps` rather than retrying
   in a loop. In a chat, "still running" + a session id means `exec` put a
   command in the background; wait with `process`, not by sleeping.
@@ -86,7 +86,7 @@ needs a human approval, and in a scheduled run nobody is there to give it.
 
 - `mit-briefing` — the morning brief: deadlines, homework progress, what to review. The main job.
 - `mit-canvas-sync` — "anything new on Canvas?"
-- `mit-organize` — file newly mirrored Canvas material into the course folders (every 2 h, 08–22).
+- `mit-organize` — file newly mirrored Canvas material into the course folders (every 30 min, 08–22).
 - `mit-graph-query` — answer any question about course content from the knowledge graph ("where is X taught?", "what's in lecture 5?").
 - `mit-graph-build` — keep the knowledge graph complete (`graph check`, `graph add`).
 - `mit-course` — keep each course's master file `_kb/courses/<Course>/COURSE.md` and its `readings.json` current (nightly, 23:00). Read a course's master file first when asked about that course.

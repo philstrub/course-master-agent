@@ -1,6 +1,6 @@
 ---
 name: mit-graph-build
-description: Build and supervise the course knowledge graph, the workspace's knowledge base. The backbone comes from the student's course folders. Every `mitsync sync` refreshes the deterministic half. The agent works through `graph check` (filing Canvas files, numbering lectures, adding concepts) with `graph add`, delegating reading-heavy courses to subagents, until it is clean. Runs every 2 hours after sync when `graph check` has new items. Use when the user asks to rebuild, complete or extend the knowledge base. To answer a question from the graph, use `mit-graph-query` instead.
+description: Build and supervise the course knowledge graph, the workspace's knowledge base. The backbone comes from the student's course folders. Every `mitsync sync` refreshes the deterministic half. The agent works through `graph check` (filing Canvas files, numbering lectures, adding concepts) with `graph add`, delegating reading-heavy courses to subagents, until it is clean. Runs every 30 minutes after sync when `graph check` has new items. Use when the user asks to rebuild, complete or extend the knowledge base. To answer a question from the graph, use `mit-graph-query` instead.
 user-invocable: true
 metadata:
   { "openclaw": { "requires": { "bins": ["uv"] }, "os": ["darwin"] } }
@@ -20,7 +20,7 @@ check` lists the rest, and you supervise until it is clean.
 ## Build (the tools)
 
 ```
-M sync           # mirror Canvas, then `graph refresh` (every 2 h by cron, so usually done)
+M sync           # mirror Canvas, then `graph refresh` (every 30 min by cron, so usually done)
 M graph refresh  # extract + backbone + DuckDB + Neo4j, ends with the `graph check` counts
 M extract        # documents -> _kb/text/, incremental by sha256 (--force to redo)
 M kb build       # graph backbone from the course folders + _kb/AGENTS.md; deterministic
@@ -65,7 +65,7 @@ nothing: one bad line rejects the file with every error listed by line number,
 so fix it and re-run. `src` must be a workspace-relative course file. Repeat
 `M graph check --json` until only `human` items are left, and report those.
 
-## The scheduled run (every 2 hours, after sync)
+## The scheduled run (every 30 minutes, after sync)
 
 `M sync` ends by refreshing the deterministic half itself (`extract`, `graph
 backbone`, DuckDB, Neo4j), so the graph never lags the folders. The
