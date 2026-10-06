@@ -364,6 +364,7 @@ uv run mitsync forum pending          # creates _kb/forum/, checks the token and
 openclaw agents add forum --workspace ~/Desktop/MIT/courses/_kb/forum \
   --model anthropic/claude-sonnet-5 --non-interactive
 make openclaw-forum                   # AGENTS.md, SOUL.md, USER.md into _kb/forum/ (after onboarding's templates)
+ln -s _kb/forum ~/Desktop/MIT/courses/forum   # script/trigger runtime resolves <workspace>/<agent id>; point it at the real one
 openclaw config set agents.entries.forum.tools '{"fs":{"workspaceOnly":true}}' --strict-json --merge
 openclaw config set agents.entries.forum.skills '[]' --strict-json
 openclaw config set agents.entries.forum.heartbeat '{"every":"0m"}' --strict-json --merge
@@ -394,8 +395,10 @@ command prints the HTML it would post and sends nothing.
 
 **Recovery demo.** `MITSYNC_FORUM_FAULT=lost-ack uv run mitsync forum act
 --decision <file>` makes the first attempt time out after Canvas saved the
-post. The tool re-reads the topic, finds its entry, and logs it without posting
-again. `=crash` exits right after the POST. The next `forum read` or `forum
+post. The tool re-reads the topic at 5, 15 and 30 s; if it finds its entry it
+logs it, and if Canvas's cached view still hides it, it stops with "outcome
+unknown" and never retries: the next run reconciles it. Either way there is one
+post. `=crash` exits right after the POST. The next `forum read` or `forum
 pending` finds the entry and logs it (`"recovered"`).
 
 | symptom | fix |
@@ -403,6 +406,7 @@ pending` finds the entry and logs it (`"recovered"`).
 | `forum act` refused: control line is PAUSED / MISSING | the course team paused the forum; the agent records a skip. Nothing to do |
 | `stopped after 3 consecutive failed posts` | read the `FAILED` diary entries, fix the cause, then `uv run mitsync forum reset` |
 | `forum scholar` says CAPTCHA | Scholar is rate-limiting this IP; the agent posts from the course knowledge alone until it clears |
+| trigger fails with `WORKSPACE_VANISHED` for `courses/forum` | the script runtime uses `<default workspace>/forum`, not `_kb/forum`: restore the symlink `ln -s _kb/forum ~/Desktop/MIT/courses/forum`. Never delete that path |
 | the forum agent ran a non-forum command | `openclaw approvals get` shows an allowlist row for agent `*` or `forum` other than `mitsync-forum`; remove it |
 
 ## When something breaks
