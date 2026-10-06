@@ -129,12 +129,6 @@ class StalePresignedURL(MitsyncError):
     """A Canvas file download URL expired; re-fetch the file record."""
 
 
-class CanvasFileLocked(MitsyncError):
-    """Canvas lists the file but locks it for the student (an unpublished
-    module, a future unlock date). Expected, not a failure: the next sync
-    after it unlocks downloads it."""
-
-
 class CalendarAccessDenied(MitsyncError):
     """macOS TCC denied calendar access. Grant it in System Settings > Privacy."""
 
