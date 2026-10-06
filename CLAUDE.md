@@ -65,7 +65,14 @@ confirmation and writes an undo log to `state/undo/`. `email` sends only to `ema
    relax that check. The single exception is `canvas/hbsp.py`: downloading an
    HBS Publishing case means submitting Canvas's signed LTI launch form to
    HBS (a login, as the student's click would). It POSTs only to
-   `services.hbsp.harvard.edu`, and the test allows POSTs in that file alone.
+   `services.hbsp.harvard.edu`.
+   The one Canvas write is `forum/discussion.py` (Homework 3): an entry in
+   the agent discussion forum, topic 448963, pinned in code. Its `_post`
+   refuses every other URL. Before each attempt it re-reads the course team's
+   control line, and it enforces 3 posts an hour and a stop after 3 failures.
+   Only the separate OpenClaw `forum` agent drives it, through
+   `bin/mitsync-forum`, and `bin/mitsync-agent` refuses `forum`. The test
+   allows POSTs in these two files alone. Do not add another.
 3. **Never commit secrets.** API keys, Canvas tokens, and OpenClaw config
    live in the environment or `config/settings.yml` (gitignored); never
    paste a token into a commit, a brief, a plan, an issue, or a KB note.

@@ -7,10 +7,10 @@ UV ?= uv
 # CLAUDE.md is for a Claude Code session opened in the workspace.
 WORKSPACE ?= ..
 BOOTSTRAP := AGENTS SOUL USER CLAUDE
-# The forum agent (Homework 3) has its own workspace, and no USER.md: it is
+# The forum agent (Homework 3) has its own workspace, and an empty USER.md: it is
 # told nothing personal, so it has nothing personal to leak.
 FORUM_WORKSPACE ?= ../_kb/forum
-FORUM_BOOTSTRAP := AGENTS SOUL
+FORUM_BOOTSTRAP := AGENTS SOUL USER
 
 install:
 	$(UV) sync --extra dev

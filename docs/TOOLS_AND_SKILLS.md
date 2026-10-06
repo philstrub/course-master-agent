@@ -27,12 +27,19 @@ The agent reaches it through `_agent/bin/mitsync-agent` (OpenClaw) or
 | `graph push` · `cypher Q` | replace the Neo4j projection with the live graph, run read-only Cypher on it | Neo4j (`NEO4J_*` in `.env`) |
 | `email [--dry-run]` | validate the agent's brief JSON, add today's calendar, the files new on Canvas since the last brief, and sync freshness, render the dashboard, send it **once per day** to the address in config | Gmail SMTP |
 | `doctor` | what is configured and what is missing | — |
+| `forum pending` · `read [--thread ID]` | the Homework 3 agent forum: the course team's control line, unseen entries with thread context, replies to you, your posts, your hourly budget, your diary | Canvas read-only, one topic |
+| `forum act --decision F [--dry-run]` | validate the forum agent's decision (`reply` / `new_thread` / `skip`), screen the message, re-check the control line, post with backoff, read it back, append `_kb/forum/diary.md` and `posts.jsonl` | **the one Canvas write**: entries in topic 448963 only, 3 an hour, stops after 3 failures |
+| `forum knowledge search T` · `outline C` | concepts and lecture passages the forum agent may share (no assignments, no paths) | reads the graph |
+| `forum scholar Q [--since Y]` | Google Scholar's first results for a query | scholar.google.com |
+| `forum reset` | clear the stop after repeated failed posts | **human only** (the forum wrapper refuses it) |
 
 **How a judgment gets back into the system.** As data, and always checked:
 the brief is a JSON file checked against `email/brief.schema.json`; a filing
 plan is checked by `organize apply`; graph facts are checked by `graph add`.
 A bad file is rejected, with the failing field named, and the agent fixes it.
 Nothing the agent writes can choose the email recipient or move one of your own files.
+A forum decision is checked by `forum act`, which also enforces the control
+line, the hourly limit, the stopping rule and the content screen.
 
 ## Skills: `_agent/skills/*/SKILL.md`
 
@@ -46,6 +53,7 @@ It says which tools to run and what to judge.
 | `mit-organize` | "file my new material", cron every 30 min 08–22 | `unfiled`, `organize apply --yes` | where each file goes and its per-course name, per `config/naming.md`; files Canvas copies, never your own files |
 | `mit-graph-query` | "where is X taught?", "what's in lecture 5?", "what did I submit?" | `graph query`, `graph cypher` (read-only) | which query answers the question, and what the returned `text` pages say |
 | `mit-graph-build` | "rebuild / complete the knowledge base", cron 20 min after each sync when `graph check` has new items | `graph refresh`, `graph check`, `graph add --dry-run`, `graph add`, subagents | lecture numbers, concepts and file parents, one subagent per reading-heavy course, until `graph check` is clean |
+| forum agent (`openclaw/forum/AGENTS.md`, not a skill) | cron every 30 min 08–22 when `forum pending` has unseen entries | `forum read`, `forum knowledge`, `forum scholar`, `forum act` | whether it has something relevant and useful to add, to which entry, and the post itself; otherwise a skip with its reason |
 | `mit-course` | "update the course notes", cron nightly | `extract`, `kb build`, `kb check` | each course's master file `COURSE.md` (what every lecture, recitation, assignment and reading says) and its `readings.json`, until `kb check` is clean |
 
 ## OpenClaw vs. Claude Code driving the same tools
@@ -55,7 +63,7 @@ It says which tools to run and what to judge.
 | starts a turn | cron (brief 07:00, filing and graph every 30 min 08–22, master files 23:00), or a dashboard chat message | you, in the terminal |
 | instructions | workspace `AGENTS.md` + `SOUL.md` + `USER.md` (copied from `_agent/openclaw/workspace/` by `make openclaw-workspace`) | `_agent/CLAUDE.md` |
 | skills | discovered from `<workspace>/skills`, also slash commands | the same files, read on request |
-| shell | allowlisted to **one binary**, `mitsync-agent`, which refuses `organize undo` and `--include-existing` | any command, behind Claude Code's permission prompts |
+| shell | allowlisted to **one binary**, `mitsync-agent`, which refuses `organize undo`, `--include-existing` and `forum`. The separate `forum` agent is allowlisted to `mitsync-forum` alone, with file tools confined to `_kb/forum/` | any command, behind Claude Code's permission prompts |
 | output | the emailed dashboard, plus `_kb/briefings/<date>-morning.{json,html}` | terminal, and the same files |
 | memory between runs | files on disk, plus OpenClaw `memory/<date>.md` | files on disk |
 
