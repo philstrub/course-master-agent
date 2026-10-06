@@ -31,9 +31,8 @@ graph:
 organize:
   link_mode: hardlink            # hardlink | copy | symlink
 
-email:                           # the morning brief; the recipient is fixed here, never by the agent
-  sender: filippostrub@gmail.com
-  to: filippostrub@gmail.com
+email:                           # the morning brief; the recipient is fixed by config, never by the agent
+  # sender and to come from MITSYNC_EMAIL_SENDER / MITSYNC_EMAIL_TO in _agent/.env (kept out of git)
   password_env: GMAIL_APP_PASSWORD   # a Gmail app password, kept in _agent/.env
   node: /Users/filippostrub/.nvm/versions/node/v26.10.0/bin/node   # the LaunchAgent has no nvm, so the absolute path
 

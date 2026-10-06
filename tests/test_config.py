@@ -22,7 +22,7 @@ from pathlib import Path
 
 import pytest
 
-from mitsync.core.config import Settings, load_settings
+from mitsync.core.config import Settings, clear_cache, load_settings
 from mitsync.core.errors import ConfigError
 from mitsync.core.paths import Paths
 
@@ -100,6 +100,24 @@ def test_guardrails_survive_a_missing_settings_file(tmp_path: Path, relpath: str
     s = load_settings(tmp_path / "definitely-absent.yml")
     assert s.source_path is not None and not s.source_path.exists()
     assert s.should_ignore(relpath) is True
+
+
+def test_email_addresses_come_from_the_environment_when_the_file_omits_them(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A public repo keeps the address in `.env`, not in config/settings.yml."""
+    monkeypatch.setenv("MITSYNC_EMAIL_SENDER", "me@example.com")
+    monkeypatch.setenv("MITSYNC_EMAIL_TO", "inbox@example.com")
+    s = load_settings(tmp_path / "absent.yml")
+    assert (s.email.sender, s.email.to) == ("me@example.com", "inbox@example.com")
+
+
+def test_email_addresses_in_the_file_win_over_the_environment(
+    settings: Settings, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MITSYNC_EMAIL_TO", "elsewhere@example.com")
+    clear_cache()
+    assert load_settings(settings.source_path).email.to == "student@example.com"
 
 
 def test_invalid_settings_raise(tmp_path: Path) -> None:

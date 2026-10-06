@@ -10,7 +10,7 @@
       "type": "exchange"
     },
     "endDate": "2026-09-21T15:30:00Z",
-    "id": "34A3C88F:mban2027_15.681_2026_09_21_083000@mit.edu",
+    "id": "34A3C88F:course_15.681_2026_09_21_083000@mit.edu",
     "isAllDay": false,
     "lastModifiedDate": "2026-08-27T18:17:56Z",
     "location": "Classroom E62-233",
@@ -30,7 +30,7 @@
       "color": "#9FE1E7",
       "id": "025DDA11-42A3-47C7-8467-C034C0B2BB2E",
       "source": "Gmail",
-      "title": "filippostrub@gmail.com",
+      "title": "student@example.com",
       "type": "calDAV"
     },
     "creationDate": "2026-09-18T23:33:45Z",
@@ -41,7 +41,7 @@
     "startDate": "2026-09-22T13:45:00Z",
     "status": "confirmed",
     "timeZone": "America/New_York",
-    "title": "GYM"
+    "title": "Personal"
   },
   {
     "attendees": [],

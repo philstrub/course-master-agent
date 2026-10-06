@@ -98,7 +98,7 @@
       "end": "12:30",
       "title": "Untitled Event",
       "course": null,
-      "location": "Sloan: E51-225 Student Study Room",
+      "location": null,
       "calendar": "Calendar",
       "all_day": false,
       "ends_next_day": false
@@ -109,7 +109,7 @@
       "title": "study",
       "course": null,
       "location": null,
-      "calendar": "Lavoro",
+      "calendar": "Personal",
       "all_day": false,
       "ends_next_day": false
     },
@@ -136,10 +136,10 @@
     {
       "start": "20:25",
       "end": "03:15",
-      "title": "Flight: KL 618 from BOS to AMS",
+      "title": "Overnight event",
       "course": null,
-      "location": "Logan International Airport",
-      "calendar": "filippostrub@gmail.com",
+      "location": null,
+      "calendar": "Personal",
       "all_day": false,
       "ends_next_day": true
     }

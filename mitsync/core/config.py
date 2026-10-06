@@ -70,7 +70,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
 from mitsync.core.env import load_dotenv
 from mitsync.core.errors import ConfigError, MitsyncError
@@ -157,16 +157,29 @@ class OrganizeSettings(BaseModel):
 
 
 class EmailSettings(BaseModel):
-    """Where the morning brief goes. Only this file decides; the brief JSON cannot."""
+    """Where the morning brief goes. Only configuration decides; the brief JSON cannot.
+
+    `sender` and `to` may be left out of the (committed) settings file and set
+    in `_agent/.env` instead, under the variables named by `sender_env` and
+    `to_env`, so a public repo does not publish the student's address.
+    """
 
     model_config = ConfigDict(extra="forbid")
 
     sender: str | None = None
     to: str | None = None
+    sender_env: str = "MITSYNC_EMAIL_SENDER"
+    to_env: str = "MITSYNC_EMAIL_TO"
     password_env: str = "GMAIL_APP_PASSWORD"
     smtp_host: str = "smtp.gmail.com"
     smtp_port: int = 465
     node: str | None = None  # absolute path when node is not on the agent's PATH
+
+    @model_validator(mode="after")
+    def _addresses_from_env(self) -> EmailSettings:
+        self.sender = self.sender or os.environ.get(self.sender_env) or None
+        self.to = self.to or os.environ.get(self.to_env) or None
+        return self
 
 
 DEFAULT_IGNORE_GLOBS = [

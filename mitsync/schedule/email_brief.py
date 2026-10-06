@@ -329,7 +329,10 @@ def send_brief(
     if marker.exists() and not resend:
         raise EmailError(f"the brief for {date} was already sent ({marker}); pass --resend")
     if not settings.email.to or not settings.email.sender:
-        raise ConfigError("set email.sender and email.to in config/settings.yml")
+        raise ConfigError(
+            "set MITSYNC_EMAIL_SENDER and MITSYNC_EMAIL_TO in _agent/.env "
+            "(or email.sender and email.to in config/settings.yml)"
+        )
     password = os.environ.get(settings.email.password_env)
     if not password:
         raise ConfigError(
