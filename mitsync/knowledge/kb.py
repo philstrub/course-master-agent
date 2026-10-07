@@ -267,7 +267,7 @@ def course_documents(settings: Settings) -> dict[str, list[dict[str, Any]]]:
 
     canvas_shas: set[str] = set()
     if settings.paths.manifest_db.exists():
-        with Manifest(settings.paths.manifest_db) as man:
+        with Manifest(settings.paths.manifest_db, wait=settings.lock_wait_seconds) as man:
             canvas_shas = {r.sha256 for r in man.list_files() if r.sha256}
     out: dict[str, list[dict[str, Any]]] = {c: [] for c in existing_course_folders(settings)}
     for node in graph_mod.load_nodes(settings).values():

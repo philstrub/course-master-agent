@@ -4,14 +4,15 @@
 // memory: a file it left out (`left_out` in the plan) never fires it again, so
 // the model is paid only for undecided material, and a run that failed before
 // applying its plan is retried at the next check instead of forgotten.
-// While a sync holds the manifest, `unfiled --ids` answers {"busy": true}: no
-// fire, state kept, try again next check. The same undecided files firing
+// While a sync holds the manifest, `unfiled --ids` answers {"busy": true}
+// after --lock-wait seconds (well inside the check's 30 s budget): no fire,
+// state kept, try again next check. The same undecided files firing
 // MAX_FIRES checks in a row means the agent keeps failing on them, so the
 // check throws and every later check errors until someone looks.
 // A failed check throws, so it shows up as an errored run instead of going quiet.
 const MAX_FIRES = 3;
 const res = await exec({
-  command: "/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent unfiled --ids",
+  command: "/Users/filippostrub/Desktop/MIT/courses/_agent/bin/mitsync-agent unfiled --ids --lock-wait 10",
 });
 const out = String(res?.aggregated ?? "");
 const doc = JSON.parse(out.slice(out.indexOf("{")));

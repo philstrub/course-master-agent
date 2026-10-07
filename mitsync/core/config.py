@@ -72,6 +72,7 @@ from typing import Any, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, ValidationError, model_validator
 
+from mitsync.core.database import DEFAULT_LOCK_WAIT_SECONDS
 from mitsync.core.env import load_dotenv
 from mitsync.core.errors import ConfigError, MitsyncError
 from mitsync.core.paths import Paths
@@ -204,6 +205,8 @@ class Settings(BaseModel):
     organize: OrganizeSettings = Field(default_factory=OrganizeSettings)
     email: EmailSettings = Field(default_factory=EmailSettings)
     ignore_globs: list[str] = Field(default_factory=lambda: list(DEFAULT_IGNORE_GLOBS))
+    #: How long a command waits for a DuckDB file another mitsync process holds.
+    lock_wait_seconds: float = DEFAULT_LOCK_WAIT_SECONDS
 
     # Not part of the YAML: where this instance was loaded from / operates on.
     _source_path: Path | None = PrivateAttr(default=None)

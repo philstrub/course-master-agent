@@ -443,18 +443,15 @@ def validate_structure(settings: Settings, rel: str, courses: list[str] | None =
 # --------------------------------------------------------------------------
 # what is waiting to be filed
 # --------------------------------------------------------------------------
-def _canvas_candidates(settings: Settings, wait: float | None = None) -> dict[str, dict[str, Any]]:
-    """file_id -> every mirrored file in the manifest, filed or not.
-
-    ``wait`` overrides how long to wait for a sync's lock on the manifest.
-    """
+def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
+    """file_id -> every mirrored file in the manifest, filed or not."""
     db = settings.paths.manifest_db
     if not db.exists():
         return {}
-    from mitsync.canvas.manifest import DEFAULT_WAIT_SECONDS, Manifest
+    from mitsync.canvas.manifest import Manifest
 
     out: dict[str, dict[str, Any]] = {}
-    with Manifest(db, wait=DEFAULT_WAIT_SECONDS if wait is None else wait) as man:
+    with Manifest(db, wait=settings.lock_wait_seconds) as man:
         for rec in man.list_files():
             if not rec.mirror_path or is_ignored(settings, rec.mirror_path):
                 continue
@@ -496,7 +493,7 @@ def _module_items(settings: Settings) -> list[dict[str, Any]]:
     return out
 
 
-def unfiled(settings: Settings, wait: float | None = None) -> dict[str, Any]:
+def unfiled(settings: Settings) -> dict[str, Any]:
     """Every mirrored file neither filed nor skipped, plus the rules the agent
     files by, and the case links in modules that `sync` has not downloaded
     (yet, or at all: its report says why).
@@ -505,14 +502,13 @@ def unfiled(settings: Settings, wait: float | None = None) -> dict[str, Any]:
     label ("PostClass CART Regression Slides") often says more than the
     filename, and its `left_out_reason` if an earlier plan left it out. The
     agent reads `naming_rules` itself and writes a plan matching
-    `plan_schema`; `organize apply --plan` validates and applies it. ``wait``
-    is passed to the manifest (see `_canvas_candidates`).
+    `plan_schema`; `organize apply --plan` validates and applies it.
     """
     items = _module_items(settings)
     by_file_id = {
         str(i["content_id"]) if i["type"] == "File" else f"link-{i['id']}": i for i in items
     }
-    candidates = _canvas_candidates(settings, wait)
+    candidates = _canvas_candidates(settings)
     files = []
     for c in candidates.values():
         if c["filed_path"] or c["skip_reason"]:
@@ -951,7 +947,7 @@ def _record_filing(
         return
     from mitsync.canvas.manifest import Manifest
 
-    with Manifest(settings.paths.manifest_db) as man:
+    with Manifest(settings.paths.manifest_db, wait=settings.lock_wait_seconds) as man:
         for uuid, filed_path, skip_reason in filing:
             man.set_filed_path(uuid, filed_path)
             man.set_skip_reason(uuid, skip_reason)

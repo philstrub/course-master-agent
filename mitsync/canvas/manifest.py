@@ -62,12 +62,10 @@ left out the old file, not this one.
 `left_out_reason` arrived after the first manifests were written, so opening
 one adds them with `ADD COLUMN IF NOT EXISTS` rather than asking for a rebuild.
 
-**One process at a time, and the others wait.** DuckDB lets a single process
-hold the database file, so a `sync` that runs for minutes locks out `unfiled`,
-`organize` and `due` for as long. Opening retries on that lock for up to
-`wait` seconds (`DEFAULT_WAIT_SECONDS` unless the caller says otherwise), then
-raises `ManifestBusy` instead of DuckDB's own error, so a scheduled caller can
-tell "sync is running, come back later" from a real failure.
+**One process at a time, and the others wait.** A `sync` holds the file for
+its whole run, so opening goes through `core.database.connect`, which waits
+up to `wait` seconds (callers pass `Settings.lock_wait_seconds`) and then
+raises `DatabaseBusy`.
 
 **Runs are append-only.** `last_run` answers sync-freshness questions for
 `mitsync due` and for `_kb/AGENTS.md`, so both read the same authority and can
@@ -77,29 +75,16 @@ never disagree.
 from __future__ import annotations
 
 import json
-import time
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
-from mitsync.core.errors import ManifestBusy
+from mitsync.core.database import DEFAULT_LOCK_WAIT_SECONDS, connect
 from mitsync.core.logging import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["DEFAULT_WAIT_SECONDS", "CourseRecord", "FileRecord", "Manifest", "synthetic_uuid"]
-
-#: How long opening the manifest waits for another process's lock. A sync
-#: usually holds it for under a minute; a slow one, for several.
-DEFAULT_WAIT_SECONDS = 120.0
-
-#: Seconds between attempts while another process holds the lock.
-_RETRY_SECONDS = 2.0
-
-#: What DuckDB says when another process holds the database file.
-_LOCK_CONFLICT = "Could not set lock on file"
+__all__ = ["CourseRecord", "FileRecord", "Manifest", "synthetic_uuid"]
 
 
 @dataclass
@@ -196,9 +181,9 @@ CREATE TABLE IF NOT EXISTS runs (
 class Manifest:
     """CRUD over the DuckDB manifest. Usable as a context manager."""
 
-    def __init__(self, db_path: Path, *, wait: float = DEFAULT_WAIT_SECONDS) -> None:
+    def __init__(self, db_path: Path, *, wait: float = DEFAULT_LOCK_WAIT_SECONDS) -> None:
         self.db_path = Path(db_path)
-        self._con = _connect(self.db_path, wait)
+        self._con = connect(self.db_path, wait)
         self._con.execute(_SCHEMA)
 
     # -- lifecycle ---------------------------------------------------------
@@ -308,21 +293,3 @@ class Manifest:
             return None
         stats = json.loads(row[3]) if row[3] else {}
         return {"command": row[0], "started": row[1], "finished": row[2], "stats": stats}
-
-
-def _connect(db_path: Path, wait: float) -> duckdb.DuckDBPyConnection:
-    """Open the database, retrying while another process holds its lock."""
-    deadline = time.monotonic() + wait
-    while True:
-        try:
-            return duckdb.connect(str(db_path))
-        except duckdb.IOException as exc:  # external: another process holds the file
-            if _LOCK_CONFLICT not in str(exc):
-                raise
-            if time.monotonic() >= deadline:
-                raise ManifestBusy(
-                    f"{db_path.name} is locked by another mitsync process (usually a sync) "
-                    f"and was not released within {wait:.0f}s; run this again when it ends"
-                ) from exc
-            log.info("manifest locked by another process; retrying in %.0fs", _RETRY_SECONDS)
-            time.sleep(_RETRY_SECONDS)
