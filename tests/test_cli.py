@@ -16,7 +16,9 @@ from typer.testing import CliRunner
 
 from mitsync import cli
 from mitsync.core.config import Settings
+from mitsync.core.errors import DatabaseBusy
 from mitsync.knowledge import graph as graph_mod
+from tests.test_database import holding_lock
 from tests.test_deadlines import seeded  # noqa: F401 -- fixture
 from tests.test_organize import add_mirror_file, place, write_course_map, write_plan
 
@@ -26,7 +28,12 @@ runner = CliRunner()
 @pytest.fixture
 def use(monkeypatch: pytest.MonkeyPatch):
     def _use(settings: Settings) -> Settings:
-        monkeypatch.setattr(cli, "_settings", lambda: settings)
+        def fake(lock_wait: float | None = None) -> Settings:
+            if lock_wait is not None:
+                settings.lock_wait_seconds = lock_wait
+            return settings
+
+        monkeypatch.setattr(cli, "_settings", fake)
         return settings
 
     return _use
@@ -125,6 +132,43 @@ def test_unfiled_ids_is_the_cheap_check(settings: Settings, use) -> None:
     assert len(doc["file_ids"]) == 1
 
 
+def test_unfiled_ids_leaves_out_what_a_plan_left_out(settings: Settings, use) -> None:
+    use(settings)
+    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
+    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
+    add_mirror_file(settings, uuid="u2", canvas_id=102, name="b.pdf", body=b"other")
+    plan = settings.paths.plans_dir / "plan.json"
+    plan.write_text(json.dumps({"placements": [], "left_out": [{"file_id": "101", "reason": "?"}]}))
+    assert runner.invoke(cli.app, ["organize", "apply", "--plan", str(plan)]).exit_code == 0
+
+    assert run_json("unfiled", "--ids") == {"file_ids": ["102"]}
+    assert [f["file_id"] for f in run_json("unfiled")["files"]] == ["101", "102"]
+
+
+def test_unfiled_ids_answers_busy_while_a_sync_holds_the_manifest(settings: Settings, use) -> None:
+    use(settings)
+    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
+    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
+
+    with holding_lock(settings.paths.manifest_db):
+        assert run_json("unfiled", "--ids", "--lock-wait", "0") == {"busy": True}
+
+
+def test_the_graph_trigger_commands_answer_busy_during_a_sync(settings: Settings, use) -> None:
+    use(settings)
+    write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
+    add_mirror_file(settings, uuid="u1", canvas_id=101, name="a.pdf")
+    assert runner.invoke(cli.app, ["graph", "refresh"]).exit_code == 0
+
+    # `graph check` reads the manifest (for unfiled Canvas files) ...
+    with holding_lock(settings.paths.manifest_db):
+        assert run_json("graph", "check", "--exit-zero", "--lock-wait", "0") == {"busy": True}
+    # ... and `graph refresh` rewrites the graph database.
+    with holding_lock(settings.paths.graph_db):
+        result = runner.invoke(cli.app, ["graph", "refresh", "--lock-wait", "0"])
+    assert isinstance(result.exception, DatabaseBusy)  # `run()` prints it as one line
+
+
 def test_unfiled_json_shape(settings: Settings, use) -> None:
     use(settings)
     write_course_map(settings, [{"canvas_id": 1, "folder": "Machine Learning"}])
@@ -152,6 +196,7 @@ def test_unfiled_json_shape(settings: Settings, use) -> None:
         "mirror_path",
         "canvas_folder",
         "module_name",
+        "left_out_reason",
         "module_position",
         "content_type",
         "size",

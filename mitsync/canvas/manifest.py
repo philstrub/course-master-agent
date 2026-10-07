@@ -14,7 +14,9 @@ Owns `state/manifest.duckdb` and the three tables in it:
     linked them, and is `NULL` until then. Both are workspace-relative POSIX
     strings. `skip_reason` is set when the agent decided a file is deliberately
     not filed (a pre-class deck once the post-class one exists), so it is not
-    offered for filing again.
+    offered for filing again. `left_out_reason` is set when the agent looked
+    at a file and was unsure: it stays unfiled and listed, but does not wake
+    the scheduled filing agent again until its bytes change.
 `courses`
     One row per Canvas course seen, keyed by `canvas_id`. `folder` is the
     sanitized mirror folder name under `_canvas/`; the mapping to the
@@ -52,9 +54,18 @@ present; upserts are `INSERT OR REPLACE`.
 re-sync must not reset when a file was first seen, and `sync` (which knows
 nothing about filing) must not blank the filing state that `organize` owns.
 
-**Columns added later are added in place.** `skip_reason` arrived after the
-first manifests were written, so opening one adds it with `ADD COLUMN IF NOT
-EXISTS` rather than asking for a rebuild.
+**`left_out_reason` lasts only as long as the bytes.** Upsert keeps it while
+`sha256` is unchanged and clears it when Canvas has a new version: the agent
+left out the old file, not this one.
+
+**Columns added later are added in place.** `skip_reason` and
+`left_out_reason` arrived after the first manifests were written, so opening
+one adds them with `ADD COLUMN IF NOT EXISTS` rather than asking for a rebuild.
+
+**One process at a time, and the others wait.** A `sync` holds the file for
+its whole run, so opening goes through `core.database.connect`, which waits
+up to `wait` seconds (callers pass `Settings.lock_wait_seconds`) and then
+raises `DatabaseBusy`.
 
 **Runs are append-only.** `last_run` answers sync-freshness questions for
 `mitsync due` and for `_kb/AGENTS.md`, so both read the same authority and can
@@ -68,8 +79,7 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
-import duckdb
-
+from mitsync.core.database import DEFAULT_LOCK_WAIT_SECONDS, connect
 from mitsync.core.logging import get_logger
 
 log = get_logger(__name__)
@@ -99,6 +109,7 @@ class FileRecord:
     first_seen: str
     last_synced: str
     skip_reason: str | None = None
+    left_out_reason: str | None = None
 
 
 @dataclass
@@ -141,10 +152,12 @@ CREATE TABLE IF NOT EXISTS files (
     filed_path       VARCHAR,
     first_seen       VARCHAR,
     last_synced      VARCHAR,
-    skip_reason      VARCHAR
+    skip_reason      VARCHAR,
+    left_out_reason  VARCHAR
 );
 
 ALTER TABLE files ADD COLUMN IF NOT EXISTS skip_reason VARCHAR;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS left_out_reason VARCHAR;
 
 CREATE TABLE IF NOT EXISTS courses (
     canvas_id   BIGINT PRIMARY KEY,
@@ -168,9 +181,9 @@ CREATE TABLE IF NOT EXISTS runs (
 class Manifest:
     """CRUD over the DuckDB manifest. Usable as a context manager."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, wait: float = DEFAULT_LOCK_WAIT_SECONDS) -> None:
         self.db_path = Path(db_path)
-        self._con = duckdb.connect(str(self.db_path))
+        self._con = connect(self.db_path, wait)
         self._con.execute(_SCHEMA)
 
     # -- lifecycle ---------------------------------------------------------
@@ -189,8 +202,9 @@ class Manifest:
     def upsert_file(self, rec: FileRecord) -> None:
         """Insert or replace a file row, preserving its original ``first_seen``.
 
-        ``filed_path`` and ``skip_reason`` are owned by ``organize.py``; a
-        record carrying ``None`` never clobbers a value already stored.
+        ``filed_path``, ``skip_reason`` and ``left_out_reason`` are owned by
+        ``organize.py``; a record carrying ``None`` never clobbers a value
+        already stored, except that new bytes clear ``left_out_reason``.
         """
         existing = self.get_file(rec.uuid)
         if existing is not None:
@@ -200,6 +214,8 @@ class Manifest:
                 rec.filed_path = existing.filed_path
             if rec.skip_reason is None:
                 rec.skip_reason = existing.skip_reason
+            if rec.left_out_reason is None and rec.sha256 == existing.sha256:
+                rec.left_out_reason = existing.left_out_reason
         values = [getattr(rec, c) for c in _FILE_COLUMNS]
         placeholders = ", ".join("?" for _ in _FILE_COLUMNS)
         self._con.execute(
@@ -239,6 +255,9 @@ class Manifest:
 
     def set_skip_reason(self, uuid: str, skip_reason: str | None) -> None:
         self._con.execute("UPDATE files SET skip_reason = ? WHERE uuid = ?", [skip_reason, uuid])
+
+    def set_left_out_reason(self, uuid: str, reason: str | None) -> None:
+        self._con.execute("UPDATE files SET left_out_reason = ? WHERE uuid = ?", [reason, uuid])
 
     # -- courses -----------------------------------------------------------
     def upsert_course(self, rec: CourseRecord) -> None:

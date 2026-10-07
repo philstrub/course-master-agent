@@ -198,7 +198,7 @@ def new_files(settings: Settings, since: datetime) -> dict[str, Any]:
     from mitsync.schedule.deadlines import _course_folders
 
     folders = _course_folders(settings)
-    with Manifest(settings.paths.manifest_db) as man:
+    with Manifest(settings.paths.manifest_db, wait=settings.lock_wait_seconds) as man:
         records = man.list_files()
     rows = []
     for rec in records:

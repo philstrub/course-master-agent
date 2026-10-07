@@ -116,6 +116,7 @@ from rich.console import Console
 from rich.table import Table
 
 from mitsync.core.clock import now_iso
+from mitsync.core.database import connect
 from mitsync.core.errors import MitsyncError, OntologyError
 from mitsync.core.logging import get_logger
 from mitsync.filing.course_map import (
@@ -392,9 +393,7 @@ class DuckDBBackend:
 
     # --- connection -------------------------------------------------------
     def _connect(self):
-        import duckdb
-
-        con = duckdb.connect(str(self.path))
+        con = connect(self.path, self.settings.lock_wait_seconds)
         con.execute(_CREATE_NODES.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         con.execute(_CREATE_EDGES.replace("CREATE TABLE", "CREATE TABLE IF NOT EXISTS"))
         return con

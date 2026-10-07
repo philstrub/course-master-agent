@@ -290,7 +290,9 @@ def run_sync(
 
     # In dry-run mode never create a database file that did not already exist.
     in_memory = dry_run and not Path(paths.manifest_db).exists()
-    manifest = Manifest(Path(":memory:") if in_memory else paths.manifest_db)
+    manifest = Manifest(
+        Path(":memory:") if in_memory else paths.manifest_db, wait=settings.lock_wait_seconds
+    )
     try:
         _sync_all(settings, client, manifest, report, course=course, dry_run=dry_run, full=full)
     finally:

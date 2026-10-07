@@ -506,7 +506,7 @@ def last_sync(settings: Settings) -> str | None:
         return None
     from mitsync.canvas.manifest import Manifest
 
-    with Manifest(db) as man:
+    with Manifest(db, wait=settings.lock_wait_seconds) as man:
         run = man.last_run("sync")
     if run is None:
         return None
@@ -619,7 +619,7 @@ def work_evidence(settings: Settings, course: str) -> list[dict[str, Any]]:
     if settings.paths.manifest_db.exists():
         from mitsync.canvas.manifest import Manifest
 
-        with Manifest(settings.paths.manifest_db) as man:
+        with Manifest(settings.paths.manifest_db, wait=settings.lock_wait_seconds) as man:
             for rec in man.list_files():
                 hashes.add(rec.sha256)
                 names.update({rec.filename, rec.display_name})

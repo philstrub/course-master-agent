@@ -14,6 +14,9 @@ a later `sync` upsert that carries `None`. Those two are why `upsert_file`
 reads the existing row first, and a regression in either silently rewrites
 history or unfiles the student's material.
 
+`left_out_reason` lives only as long as the file's bytes. Waiting for a lock
+another process holds is `core.database`'s, tested in `test_database.py`.
+
 `db` is a local fixture -- a fresh `manifest.duckdb` under `tmp_path`. These
 tests need no workspace and do not use the `settings` fixture.
 """
@@ -170,3 +173,13 @@ def test_last_run_is_per_command(db: Path):
 
 def test_synthetic_uuid():
     assert synthetic_uuid(42) == "canvas-42"
+
+
+def test_left_out_survives_a_resync_until_the_bytes_change(db: Path):
+    with Manifest(db) as m:
+        m.upsert_file(make_file())
+        m.set_left_out_reason("uuid-1", "lecture or recitation?")
+        m.upsert_file(make_file())
+        assert m.get_file("uuid-1").left_out_reason == "lecture or recitation?"
+        m.upsert_file(make_file(sha256="b" * 64))
+        assert m.get_file("uuid-1").left_out_reason is None

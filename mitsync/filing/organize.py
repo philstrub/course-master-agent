@@ -13,7 +13,8 @@ the driving agent wrote, applied only on confirmation, and always undoable.
     **Deciding the destination is the agent's job, not this module's.**
 `validate_plan`
     Check an agent-written plan -- `{"placements": [{"file_id", "destination",
-    "reason"}], "skips": [{"file_id", "reason"}]}` -- against its JSON schema
+    "reason"}], "skips": [{"file_id", "reason"}], "left_out": [{"file_id",
+    "reason"}]}` -- against its JSON schema
     and against the structural filing rules below, splitting it into accepted
     placements, skips and rejections, each rejection with its reason.
 `apply_plan` / `undo`
@@ -69,6 +70,16 @@ and undo puts it back.
 manifest) is one naming.md says the student does not want. `unfiled` stops
 listing it, and placing it later clears the skip. Skipping a file that is
 already filed removes its unchanged filed copy, and needs `--include-existing`.
+
+**Left out is a third answer, and the scheduler's memory.** A file the agent
+was unsure about goes in the plan's `left_out` with a reason. It is not filed
+and not skipped: `unfiled` still lists it, with that reason, and the student
+or a later run may still place it. What it stops is `unfiled --ids`, the
+scheduled filing agent's "anything to do?", from waking the agent for it
+again. A run that fails before it applies a plan records nothing, so the next
+scheduled run is offered the same files. Recording a left-out file changes
+nothing on disk, so it needs no confirmation and no undo entry, and any
+later filing change to that file clears it.
 
 **Renaming a filed copy is a move of the student's folder.** Placing an
 already-filed Canvas file again by its `file_id` moves its filed copy to the
@@ -221,6 +232,18 @@ PLAN_SCHEMA: dict[str, Any] = {
                 },
             },
         },
+        "left_out": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "required": ["file_id", "reason"],
+                "additionalProperties": False,
+                "properties": {
+                    "file_id": {"type": "string", "minLength": 1},
+                    "reason": {"type": "string", "minLength": 1},
+                },
+            },
+        },
     },
 }
 
@@ -312,6 +335,7 @@ class Plan:
     plan_id: str
     entries: list[PlanEntry] = field(default_factory=list)
     skips: list[dict[str, str]] = field(default_factory=list)
+    left_out: list[dict[str, str]] = field(default_factory=list)
     rejected: list[dict[str, str]] = field(default_factory=list)
     path: Path | None = None
 
@@ -427,7 +451,7 @@ def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
     from mitsync.canvas.manifest import Manifest
 
     out: dict[str, dict[str, Any]] = {}
-    with Manifest(db) as man:
+    with Manifest(db, wait=settings.lock_wait_seconds) as man:
         for rec in man.list_files():
             if not rec.mirror_path or is_ignored(settings, rec.mirror_path):
                 continue
@@ -447,6 +471,7 @@ def _canvas_candidates(settings: Settings) -> dict[str, dict[str, Any]]:
                 "size": rec.size,
                 "filed_path": rec.filed_path,
                 "skip_reason": rec.skip_reason,
+                "left_out_reason": rec.left_out_reason,
             }
     return out
 
@@ -475,7 +500,8 @@ def unfiled(settings: Settings) -> dict[str, Any]:
 
     Each file carries its module item's title and subheader: the course's own
     label ("PostClass CART Regression Slides") often says more than the
-    filename. The agent reads `naming_rules` itself and writes a plan matching
+    filename, and its `left_out_reason` if an earlier plan left it out. The
+    agent reads `naming_rules` itself and writes a plan matching
     `plan_schema`; `organize apply --plan` validates and applies it.
     """
     items = _module_items(settings)
@@ -706,6 +732,21 @@ def validate_plan(
                 }
             )
         seen_ids.add(file_id)
+
+    for entry in doc.get("left_out", []):
+        file_id = entry["file_id"]
+        candidate = candidates.get(file_id)
+        if file_id in seen_ids:
+            reject(entry, "this file_id is already placed, skipped or left out in this plan")
+        elif candidate is None:
+            reject(entry, "no mirrored file with this file_id in the manifest")
+        elif candidate["filed_path"] or candidate["skip_reason"]:
+            reject(entry, "already filed or skipped; only an unfiled file can be left out")
+        else:
+            the_plan.left_out.append(
+                {"file_id": file_id, "uuid": candidate["uuid"], "reason": entry["reason"]}
+            )
+        seen_ids.add(file_id)
     return the_plan
 
 
@@ -776,8 +817,10 @@ def apply_plan(
     ws = settings.paths.workspace
 
     if not the_plan.entries and not the_plan.skips:
-        report.confirmed = True  # nothing to confirm
+        report.confirmed = True  # nothing on disk to confirm
+        _record_filing(settings, [], the_plan.left_out)
         _print_report(report)
+        _print_left_out(the_plan)
         return report
     report.confirmed = _confirm(the_plan, yes=yes)
     if not report.confirmed:
@@ -883,24 +926,41 @@ def apply_plan(
         filing.append((skip["uuid"], None, skip["reason"]))
 
     report.undo_log = _write_undo_log(settings, the_plan, mode, operations)
-    _record_filing(settings, filing)
+    _record_filing(settings, filing, the_plan.left_out)
     _print_report(report)
     if the_plan.skips:
         console.print(f"skipped on purpose: {len(the_plan.skips)} file(s)")
+    _print_left_out(the_plan)
     if report.undo_log is not None:
         console.print(f"undo log: [bold]{report.undo_log}[/bold]")
     return report
 
 
-def _record_filing(settings: Settings, filing: list[tuple[str, str | None, str | None]]) -> None:
-    if not filing:
+def _record_filing(
+    settings: Settings,
+    filing: list[tuple[str, str | None, str | None]],
+    left_out: list[dict[str, str]],
+) -> None:
+    """Write filing state back. Any change to a file's filing clears its
+    left-out mark, so undoing a placement offers the file afresh."""
+    if not filing and not left_out:
         return
     from mitsync.canvas.manifest import Manifest
 
-    with Manifest(settings.paths.manifest_db) as man:
+    with Manifest(settings.paths.manifest_db, wait=settings.lock_wait_seconds) as man:
         for uuid, filed_path, skip_reason in filing:
             man.set_filed_path(uuid, filed_path)
             man.set_skip_reason(uuid, skip_reason)
+            man.set_left_out_reason(uuid, None)
+        for row in left_out:
+            man.set_left_out_reason(row["uuid"], row["reason"])
+
+
+def _print_left_out(the_plan: Plan) -> None:
+    if the_plan.left_out:
+        console.print(
+            f"left out on purpose: {len(the_plan.left_out)} file(s), still listed by unfiled"
+        )
 
 
 def _write_undo_log(
@@ -1033,7 +1093,7 @@ def undo(settings: Settings, log_id: str | None = None) -> UndoReport:
         if op.get("uuid"):
             filing.append((op["uuid"], op["source"] if op["mode"] == "refile" else None, None))
 
-    _record_filing(settings, filing)
+    _record_filing(settings, filing, [])
 
     if not report.errors and not report.refused:
         doc["undone_at"] = now_iso()

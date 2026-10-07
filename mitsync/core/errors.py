@@ -26,7 +26,8 @@ in Canvas > Account > Settings" rather than "401".
 
 A leaf: it imports nothing from mitsync and nearly everything imports it.
 `canvas_client` translates HTTP into the `Canvas*` family, `calendar_read`
-raises `CalendarAccessDenied`, `config` raises `ConfigError`, `graph` raises
+raises `CalendarAccessDenied`, `config` raises `ConfigError`, `database` raises
+`DatabaseBusy` when a sync holds a DuckDB file too long, `graph` raises
 `OntologyError`, `gradescope.client` raises `GradescopeAuthError`.
 
 ## 4. Key Concepts
@@ -182,3 +183,9 @@ class ForumOutcomeUnknown(MitsyncError):
     """A forum post was sent but neither answered nor visible on Canvas yet
     (Canvas's discussion view is cached). It is never retried blindly: the
     next run reconciles it once Canvas shows the forum as it is."""
+
+
+class DatabaseBusy(MitsyncError):
+    """Another mitsync process (almost always a `sync`) holds the manifest or
+    graph database, and it was not released within the wait. Expected, not a failure:
+    run the command again once that sync finishes."""

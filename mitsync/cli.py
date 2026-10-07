@@ -48,7 +48,9 @@ workspace directories are writable.
 **Why exceptions are caught here.** This is the boundary, so the handlers are
 the point rather than an exception to the rule. `run()` catches `MitsyncError`
 as the backstop; individual commands catch only the failure they specifically
-expect -- a denied calendar grant -- so that a new failure mode can never be
+expect -- a denied calendar grant, or `unfiled --ids` and `graph check
+--json` answering `{"busy": true}` on `DatabaseBusy` so a scheduler can tell
+a running sync from a broken check -- so that a new failure mode can never be
 silently absorbed by a command and still reaches `run()`. `doctor`
 additionally catches `ImportError` and `MitsyncError` per check, because
 reporting a broken component is its entire job.
@@ -71,7 +73,7 @@ from rich.table import Table
 from mitsync.canvas import sync as sync_mod
 from mitsync.core.config import Settings, load_settings
 from mitsync.core.env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
-from mitsync.core.errors import MitsyncError
+from mitsync.core.errors import DatabaseBusy, MitsyncError
 from mitsync.core.logging import setup_logging
 from mitsync.filing import organize as organize_mod
 from mitsync.filing.course_map import naming_rules_path
@@ -106,11 +108,20 @@ app.add_typer(forum_app, name="forum")
 forum_app.add_typer(forum_knowledge_app, name="knowledge")
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Print one JSON document to stdout.")]
+LockWaitOpt = Annotated[
+    float | None,
+    typer.Option(
+        "--lock-wait",
+        help="Seconds to wait while a sync holds a database (default: lock_wait_seconds).",
+    ),
+]
 
 
-def _settings() -> Settings:
+def _settings(lock_wait: float | None = None) -> Settings:
     s = load_settings()
     s.paths.ensure()
+    if lock_wait is not None:
+        s.lock_wait_seconds = lock_wait
     return s
 
 
@@ -309,16 +320,31 @@ def unfiled(
         bool,
         typer.Option(
             "--ids",
-            help='Only {"file_ids": [...]}, mapped courses only: a cheap "anything new?".',
+            help=(
+                'Only {"file_ids": [...]}: files in mapped courses that no plan left out, '
+                'a cheap "anything to do?". {"busy": true} while a sync holds the manifest.'
+            ),
         ),
     ] = False,
+    lock_wait: LockWaitOpt = None,
 ) -> None:
     """Mirrored files not filed yet, plus the buckets and rules a plan must follow."""
-    settings = _settings()
-    doc = organize_mod.unfiled(settings)
+    settings = _settings(lock_wait)
     if ids:
-        _emit_json({"file_ids": sorted(f["file_id"] for f in doc["files"] if f["course"])})
+        try:
+            doc = organize_mod.unfiled(settings)
+        except DatabaseBusy:
+            _emit_json({"busy": True})
+            return
+        _emit_json(
+            {
+                "file_ids": sorted(
+                    f["file_id"] for f in doc["files"] if f["course"] and not f["left_out_reason"]
+                )
+            }
+        )
         return
+    doc = organize_mod.unfiled(settings)
     if as_json:
         _emit_json(doc)
         return
@@ -427,9 +453,9 @@ def graph_add(
 
 
 @graph_app.command("refresh")
-def graph_refresh() -> None:
+def graph_refresh(lock_wait: LockWaitOpt = None) -> None:
     """Extract new text, rebuild the backbone, push to Neo4j: what every `sync` ends with."""
-    _refresh_graph(_settings())
+    _refresh_graph(_settings(lock_wait))
 
 
 @graph_app.command("backbone")
@@ -451,14 +477,22 @@ def graph_check(
     exit_zero: Annotated[
         bool, typer.Option("--exit-zero", help="Exit 0 even when something is open.")
     ] = False,
+    lock_wait: LockWaitOpt = None,
 ) -> None:
     """Every structural violation; exit 1 while any `error` or `human` one remains.
 
     This is the sync loop's stopping condition: `error` violations are the
-    agent's work list, `human` ones are escalated, `info` never blocks.
+    agent's work list, `human` ones are escalated, `info` never blocks. With
+    `--json`, `{"busy": true}` while a sync holds a database.
     """
-    settings = _settings()
-    violations = graph_mod.check(settings)
+    settings = _settings(lock_wait)
+    try:
+        violations = graph_mod.check(settings)
+    except DatabaseBusy:
+        if not as_json:
+            raise
+        _emit_json({"busy": True})
+        return
     counts = {sev: sum(v.severity == sev for v in violations) for sev in ("error", "human", "info")}
     if as_json:
         _emit_json({"ok": not (counts["error"] or counts["human"]), "counts": counts,
