@@ -215,11 +215,12 @@ reviewing the plan:
 
 ## 6. When unsure
 
-Leave a file out of the plan rather than guessing when the course is ambiguous
-or the file could plausibly sit in two subfolders, and say why in your reply to
-the student. A file left out stays in the Canvas mirror and is listed again by
-`mitsync unfiled` next time.
+Leave a file out rather than guessing when the course is ambiguous or the file
+could plausibly sit in two subfolders: put it in the plan's `left_out` with the
+reason, and say why in your reply to the student. A file left out stays in the
+Canvas mirror and is still listed by `mitsync unfiled` (with your reason), but
+it does not wake the scheduled filing run again until Canvas changes it.
 
 `skips` is only for files these rules say I do not want (a PreClass deck once
 the PostClass one exists). A skipped file is not offered again. A file you are
-unsure about goes in neither list.
+unsure about goes in `left_out`, never in `skips`.

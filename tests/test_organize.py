@@ -532,6 +532,59 @@ def test_skipping_a_filed_file_removes_its_copy_only_with_include_existing(
     assert filed_path_of(prepared, "u1") == REG and skip_reason_of(prepared, "u1") is None
 
 
+def left_out_reason_of(settings: Settings, uuid: str) -> str | None:
+    with Manifest(settings.paths.manifest_db) as man:
+        return man.get_file(uuid).left_out_reason
+
+
+def test_a_left_out_file_stays_listed_with_its_reason_until_it_is_filed(
+    prepared: Settings,
+) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="Untitled.pdf")
+    plan = write_plan_doc(
+        prepared, {"placements": [], "left_out": [{"file_id": "101", "reason": "unsure"}]}
+    )
+
+    report = organize.apply_plan(prepared, plan)  # changes nothing on disk: no confirmation
+
+    assert report.confirmed and not report.rejected and report.undo_log is None
+    assert left_out_reason_of(prepared, "u1") == "unsure"
+    (listed,) = organize.unfiled(prepared)["files"]
+    assert listed["file_id"] == "101" and listed["left_out_reason"] == "unsure"
+
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p2"), yes=True)
+    assert left_out_reason_of(prepared, "u1") is None
+    organize.undo(prepared, "latest")
+    assert left_out_reason_of(prepared, "u1") is None  # offered afresh
+
+
+def test_only_an_undecided_file_can_be_left_out(prepared: Settings) -> None:
+    add_mirror_file(prepared, uuid="u1", canvas_id=101, name="a.pdf")
+    add_mirror_file(prepared, uuid="u2", canvas_id=102, name="b.pdf", body=b"other")
+    organize.apply_plan(prepared, write_plan(prepared, [place("101", REG)], "p1"), yes=True)
+    plan = write_plan_doc(
+        prepared,
+        {
+            "placements": [place("102", "Machine Learning/other/b.pdf")],
+            "left_out": [
+                {"file_id": "101", "reason": "x"},
+                {"file_id": "102", "reason": "x"},
+                {"file_id": "999", "reason": "x"},
+            ],
+        },
+        "p2",
+    )
+
+    the_plan = organize.validate_plan(prepared, plan)
+
+    assert not the_plan.left_out
+    assert {r["file_id"]: r["reason"] for r in the_plan.rejected} == {
+        "101": "already filed or skipped; only an unfiled file can be left out",
+        "102": "this file_id is already placed, skipped or left out in this plan",
+        "999": "no mirrored file with this file_id in the manifest",
+    }
+
+
 def test_a_post_class_deck_replaces_the_filed_pre_class_copy(prepared: Settings) -> None:
     add_mirror_file(prepared, uuid="pre", canvas_id=101, name="Pre.pdf", body=b"pre deck")
     add_mirror_file(prepared, uuid="post", canvas_id=102, name="Post.pdf", body=b"post deck")

@@ -48,7 +48,9 @@ workspace directories are writable.
 **Why exceptions are caught here.** This is the boundary, so the handlers are
 the point rather than an exception to the rule. `run()` catches `MitsyncError`
 as the backstop; individual commands catch only the failure they specifically
-expect -- a denied calendar grant -- so that a new failure mode can never be
+expect -- a denied calendar grant, or `unfiled --ids` answering
+`{"busy": true}` on `ManifestBusy` so the scheduler can tell a running sync
+from a broken check -- so that a new failure mode can never be
 silently absorbed by a command and still reaches `run()`. `doctor`
 additionally catches `ImportError` and `MitsyncError` per check, because
 reporting a broken component is its entire job.
@@ -71,7 +73,7 @@ from rich.table import Table
 from mitsync.canvas import sync as sync_mod
 from mitsync.core.config import Settings, load_settings
 from mitsync.core.env import DISABLE_ENV, ENVIRONMENT, NOT_SET, dotenv_disabled, load_dotenv
-from mitsync.core.errors import MitsyncError
+from mitsync.core.errors import ManifestBusy, MitsyncError
 from mitsync.core.logging import setup_logging
 from mitsync.filing import organize as organize_mod
 from mitsync.filing.course_map import naming_rules_path
@@ -104,6 +106,9 @@ app.add_typer(kb_app, name="kb")
 app.add_typer(gradescope_app, name="gradescope")
 app.add_typer(forum_app, name="forum")
 forum_app.add_typer(forum_knowledge_app, name="knowledge")
+
+#: How long `unfiled --ids` waits for a sync's lock before answering busy.
+IDS_WAIT_SECONDS = 10.0
 
 JsonOpt = Annotated[bool, typer.Option("--json", help="Print one JSON document to stdout.")]
 
@@ -309,16 +314,31 @@ def unfiled(
         bool,
         typer.Option(
             "--ids",
-            help='Only {"file_ids": [...]}, mapped courses only: a cheap "anything new?".',
+            help=(
+                'Only {"file_ids": [...]}: files in mapped courses that no plan left out, '
+                'a cheap "anything to do?". {"busy": true} while a sync holds the manifest.'
+            ),
         ),
     ] = False,
 ) -> None:
     """Mirrored files not filed yet, plus the buckets and rules a plan must follow."""
     settings = _settings()
-    doc = organize_mod.unfiled(settings)
     if ids:
-        _emit_json({"file_ids": sorted(f["file_id"] for f in doc["files"] if f["course"])})
+        # The scheduler's gate must answer at once, so it does not wait out a sync.
+        try:
+            doc = organize_mod.unfiled(settings, wait=IDS_WAIT_SECONDS)
+        except ManifestBusy:
+            _emit_json({"busy": True})
+            return
+        _emit_json(
+            {
+                "file_ids": sorted(
+                    f["file_id"] for f in doc["files"] if f["course"] and not f["left_out_reason"]
+                )
+            }
+        )
         return
+    doc = organize_mod.unfiled(settings)
     if as_json:
         _emit_json(doc)
         return

@@ -14,17 +14,28 @@ a later `sync` upsert that carries `None`. Those two are why `upsert_file`
 reads the existing row first, and a regression in either silently rewrites
 history or unfiles the student's material.
 
+`left_out_reason` lives only as long as the file's bytes, and a manifest
+another process holds (a long `sync`) is waited for, then reported as
+`ManifestBusy` rather than DuckDB's raw lock error. `holding_lock` takes the
+lock from a real second process, because DuckDB's lock is per process.
+
 `db` is a local fixture -- a fresh `manifest.duckdb` under `tmp_path`. These
 tests need no workspace and do not use the `settings` fixture.
 """
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
+from mitsync.canvas import manifest as manifest_mod
 from mitsync.canvas.manifest import CourseRecord, FileRecord, Manifest, synthetic_uuid
+from mitsync.core.errors import ManifestBusy
 
 
 def make_file(uuid: str = "uuid-1", **over) -> FileRecord:
@@ -170,3 +181,58 @@ def test_last_run_is_per_command(db: Path):
 
 def test_synthetic_uuid():
     assert synthetic_uuid(42) == "canvas-42"
+
+
+def test_left_out_survives_a_resync_until_the_bytes_change(db: Path):
+    with Manifest(db) as m:
+        m.upsert_file(make_file())
+        m.set_left_out_reason("uuid-1", "lecture or recitation?")
+        m.upsert_file(make_file())
+        assert m.get_file("uuid-1").left_out_reason == "lecture or recitation?"
+        m.upsert_file(make_file(sha256="b" * 64))
+        assert m.get_file("uuid-1").left_out_reason is None
+
+
+@contextmanager
+def holding_lock(db: Path) -> Iterator[subprocess.Popen]:
+    """A second process with the manifest open, as a running `sync` has it."""
+    Manifest(db).close()
+    holder = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import duckdb, sys; c = duckdb.connect(sys.argv[1]); print('ready', flush=True); "
+            "sys.stdin.read()",
+            str(db),
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    assert holder.stdout.readline().strip() == "ready"
+    try:
+        yield holder
+    finally:
+        holder.stdin.close()
+        holder.wait(timeout=10)
+
+
+def test_a_lock_held_past_the_wait_is_manifest_busy(db: Path):
+    with holding_lock(db), pytest.raises(ManifestBusy, match="locked by another mitsync"):
+        Manifest(db, wait=0)
+
+
+def test_opening_waits_for_the_lock_to_be_released(db: Path, monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setattr(manifest_mod, "_RETRY_SECONDS", 0.05)
+    with holding_lock(db) as holder:
+        sleeps: list[float] = []
+
+        def release_after_first_retry(seconds: float) -> None:
+            sleeps.append(seconds)
+            holder.stdin.close()
+            holder.wait()  # no timeout: Popen polls with the time.sleep patched here
+
+        monkeypatch.setattr(manifest_mod.time, "sleep", release_after_first_retry)
+        with Manifest(db, wait=30) as m:
+            assert m.list_files() == []
+        assert sleeps == [0.05]

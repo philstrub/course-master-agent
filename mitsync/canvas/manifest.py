@@ -14,7 +14,9 @@ Owns `state/manifest.duckdb` and the three tables in it:
     linked them, and is `NULL` until then. Both are workspace-relative POSIX
     strings. `skip_reason` is set when the agent decided a file is deliberately
     not filed (a pre-class deck once the post-class one exists), so it is not
-    offered for filing again.
+    offered for filing again. `left_out_reason` is set when the agent looked
+    at a file and was unsure: it stays unfiled and listed, but does not wake
+    the scheduled filing agent again until its bytes change.
 `courses`
     One row per Canvas course seen, keyed by `canvas_id`. `folder` is the
     sanitized mirror folder name under `_canvas/`; the mapping to the
@@ -52,9 +54,20 @@ present; upserts are `INSERT OR REPLACE`.
 re-sync must not reset when a file was first seen, and `sync` (which knows
 nothing about filing) must not blank the filing state that `organize` owns.
 
-**Columns added later are added in place.** `skip_reason` arrived after the
-first manifests were written, so opening one adds it with `ADD COLUMN IF NOT
-EXISTS` rather than asking for a rebuild.
+**`left_out_reason` lasts only as long as the bytes.** Upsert keeps it while
+`sha256` is unchanged and clears it when Canvas has a new version: the agent
+left out the old file, not this one.
+
+**Columns added later are added in place.** `skip_reason` and
+`left_out_reason` arrived after the first manifests were written, so opening
+one adds them with `ADD COLUMN IF NOT EXISTS` rather than asking for a rebuild.
+
+**One process at a time, and the others wait.** DuckDB lets a single process
+hold the database file, so a `sync` that runs for minutes locks out `unfiled`,
+`organize` and `due` for as long. Opening retries on that lock for up to
+`wait` seconds (`DEFAULT_WAIT_SECONDS` unless the caller says otherwise), then
+raises `ManifestBusy` instead of DuckDB's own error, so a scheduled caller can
+tell "sync is running, come back later" from a real failure.
 
 **Runs are append-only.** `last_run` answers sync-freshness questions for
 `mitsync due` and for `_kb/AGENTS.md`, so both read the same authority and can
@@ -64,17 +77,29 @@ never disagree.
 from __future__ import annotations
 
 import json
+import time
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
 import duckdb
 
+from mitsync.core.errors import ManifestBusy
 from mitsync.core.logging import get_logger
 
 log = get_logger(__name__)
 
-__all__ = ["CourseRecord", "FileRecord", "Manifest", "synthetic_uuid"]
+__all__ = ["DEFAULT_WAIT_SECONDS", "CourseRecord", "FileRecord", "Manifest", "synthetic_uuid"]
+
+#: How long opening the manifest waits for another process's lock. A sync
+#: usually holds it for under a minute; a slow one, for several.
+DEFAULT_WAIT_SECONDS = 120.0
+
+#: Seconds between attempts while another process holds the lock.
+_RETRY_SECONDS = 2.0
+
+#: What DuckDB says when another process holds the database file.
+_LOCK_CONFLICT = "Could not set lock on file"
 
 
 @dataclass
@@ -99,6 +124,7 @@ class FileRecord:
     first_seen: str
     last_synced: str
     skip_reason: str | None = None
+    left_out_reason: str | None = None
 
 
 @dataclass
@@ -141,10 +167,12 @@ CREATE TABLE IF NOT EXISTS files (
     filed_path       VARCHAR,
     first_seen       VARCHAR,
     last_synced      VARCHAR,
-    skip_reason      VARCHAR
+    skip_reason      VARCHAR,
+    left_out_reason  VARCHAR
 );
 
 ALTER TABLE files ADD COLUMN IF NOT EXISTS skip_reason VARCHAR;
+ALTER TABLE files ADD COLUMN IF NOT EXISTS left_out_reason VARCHAR;
 
 CREATE TABLE IF NOT EXISTS courses (
     canvas_id   BIGINT PRIMARY KEY,
@@ -168,9 +196,9 @@ CREATE TABLE IF NOT EXISTS runs (
 class Manifest:
     """CRUD over the DuckDB manifest. Usable as a context manager."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, *, wait: float = DEFAULT_WAIT_SECONDS) -> None:
         self.db_path = Path(db_path)
-        self._con = duckdb.connect(str(self.db_path))
+        self._con = _connect(self.db_path, wait)
         self._con.execute(_SCHEMA)
 
     # -- lifecycle ---------------------------------------------------------
@@ -189,8 +217,9 @@ class Manifest:
     def upsert_file(self, rec: FileRecord) -> None:
         """Insert or replace a file row, preserving its original ``first_seen``.
 
-        ``filed_path`` and ``skip_reason`` are owned by ``organize.py``; a
-        record carrying ``None`` never clobbers a value already stored.
+        ``filed_path``, ``skip_reason`` and ``left_out_reason`` are owned by
+        ``organize.py``; a record carrying ``None`` never clobbers a value
+        already stored, except that new bytes clear ``left_out_reason``.
         """
         existing = self.get_file(rec.uuid)
         if existing is not None:
@@ -200,6 +229,8 @@ class Manifest:
                 rec.filed_path = existing.filed_path
             if rec.skip_reason is None:
                 rec.skip_reason = existing.skip_reason
+            if rec.left_out_reason is None and rec.sha256 == existing.sha256:
+                rec.left_out_reason = existing.left_out_reason
         values = [getattr(rec, c) for c in _FILE_COLUMNS]
         placeholders = ", ".join("?" for _ in _FILE_COLUMNS)
         self._con.execute(
@@ -240,6 +271,9 @@ class Manifest:
     def set_skip_reason(self, uuid: str, skip_reason: str | None) -> None:
         self._con.execute("UPDATE files SET skip_reason = ? WHERE uuid = ?", [skip_reason, uuid])
 
+    def set_left_out_reason(self, uuid: str, reason: str | None) -> None:
+        self._con.execute("UPDATE files SET left_out_reason = ? WHERE uuid = ?", [reason, uuid])
+
     # -- courses -----------------------------------------------------------
     def upsert_course(self, rec: CourseRecord) -> None:
         values = [getattr(rec, c) for c in _COURSE_COLUMNS]
@@ -274,3 +308,21 @@ class Manifest:
             return None
         stats = json.loads(row[3]) if row[3] else {}
         return {"command": row[0], "started": row[1], "finished": row[2], "stats": stats}
+
+
+def _connect(db_path: Path, wait: float) -> duckdb.DuckDBPyConnection:
+    """Open the database, retrying while another process holds its lock."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            return duckdb.connect(str(db_path))
+        except duckdb.IOException as exc:  # external: another process holds the file
+            if _LOCK_CONFLICT not in str(exc):
+                raise
+            if time.monotonic() >= deadline:
+                raise ManifestBusy(
+                    f"{db_path.name} is locked by another mitsync process (usually a sync) "
+                    f"and was not released within {wait:.0f}s; run this again when it ends"
+                ) from exc
+            log.info("manifest locked by another process; retrying in %.0fs", _RETRY_SECONDS)
+            time.sleep(_RETRY_SECONDS)
